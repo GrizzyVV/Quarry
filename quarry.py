@@ -803,6 +803,15 @@ def cmd_meta(a):
     return 0
 
 
+# ⭐ Texture dictionaries do not live only in ytd/ any more. A drawable can carry its own, and
+# QUARRY writes that as a sibling "<stem>.ytd.xml" in the DRAWABLE's folder with pixels in
+# "<stem>/" beside it (see to_interchange_xml). Any tool that reports on or prunes texture pixels
+# must look in all of these, or it is blind to a third of the textures in the game and will happily
+# report "0 unused" while missing them entirely - or worse, prune what it cannot see the reference
+# for. Measured: 1,180 of 3,479 base drawables (33.9%) carry an embedded dictionary.
+TXD_BEARING_DIRS = ('ytd', 'ydr', 'ydd', 'yft')
+
+
 def cmd_textures(a):
     """Keep only the texture pixels something actually references.
 
@@ -850,6 +859,10 @@ def cmd_textures(a):
             for fn in os.listdir(d):
                 if not fn.lower().endswith('.xml'):
                     continue
+                # Sibling embedded-texture manifests share this folder now. They are not drawables,
+                # and counting them inflated "drawables scanned" to 12 for 6 files.
+                if fn.lower().endswith('.ytd.xml'):
+                    continue
                 try:
                     with open(os.path.join(d, fn), encoding='utf-8', errors='replace') as fh:
                         txt = fh.read()
@@ -863,7 +876,8 @@ def cmd_textures(a):
     needed = set()
     manifests = 0
     for root in ref_roots:
-        d = os.path.join(root, 'ytd')
+      for sub in TXD_BEARING_DIRS:
+        d = os.path.join(root, sub)
         if not os.path.isdir(d):
             continue
         for fn in os.listdir(d):
@@ -902,7 +916,8 @@ def cmd_textures(a):
             seen_ids.add(key)
         return st.st_size
     for root in prune_roots:
-        d = os.path.join(root, 'ytd')
+      for sub in TXD_BEARING_DIRS:
+        d = os.path.join(root, sub)
         if not os.path.isdir(d):
             continue
         for entry in os.scandir(d):
