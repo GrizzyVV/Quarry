@@ -530,7 +530,7 @@ def to_interchange_xml(name, blob, textures='both'):
     return None
 
 
-def file_into(out_root, slot, name, blob, stats=None):
+def file_into(out_root, slot, name, blob, stats=None, skip_existing=False):
     """File one blob by type into a precedence slot.
 
     Filing is FLAT by basename inside <slot>/<ext>/, which means two same-named files from
@@ -545,6 +545,17 @@ def file_into(out_root, slot, name, blob, stats=None):
     os.makedirs(d, exist_ok=True)
     target = os.path.join(d, name)
     if os.path.exists(target):
+        # ⭐ RESUME: with skip_existing, an identical target name is treated as ALREADY DONE rather
+        # than as a collision. Added 2026-07-30 after a whole-game extract was lost twice - once to a
+        # double-writer, once because it had to be restarted from zero - and each restart is hours.
+        # ⛔ OPT-IN ONLY, and never the default: the collision path exists to protect
+        # build-accuracy (two same-named files in ONE slot are genuinely different assets and the
+        # loser must be kept as ~N). Silently skipping them would quietly drop real data, so resume
+        # is something the operator asks for when continuing a known-interrupted run.
+        if skip_existing:
+            if stats is not None:
+                stats['resumed'] = stats.get('resumed', 0) + 1
+            return None
         if stats is not None:
             stats['collisions'] = stats.get('collisions', 0) + 1
         stem, ext = split_type_ext(name)
@@ -1286,7 +1297,11 @@ def cmd_extract(a):
                                                  getattr(a, 'textures', 'both'))
                         if conv is not None:
                             xml_name, xml_bytes, extras = conv
-                            written = file_into(a.out, slot, xml_name, xml_bytes, stats)
+                            written = file_into(a.out, slot, xml_name, xml_bytes, stats,
+                                                getattr(a, 'resume', False))
+                            if written is None:
+                                n += 1     # already present from an earlier interrupted run
+                                continue
                             # The pixel folder must follow the XML that was ACTUALLY written: on
                             # a basename collision the XML becomes foo~1.ytd.xml, and a sidecar
                             # folder still called `foo` would hand one dictionary's XML another
@@ -1313,7 +1328,7 @@ def cmd_extract(a):
                         stats['xml_failed'] = stats.get('xml_failed', 0) + 1
                         stats.setdefault('xml_errors', []).append(f'{name}: {type(ex).__name__}: {ex}')
                         # fall through and keep the binary rather than losing the asset
-                file_into(a.out, slot, name, blob, stats)
+                file_into(a.out, slot, name, blob, stats, getattr(a, 'resume', False))
                 n += 1
             except Exception as ex:
                 stats['failed'] = stats.get('failed', 0) + 1
@@ -1342,6 +1357,8 @@ def cmd_extract(a):
                  else ''))
         for line in stats.get('xml_errors', [])[:8]:
             print(f'    {line}')
+    if stats.get('resumed'):
+        print(f'resumed (already present, skipped): {stats["resumed"]}')
     print(f'name collisions (kept first, suffixed the rest): {stats.get("collisions", 0)}')
     print(f'files that failed to extract: {stats.get("failed", 0)}')
     for line in stats.get('failures', [])[:15]:
@@ -1381,6 +1398,12 @@ def main():
                             'for the whole game, and they are all you need to answer WHICH '
                             'dictionaries matter. Pair with `quarry textures` to decode or prune '
                             'only what the drawables actually reference.')
+        p.add_argument('--resume', action='store_true',
+                       help='continue an INTERRUPTED run: treat an already-present output file as '
+                            'done instead of as a name collision. ⛔ Opt-in only - the collision '
+                            'path protects build-accuracy (two same-named files in one slot are '
+                            'different assets), so this is for resuming a run you know was cut '
+                            'short, never for a fresh one')
         p.add_argument('--max-depth', type=int, default=2, dest='max_depth',
                        help='how deep to descend into nested .rpf (default 2; the game keeps '
                             'nearly all map assets one level down)')
