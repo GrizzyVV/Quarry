@@ -485,7 +485,13 @@ def to_interchange_xml(name, blob, textures='both'):
             # nothing looks for: the embedded textures would vanish silently. The ".embedded" infix
             # cannot collide with a real dictionary name and stays discoverable - for X.ydr.xml, look
             # for X.embedded.ytd.xml with its pixels in X.embedded/.
-            emb_stem = stem + '.embedded'
+            # ⛔ "__embedded", NOT ".embedded". The stem becomes a UE PACKAGE PATH segment
+            # (/Game/RUDE/Textures/<stem>/...), and a DOT IS ILLEGAL in a long package name - UE
+            # uses it to separate package from object. ImportYtd's IsValidLongPackageName check
+            # therefore rejected every texture and `continue`d SILENTLY: 1,943 manifests imported
+            # with 0 textures and no error (2026-07-30). A double underscore is equally
+            # collision-proof against a real dictionary name and is a legal path segment.
+            emb_stem = stem + '__embedded'
             sidecars.append((emb_stem + '.ytd.xml', ytd2xml.to_xml(emb).encode('utf-8')))
             if textures != 'none':
                 sidecars.extend(ytd2xml.sidecars(emb, emb_stem, want_png=(textures != 'dds'),
