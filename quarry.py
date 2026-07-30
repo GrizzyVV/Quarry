@@ -503,6 +503,19 @@ def to_interchange_xml(name, blob, textures='both'):
         sidecars = () if textures == 'none' else ytd2xml.sidecars(
             texs, stem, want_png=(textures != 'dds'), want_dds=(textures != 'png'))
         return (stem + '.ytd.xml', ytd2xml.to_xml(texs).encode('utf-8'), sidecars)
+    if t == 'ybn':
+        # ⛔ THIS BRANCH DID NOT EXIST until 2026-07-29, and its absence is the whole lesson.
+        # ydr2xml.boundsfile_lines() has been BUILT AND ORACLE-VALIDATED the entire time - 183/183
+        # name-matched reference exports, zero differences - but nothing ever CALLED it, so
+        # `extract --types ybn --xml` wrote raw binary and the capability was unreachable. It was
+        # written as the oracle for the embedded-<Bounds> derivation and then left dangling.
+        # A capability that exists but is not wired is indistinguishable from one that was never
+        # built - which is exactly how it came to be described as "the ybn converter is unbuilt".
+        # Check the WIRING, never the presence of a file.
+        import ydr2xml
+        res = ydr2xml.Res.from_bytes(blob)
+        body = '\n'.join(ydr2xml.boundsfile_lines(res, stem)) + '\n'
+        return stem + '.ybn.xml', body.encode('utf-8'), ()
     if t == 'ydd':
         import ydd2xml
         res = ydd2xml.Res.from_bytes(blob)
