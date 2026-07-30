@@ -1279,8 +1279,18 @@ def cmd_extract(a):
                             # folder still called `foo` would hand one dictionary's XML another
                             # dictionary's textures - silently, since both are valid files.
                             folder = split_type_ext(written)[0]
+                            orig = split_type_ext(xml_name)[0]
                             for rel, payload in extras:
-                                rel = folder + rel[rel.index('/'):]
+                                # ⛔ RE-STEM BY PREFIX, not by slash position. This used to do
+                                # rel[rel.index('/'):], which assumed every sidecar lives INSIDE a
+                                # "<stem>/" folder. The embedded-texture manifest is a top-level
+                                # sidecar ("X.embedded.ytd.xml", no slash), so index() raised
+                                # ValueError, the outer handler swallowed it as xml_failed, and the
+                                # code fell through to writing the raw BINARY - 3,688 of them before
+                                # this was caught. Prefix-swapping handles both shapes and leaves
+                                # anything unrecognised untouched instead of crashing.
+                                if orig and rel.startswith(orig):
+                                    rel = folder + rel[len(orig):]
                                 sidecar_into(a.out, slot, type_of(name), rel, payload)
                                 stats['xml_sidecars'] = stats.get('xml_sidecars', 0) + 1
                             stats['xml_ok'] = stats.get('xml_ok', 0) + 1
@@ -1296,7 +1306,17 @@ def cmd_extract(a):
                 stats['failed'] = stats.get('failed', 0) + 1
                 stats.setdefault('failures', []).append(f'{name}: {type(ex).__name__}')
         total += n
-        print(f'  {os.path.basename(path):<28} -> {slot:<28} {n} files')
+        # ⛔ REPORT CONVERSION FAILURES PER ARCHIVE, not only in the final summary. They WERE
+        # counted and printed - but only after the whole run, which on a whole-game extract is
+        # hours. A systemic converter bug (every drawable with an embedded dictionary failing and
+        # silently falling back to raw binary) therefore looked exactly like a healthy run for the
+        # entire time it was destroying the output. A defect has to be visible while there is still
+        # a decision to make about it.
+        failed_now = stats.get('xml_failed', 0)
+        delta = failed_now - locals().get('_prev_failed', 0)
+        note = f'   ⚠ {delta} conversion FAILED (kept binary)' if delta else ''
+        _prev_failed = failed_now
+        print(f'  {os.path.basename(path):<28} -> {slot:<28} {n} files{note}')
 
     print(f'\nextracted {total} files; {skipped} archive(s) skipped')
     print(f'nested archives opened: {stats.get("nested_opened", 0)}'
