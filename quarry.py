@@ -468,11 +468,20 @@ def to_interchange_xml(name, blob, textures='both'):
         # The XML lists them; these sidecars are the pixels behind those names, written to the same
         # "<stem>/" folder convention ImportYtd already loads from, so the pair is self-describing.
         emb = ydr2xml.embedded_textures(res)
-        sidecars = ()
-        if emb and textures != 'none':
-            sidecars = ytd2xml.sidecars(emb, stem, want_png=(textures != 'dds'),
-                                        want_dds=(textures != 'png'))
-        return stem + '.ydr.xml', ydr2xml.to_xml(res, inner).encode('utf-8'), sidecars
+        sidecars = []
+        if emb:
+            # ⭐ THE EMBEDDED DICTIONARY IS ALSO WRITTEN AS A SIBLING "<stem>.ytd.xml".
+            # Deliberate design choice: it makes the drawable's own textures a NORMAL texture
+            # dictionary on disk, so the existing, in-engine-proven ImportYtd consumes them with no
+            # new import code - the alternative was duplicating ~80 lines of texture-import C++ that
+            # would then be a second thing to keep correct. The contract is discoverable by name:
+            # for any X.ydr.xml, an X.ytd.xml beside it holds X's embedded textures, with pixels in
+            # the X/ folder - the same pairing ImportYtd already expects.
+            sidecars.append((stem + '.ytd.xml', ytd2xml.to_xml(emb).encode('utf-8')))
+            if textures != 'none':
+                sidecars.extend(ytd2xml.sidecars(emb, stem, want_png=(textures != 'dds'),
+                                                 want_dds=(textures != 'png')))
+        return stem + '.ydr.xml', ydr2xml.to_xml(res, inner).encode('utf-8'), tuple(sidecars)
     if t == 'ytd':
         import ytd2xml
         res = ytd2xml.Res.from_bytes(blob)
