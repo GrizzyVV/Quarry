@@ -477,9 +477,18 @@ def to_interchange_xml(name, blob, textures='both'):
             # would then be a second thing to keep correct. The contract is discoverable by name:
             # for any X.ydr.xml, an X.ytd.xml beside it holds X's embedded textures, with pixels in
             # the X/ folder - the same pairing ImportYtd already expects.
-            sidecars.append((stem + '.ytd.xml', ytd2xml.to_xml(emb).encode('utf-8')))
+            # ⛔ NAME IT ".embedded.ytd.xml", NOT "<stem>.ytd.xml". file_into files by EXTENSION,
+            # so a sibling called X.ytd.xml lands in <slot>/ytd/ - the same folder as the STANDALONE
+            # X.ytd, and a drawable and a texture dictionary sharing a name is not rare, it is the
+            # normal case (an archetype's textureDictionary is usually named after the drawable).
+            # The collision path then keeps the first and renames the loser to X~1.ytd.xml, which
+            # nothing looks for: the embedded textures would vanish silently. The ".embedded" infix
+            # cannot collide with a real dictionary name and stays discoverable - for X.ydr.xml, look
+            # for X.embedded.ytd.xml with its pixels in X.embedded/.
+            emb_stem = stem + '.embedded'
+            sidecars.append((emb_stem + '.ytd.xml', ytd2xml.to_xml(emb).encode('utf-8')))
             if textures != 'none':
-                sidecars.extend(ytd2xml.sidecars(emb, stem, want_png=(textures != 'dds'),
+                sidecars.extend(ytd2xml.sidecars(emb, emb_stem, want_png=(textures != 'dds'),
                                                  want_dds=(textures != 'png')))
         return stem + '.ydr.xml', ydr2xml.to_xml(res, inner).encode('utf-8'), tuple(sidecars)
     if t == 'ytd':
