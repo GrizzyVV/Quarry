@@ -301,9 +301,29 @@ _VALUE_PARAMS = None
 
 
 def value_param_name(hash32):
+    """Resolve a shader value-parameter hash to its name.
+
+    ⭐ THE NAME TABLE IS DERIVED FROM THE GAME'S OWN COMPILED SHADERS (2026-07-30, Matt's lead:
+    "I saw something that defined these values"). Every identifier in the 321 `.fxc` files under
+    common.rpf is hashed once into `shader_param_names.json` - 5,268 of them - so a parameter is
+    named because the shader that consumes it says so, not because someone guessed a spelling.
+    That closed the last 7 unknowns instantly (envEffTexTileUV, specular2Color_DirLerp,
+    matWheelWorldViewProj, UseTreeNormals, fillColor, furShadow03/47).
+    VALUE_PARAM_NAMES remains as the hand-verified core and is consulted FIRST, so a name we
+    measured ourselves always wins over a same-hash identifier picked out of a shader blob.
+    """
     global _VALUE_PARAMS
     if _VALUE_PARAMS is None:
         _VALUE_PARAMS = {_joaat(n.lower()): n for n in VALUE_PARAM_NAMES}
+        try:
+            import json as _json
+            _p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "shader_param_names.json")
+            with open(_p, encoding="utf-8") as _f:
+                for _h, _n in _json.load(_f).items():
+                    _VALUE_PARAMS.setdefault(int(_h, 16), _n)
+        except Exception:
+            pass          # the hand-verified core still works without the generated table
     return _VALUE_PARAMS.get(hash32) or "hash_%08X" % hash32
 
 
