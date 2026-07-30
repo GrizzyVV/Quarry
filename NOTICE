@@ -1,0 +1,77 @@
+QUARRY
+Copyright (c) 2026 Grizzy (GrizzyVV)
+
+This product includes software derived from third-party sources, acknowledged below.
+`keyderive.py` states this attribution as a requirement; this file discharges it.
+
+
+-------------------------------------------------------------------------------
+Neodymium146/gta-toolkit
+-------------------------------------------------------------------------------
+
+The NG key-derivation ALGORITHM in `keyderive.py` and `ngcrypto.py` is derived from
+Neodymium146/gta-toolkit, specifically GTA5Encryption.cs, GTA5Constants.cs and
+HashSearch.cs.
+
+That repository has no root LICENSE file; the per-file MIT header is the grant, and
+is reproduced verbatim here as required:
+
+    The MIT License (MIT)
+
+    Copyright (c) 2015 Neodymium
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+The SHA-1 constants carried in `keyderive.py` are one-way digests, not keys.
+gta-toolkit's own comment on them: "This file contains only SHA1 hashes of all
+interesting values. There is NO key."
+
+
+-------------------------------------------------------------------------------
+What is NOT derived from a third party
+-------------------------------------------------------------------------------
+
+The format work in this repository - the RSC7 container, the ydr / ydd / yft / ytd /
+ytyp / ymap / META readers and writers, the shader-parameter layout, the archive
+walker and the precedence model - was reverse engineered from files produced by a
+genuine game installation and from publicly documented RAGE format knowledge.
+
+QUARRY is not affiliated with, derived from, or endorsed by the reference exporter. Where this
+codebase describes an XML shape as interoperable with other community tooling, that
+is a statement about file compatibility for users, not a statement of lineage.
+
+
+-------------------------------------------------------------------------------
+Rockstar Games material
+-------------------------------------------------------------------------------
+
+QUARRY contains no Rockstar Games assets and no Rockstar Games code.
+
+`resources/magic.dat` is Rockstar-derived key material. It is NOT in this
+repository and is not distributed through it. It is not licensed to us and we make
+no claim to license it onward. It is inert without a 32-byte key that exists only
+inside a genuine installed copy of the game.
+
+QUARRY reads only the files on the operating user's own machine, from that user's
+own game installation. It ships no game data, and it is not a means of obtaining
+the game or any part of it.
+
+Grand Theft Auto and Rockstar Games are trademarks of their respective owners.
+QUARRY is an unofficial, non-commercial tool with no affiliation to Rockstar Games
+or Take-Two Interactive.

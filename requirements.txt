@@ -1,0 +1,13 @@
+# QUARRY dependencies.  Run `python quarry.py doctor` after installing - it reports exactly
+# what is present and what each gap costs you.
+
+# REQUIRED. The NG block cipher is 17 rounds over every byte of a multi-GB archive; the plain
+# scalar loop hangs on real data, so the vectorised path is not optional in Python.
+numpy>=1.21
+
+# REQUIRED FOR TEXTURES, optional otherwise. RUDE's ImportYtd loads <PixelFolder>/<TexName>.png,
+# so without these the ytd lane writes a folder the plugin cannot read. QUARRY still emits the
+# lossless .dds and says so on startup rather than producing something silently unusable.
+# Retired once RUDE decodes BC natively.
+texture2ddecoder>=1.0.4
+Pillow>=9.0

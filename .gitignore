@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+*.orig
+
+# ⛔ ROCKSTAR-DERIVED KEY MATERIAL — DELIBERATELY NOT VERSIONED.
+# The standing non-negotiable is that we never ship a byte of Rockstar data or key material. Git
+# history is a ONE-WAY DOOR: once this blob is committed it survives every later `git remote add`
+# and push, and removing it from history is a rewrite. The file stays on disk and still ships by
+# whatever distribution route is chosen (Matt's option A, FOUNDATION "DECIDED") - it simply is not
+# in version control. Reversible: delete this line if versioning it is the deliberate call.
+resources/magic.dat
+
+# ⛔ NOT PUBLISHED. Files stay on disk (nothing is deleted) - they are simply not in the public
+# repo, because each is a distinct exposure:
+#  * unpack_magic.ps1.REMOVED_CW_DEPENDENCY - reads a resource out of a local third-party tool DLL and
+#    hardcodes the author's own desktop path. Publishing it would contradict the ZERO-third-party-tool-
+#    affiliation rule in the most literal way possible, and leak a personal path.
+#  * findkeys / recover_keys / try_variants / derive_entry / probe_* - key-RECOVERY research.
+#    Publishing the methodology is a larger exposure than shipping the tool, and serves no user.
+#  * yft2xml_pre_vehicle.py - a superseded snapshot; noise in a public tree.
+# Remove this block only as a deliberate decision, not to make a push go through.
+_archive/

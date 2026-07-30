@@ -1,0 +1,419 @@
+{
+ "enums": {
+  "26A60207": {
+   "files": 491,
+   "key": "8326CB4F",
+   "name": "hash_26A60207"
+  },
+  "29BE262A": {
+   "files": 44,
+   "key": "A7C353FF",
+   "name": "hash_29BE262A"
+  },
+  "3817D55E": {
+   "files": 29,
+   "key": "4254C35A",
+   "name": "hash_3817D55E"
+  },
+  "4B5ACC2F": {
+   "files": 491,
+   "key": "6EA51086",
+   "name": "hash_4B5ACC2F"
+  },
+  "4D24FF09": {
+   "files": 20,
+   "key": "D17C15AE",
+   "name": "hash_4D24FF09"
+  },
+  "732734E1": {
+   "files": 3,
+   "key": "D2FA071E",
+   "name": "hash_732734E1"
+  },
+  "76BAF7C7": {
+   "files": 105,
+   "key": "6F39632C",
+   "name": "hash_76BAF7C7"
+  },
+  "87184673": {
+   "files": 3,
+   "key": "FF8DA2D9",
+   "name": "hash_87184673"
+  },
+  "D500C082": {
+   "files": 39,
+   "key": "2809ED79",
+   "name": "hash_D500C082"
+  },
+  "D7294A3A": {
+   "files": 29,
+   "key": "C63FE397",
+   "name": "hash_D7294A3A"
+  },
+  "ECBC740E": {
+   "files": 29,
+   "key": "B3C678E6",
+   "name": "hash_ECBC740E"
+  }
+ },
+ "measured_over_files": 700,
+ "structs": {
+  "06383F69": {
+   "class": "00000400",
+   "files": 2,
+   "key": "A94C8EC0",
+   "length": 80,
+   "name": "CExtensionDefExplosionEffect"
+  },
+  "09CC28BE": {
+   "class": "00000400",
+   "files": 55,
+   "key": "803E74B0",
+   "length": 160,
+   "name": "CMloInstanceDef"
+  },
+  "0B1811F1": {
+   "class": "00000400",
+   "files": 18,
+   "key": "E796EE15",
+   "length": 112,
+   "name": "CMloRoomDef"
+  },
+  "10506455": {
+   "class": "00000400",
+   "files": 18,
+   "key": "37E3A0F2",
+   "length": 240,
+   "name": "CMloArchetypeDef"
+  },
+  "15DEDA27": {
+   "class": "00000400",
+   "files": 9,
+   "key": "A10BAF1C",
+   "length": 48,
+   "name": "CExtensionDefAudioCollisionSettings"
+  },
+  "21EDBC73": {
+   "class": "00000400",
+   "files": 2,
+   "key": "ECB8DFE5",
+   "length": 96,
+   "name": "CExtensionDefWindDisturbance"
+  },
+  "2604683B": {
+   "class": "00000400",
+   "files": 1,
+   "key": "00F311EF",
+   "length": 64,
+   "name": "CExtensionDefAudioEmitter"
+  },
+  "27922C43": {
+   "class": "00000400",
+   "files": 61,
+   "key": "913575D9",
+   "length": 48,
+   "name": "CExtensionDefLightEffect"
+  },
+  "2CB3D4E3": {
+   "class": "00000400",
+   "files": 1,
+   "key": "8E0A4DB8",
+   "length": 32,
+   "name": "CExtensionDefBuoyancy"
+  },
+  "2CB8CAB0": {
+   "class": "00000400",
+   "files": 28,
+   "key": "D7EAAA23",
+   "length": 80,
+   "name": "CScenarioPointCluster"
+  },
+  "301D99A8": {
+   "class": "00000400",
+   "files": 8,
+   "key": "32003632",
+   "length": 48,
+   "name": "CMloTimeCycleModifier"
+  },
+  "33EF3515": {
+   "class": "00000300",
+   "files": 29,
+   "key": "A406D1DE",
+   "length": 40,
+   "name": "CScenarioChain"
+  },
+  "3A26E5E1": {
+   "class": "00000400",
+   "files": 49,
+   "key": "1BCFB221",
+   "length": 96,
+   "name": "CExtensionDefParticleEffect"
+  },
+  "3A282E1D": {
+   "class": "00000100",
+   "files": 11,
+   "key": "6D2E1476",
+   "length": 16,
+   "name": "hash_3A282E1D"
+  },
+  "3F4F4469": {
+   "class": "00000400",
+   "files": 28,
+   "key": "46DF44D2",
+   "length": 16,
+   "name": "hash_3F4F4469"
+  },
+  "46AD6DFF": {
+   "class": "00000400",
+   "files": 5,
+   "key": "274FC43C",
+   "length": 304,
+   "name": "hash_46AD6DFF"
+  },
+  "58FCEA50": {
+   "class": "00000300",
+   "files": 30,
+   "key": "D0B2638D",
+   "length": 376,
+   "name": "CScenarioPointRegion"
+  },
+  "674F9350": {
+   "class": "00000400",
+   "files": 33,
+   "key": "9FF1C069",
+   "length": 64,
+   "name": "hash_674F9350"
+  },
+  "6EE83BDF": {
+   "class": "00000400",
+   "files": 45,
+   "key": "8BC97EF5",
+   "length": 80,
+   "name": "hash_6EE83BDF"
+  },
+  "752DC011": {
+   "class": "00000400",
+   "files": 5,
+   "key": "9F3D66E9",
+   "length": 48,
+   "name": "CExtensionDefDoor"
+  },
+  "7609AB1A": {
+   "class": "00000300",
+   "files": 5,
+   "key": "F501310B",
+   "length": 216,
+   "name": "hash_7609AB1A"
+  },
+  "76B0C56C": {
+   "class": "00000400",
+   "files": 50,
+   "key": "963D9B86",
+   "length": 160,
+   "name": "CTimeArchetypeDef"
+  },
+  "793441F4": {
+   "class": "00000300",
+   "files": 565,
+   "key": "A823A583",
+   "length": 48,
+   "name": "hash_793441F4"
+  },
+  "7C475B5D": {
+   "class": "00000400",
+   "files": 46,
+   "key": "3822DA24",
+   "length": 96,
+   "name": "hash_7C475B5D"
+  },
+  "821D5421": {
+   "class": "00000400",
+   "files": 20,
+   "key": "75E91925",
+   "length": 96,
+   "name": "CExtensionDefLadder"
+  },
+  "82D6FC83": {
+   "class": "00000400",
+   "files": 105,
+   "key": "8FBADAA4",
+   "length": 144,
+   "name": "CBaseArchetypeDef"
+  },
+  "87AC4538": {
+   "class": "00000300",
+   "files": 565,
+   "key": "8A97926C",
+   "length": 136,
+   "name": "hash_87AC4538"
+  },
+  "8DEA3D6B": {
+   "class": "00000300",
+   "files": 30,
+   "key": "94651E71",
+   "length": 48,
+   "name": "CScenarioPointContainer"
+  },
+  "995072CA": {
+   "class": "00000300",
+   "files": 17,
+   "key": "422CA2C9",
+   "length": 64,
+   "name": "CMloPortalDef"
+  },
+  "9AEBE32F": {
+   "class": "00000300",
+   "files": 30,
+   "key": "35531040",
+   "length": 64,
+   "name": "rage__spdGrid2D"
+  },
+  "A1F006A8": {
+   "class": "00000400",
+   "files": 9,
+   "key": "981A8921",
+   "length": 64,
+   "name": "CExtensionDefSpawnPointOverride"
+  },
+  "A2109A3D": {
+   "class": "00000400",
+   "files": 3,
+   "key": "969640D6",
+   "length": 176,
+   "name": "CExtensionDefLightShaft"
+  },
+  "A36C4EAD": {
+   "class": "00000400",
+   "files": 14,
+   "key": "45E772CB",
+   "length": 64,
+   "name": "hash_A36C4EAD"
+  },
+  "B3FBC5EB": {
+   "class": "00000300",
+   "files": 30,
+   "key": "9F1B39B3",
+   "length": 96,
+   "name": "CScenarioPointLookUps"
+  },
+  "B7206E4A": {
+   "class": "00000300",
+   "files": 565,
+   "key": "782698F9",
+   "length": 72,
+   "name": "hash_B7206E4A"
+  },
+  "C4B2F638": {
+   "class": "00000400",
+   "files": 30,
+   "key": "B76C7E31",
+   "length": 96,
+   "name": "CExtensionDefSpawnPoint"
+  },
+  "C71EC7F7": {
+   "class": "00000400",
+   "files": 29,
+   "key": "6BFDA2E8",
+   "length": 32,
+   "name": "CScenarioChainingNode"
+  },
+  "CC76A96C": {
+   "class": "00000400",
+   "files": 5,
+   "key": "66D0DC7E",
+   "length": 160,
+   "name": "hash_CC76A96C"
+  },
+  "CE501483": {
+   "class": "00000400",
+   "files": 436,
+   "key": "6CD37D5A",
+   "length": 128,
+   "name": "CEntityDef"
+  },
+  "D3593FA6": {
+   "class": "00000400",
+   "files": 565,
+   "key": "CD85DB27",
+   "length": 512,
+   "name": "CMapData"
+  },
+  "D6A799F9": {
+   "class": "00000300",
+   "files": 6,
+   "key": "F928F783",
+   "length": 48,
+   "name": "CMloEntitySet"
+  },
+  "D98BB561": {
+   "class": "00000300",
+   "files": 105,
+   "key": "9B8046D4",
+   "length": 80,
+   "name": "CMapTypes"
+  },
+  "E2CBCFD4": {
+   "class": "00000200",
+   "files": 29,
+   "key": "A3FEFCD0",
+   "length": 12,
+   "name": "hash_E2CBCFD4"
+  },
+  "ED86F522": {
+   "class": "00000100",
+   "files": 46,
+   "key": "A356DAFD",
+   "length": 16,
+   "name": "hash_ED86F522"
+  },
+  "EFD56957": {
+   "class": "00000300",
+   "files": 30,
+   "key": "0542AD7F",
+   "length": 88,
+   "name": "CScenarioChainingGraph"
+  },
+  "F14A15BE": {
+   "class": "00000300",
+   "files": 565,
+   "key": "6D7B0A56",
+   "length": 48,
+   "name": "hash_F14A15BE"
+  },
+  "F377E8C8": {
+   "class": "00000400",
+   "files": 46,
+   "key": "4507CA0B",
+   "length": 32,
+   "name": "hash_F377E8C8"
+  },
+  "F48F9112": {
+   "class": "00000400",
+   "files": 30,
+   "key": "17FCC7A6",
+   "length": 64,
+   "name": "CScenarioPoint"
+  },
+  "F54B227B": {
+   "class": "00000300",
+   "files": 61,
+   "key": "8CDC7D6C",
+   "length": 160,
+   "name": "CLightAttrDef"
+  },
+  "FB2879A8": {
+   "class": "00000400",
+   "files": 26,
+   "key": "4BC4FAEC",
+   "length": 80,
+   "name": "CScenarioEntityOverride"
+  },
+  "FDA46598": {
+   "class": "00000100",
+   "files": 29,
+   "key": "7781A854",
+   "length": 8,
+   "name": "CScenarioChainingEdge"
+  }
+ }
+}
