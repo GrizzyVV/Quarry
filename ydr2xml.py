@@ -323,6 +323,41 @@ def sampler_name(hash32):
     return _SAMPLERS.get(hash32) or "hash_%08X" % hash32
 
 
+def embedded_textures(res, base=0):
+    """The drawable's OWN texture dictionary -> ytd2xml texture dicts (name/format/pixels), or [].
+
+    ⛔ WHY THIS EXISTS (2026-07-29). A gtaDrawable can carry its textures INTERNALLY, at
+    ShaderGroup+0x08, instead of referencing a standalone .ytd. Nothing here read it, so those
+    textures did not exist as far as RUDE was concerned. Measured over 3,479 real binaries:
+    **1,180 (33.9%) carry a non-empty embedded dictionary** holding 4,845 textures, and **18.2% of
+    all texture requests are satisfiable ONLY from there**. The visible symptoms were
+    TintPaletteSampler at 100% unresolved (1,736 references, 0 present - palettes are almost always
+    embedded) and drawables that render completely untextured because they carry every texture they
+    use. PROOF: ce_xr_ctr2.ydr's embedded dictionary holds 28 textures and satisfies 28 of 28 of
+    that drawable's own requests, including ce_xr_ctr2_lod_pal.
+
+    The dictionary is the same pgDictionary<grcTexture> a .ytd's root is, so ytd2xml.read_textures
+    reads it verbatim once told where it lives - no second implementation to drift.
+    """
+    sg = res.ptr(base + 0x10)
+    buf, o = res.deref(sg, 0x40)
+    if buf is None:
+        return []
+    tp = res.u32(o + 0x08)
+    if not tp:
+        return []
+    tbuf, to = res.deref(tp, 0x40)
+    if tbuf is None:
+        return []
+    try:
+        import ytd2xml
+        return ytd2xml.read_textures(res, base=to)
+    except Exception:
+        # A malformed embedded dictionary must not lose the whole drawable - the geometry and
+        # shader data are still good. Report nothing rather than raising.
+        return []
+
+
 def read_shaders(res, base=0):
     """base = system offset of the gtaDrawable (0 for a standalone ydr; a dictionary entry's
     offset for ydd/yft reuse). Only the FIXED header offsets rebase - tagged pointers are
@@ -768,6 +803,25 @@ def drawable_lines(res, name, base=0):
     L.append(' <BoundingBoxMin x="%s" y="%s" z="%s" />' % tuple(ff(v) for v in b["bb_min"]))
     L.append(' <BoundingBoxMax x="%s" y="%s" z="%s" />' % tuple(ff(v) for v in b["bb_max"]))
     L.append(" <ShaderGroup>")
+    emb = embedded_textures(res, base)
+    if emb:
+        # The drawable's own textures, emitted so a consumer can see and import them. Pixel
+        # sidecars are written alongside by the caller (quarry.to_interchange_xml).
+        L.append("  <TextureDictionary>")
+        for t in emb:
+            L += ["   <Item>",
+                  "    <Name>%s</Name>" % esc(t["name"]),
+                  '    <Unk32 value="0" />',
+                  "    <Usage>%s</Usage>" % t["usage"],
+                  "    <UsageFlags>0</UsageFlags>",
+                  '    <ExtraFlags value="0" />',
+                  '    <Width value="%d" />' % t["width"],
+                  '    <Height value="%d" />' % t["height"],
+                  '    <MipLevels value="%d" />' % t["mips"],
+                  "    <Format>%s</Format>" % t["xml_fmt"],
+                  "    <FileName>%s.dds</FileName>" % esc(t["name"]),
+                  "   </Item>"]
+        L.append("  </TextureDictionary>")
     L.append("  <Shaders>")
     if not shaders:
         shaders = [("default", 0, [], [])]

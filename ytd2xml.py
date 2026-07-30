@@ -135,12 +135,19 @@ def dds_header(w, h, mips, fmt, blk, bpp):
 
 
 # ---------------------------------------------------------------- dictionary
-def read_textures(res):
-    """pgDictionary<grcTexture> at system offset 0 -> one dict per texture, pixels sliced out."""
-    count = res.u32(0x28) & 0xFFFF
+def read_textures(res, base=0):
+    """pgDictionary<grcTexture> -> one dict per texture, pixels sliced out.
+
+    base = the dictionary's SYSTEM OFFSET. 0 for a standalone .ytd, where the dictionary IS the
+    resource root. ⭐ A drawable also carries its own dictionary at ShaderGroup+0x08, and a third of
+    them use it (measured 2026-07-29: 1,180/3,479, holding 4,845 textures that exist nowhere else).
+    Passing that offset here reuses this reader - the pixel slicing, mip-truncation tolerance and
+    format handling are all identical, because it is the same structure in a different place.
+    """
+    count = res.u32(base + 0x28) & 0xFFFF
     if not count:
         return []
-    buf, ptr_arr = res.deref(res.ptr(0x30), 8 * count)
+    buf, ptr_arr = res.deref(res.ptr(base + 0x30), 8 * count)
     if buf is None:
         raise ValueError("texture pointer array is out of bounds")
 

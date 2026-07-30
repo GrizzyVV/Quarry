@@ -460,10 +460,19 @@ def to_interchange_xml(name, blob, textures='both'):
     t = type_of(name)
     stem = os.path.splitext(name)[0]
     if t == 'ydr':
-        import ydr2xml
+        import ydr2xml, ytd2xml
         res = ydr2xml.Res.from_bytes(blob)
         inner = res.cstr(res.ptr(0xA8)) or (stem + '.#dr')
-        return stem + '.ydr.xml', ydr2xml.to_xml(res, inner).encode('utf-8'), []
+        # ⭐ A drawable can carry its OWN textures (ShaderGroup+0x08). 33.9% of them do, and 18.2%
+        # of all texture requests are satisfiable only from there - see ydr2xml.embedded_textures.
+        # The XML lists them; these sidecars are the pixels behind those names, written to the same
+        # "<stem>/" folder convention ImportYtd already loads from, so the pair is self-describing.
+        emb = ydr2xml.embedded_textures(res)
+        sidecars = ()
+        if emb and textures != 'none':
+            sidecars = ytd2xml.sidecars(emb, stem, want_png=(textures != 'dds'),
+                                        want_dds=(textures != 'png'))
+        return stem + '.ydr.xml', ydr2xml.to_xml(res, inner).encode('utf-8'), sidecars
     if t == 'ytd':
         import ytd2xml
         res = ytd2xml.Res.from_bytes(blob)
