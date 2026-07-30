@@ -290,6 +290,11 @@ VALUE_PARAM_NAMES = [
     "heightScale0", "heightScale1", "heightScale2", "heightScale3",
     "heightBias0", "heightBias1", "heightBias2", "heightBias3",
     "parallaxSelfShadowAmount",
+    # Identified 2026-07-30 by the same hash-match-against-real-files method. specularFresnel alone
+    # accounts for 9,094 of the previously-unnamed bindings.
+    "specularFresnel", "shadowFalloff", "alphaTest", "SelfShadowing", "WindGlobalParams",
+    "DirtColor", "dirtLevelMod", "matDiffuseColor", "matWheelWorld",
+    "TyreDeformParams2", "tyreDeformParams",
 ]
 
 _VALUE_PARAMS = None
