@@ -448,7 +448,7 @@ def sidecar_into(out_root, slot, type_dir, relpath, blob):
         f.write(blob)
 
 
-def to_interchange_xml(name, blob, textures='both'):
+def to_interchange_xml(name, blob, textures='both', stats=None):
     """One asset -> (xml filename, xml bytes, [(sidecar relpath, bytes)]), or None when no
     converter exists for that type yet.
 
@@ -456,6 +456,10 @@ def to_interchange_xml(name, blob, textures='both'):
     resource becomes something the plugin can consume. Registering a type here is all that is
     needed to connect it end-to-end - see quarry/README.md "Export EVERYTHING through the XML
     pipeline".
+
+    `stats` (optional dict) receives counters for anything this function declines to emit -
+    a downgrade with no counter is indistinguishable from full success, and that is how the
+    extras lane stayed invisible.
     """
     t = type_of(name)
     stem = os.path.splitext(name)[0]
@@ -526,13 +530,31 @@ def to_interchange_xml(name, blob, textures='both'):
         import ydd2xml
         res = ydd2xml.Res.from_bytes(blob)
         # names={}: the joaat reverse table is a meta-pass artifact and does not exist at extract
-        # time; hash_%08X entry names are the working contract (dictionary joins are hash-to-hash)
+        # time, so entry names are emitted hash_%08X here and RESOLVED LATER by `quarry meta`
+        # (the same second pass that names ytyp/ymap hashes). Dictionary joins are hash-to-hash,
+        # so nothing downstream depends on the resolution - it is for humans and by-name lookups.
         xml, _n = ydd2xml.to_xml(res, {})
         return stem + '.ydd.xml', xml.encode('utf-8'), []
     if t == 'yft':
+        # ⭐ EXTRAS ARE PIPELINE-WIRED (2026-07-30). yft2xml.convert() has emitted the skeleton,
+        # the physics group/child join and one importable <stem>/<group>.ydr.xml sidecar per
+        # geometry-bearing child since 07-28 - but this branch called the text-only to_xml()
+        # wrapper and hardcoded [] for the sidecars, so `extract` could not produce any of it.
+        # Same defect class as the ybn branch above: built, validated, unreachable.
         import yft2xml
         res = yft2xml.Res.from_bytes(blob)
-        return stem + '.yft.xml', yft2xml.to_xml(res, stem).encode('utf-8'), []
+        try:
+            xml, sidecars = yft2xml.convert(res, stem, extras=True)
+        except yft2xml.FragmentError as ex:
+            # ⛔ COUNTED downgrade, never a silent one: an extras refusal (a value the emitter
+            # has no measurement for) must not cost the map lane its visual drawable, but a
+            # fallback with no counter would make "extras always work" indistinguishable from
+            # "extras quietly failed everywhere".
+            if stats is not None:
+                stats['yft_extras_refused'] = stats.get('yft_extras_refused', 0) + 1
+                stats.setdefault('yft_extras_errors', []).append(f'{name}: {ex}')
+            xml, sidecars = yft2xml.convert(res, stem, extras=False)
+        return stem + '.yft.xml', xml.encode('utf-8'), sidecars
     return None
 
 
@@ -704,9 +726,11 @@ def cmd_doctor(a):
     except Exception as e:
         line('bad', 'ytd converter', f'{type(e).__name__}: {e}')
 
-    for mod, what in (('ydr2xml', 'ydr -> XML'), ('meta2xml', 'ytyp/ymap -> XML'),
+    for mod, what in (('ydr2xml', 'ydr -> XML (+ ybn, embedded textures)'),
+                      ('meta2xml', 'ytyp/ymap/ymt -> XML'),
                       ('ydd2xml', 'ydd -> XML (drawable dictionaries)'),
-                      ('yft2xml', 'yft -> XML (fragments, visual drawable)'),
+                      ('yft2xml', 'yft -> XML (fragments + extras sidecars)'),
+                      ('meta_write', 'META writer (XML value model -> binary; standalone)'),
                       ('ngcrypto', 'NG cipher'), ('keyderive', 'key derivation')):
         try:
             __import__(mod)
@@ -773,14 +797,15 @@ def cmd_doctor(a):
               'blocker means skipped archives, not corrupt output.')
     else:
         print('  Ready. Next:  quarry.py extract --game "<install>" --out "<project>" --xml '
-              '--types ydr,ytd,ytyp,ymap')
+              '--types ydr,ydd,yft,ytd,ybn,ytyp,ymap,ymt')
         print('  Then:         quarry.py meta --out "<project>"   and   quarry.py resolve --out '
               '"<project>"')
     return 1 if bad else 0
 
 
 def cmd_meta(a):
-    """Convert every binary .ytyp/.ymap in the project to interchange XML.
+    """Convert every binary .ytyp/.ymap/.ymt in the project to interchange XML, then resolve
+    the hash_%08X entry names that `extract` had to leave in the .ydd.xml files.
 
     ⭐ WHY THIS IS A SECOND PASS rather than part of `extract`: a ytyp stores its archetype and
     asset names as ONE-WAY joaat hashes, and the reverse table is built by hashing the asset
@@ -788,6 +813,15 @@ def cmd_meta(a):
     converting inline would resolve far fewer names. Running after extraction means the table is
     complete and `assetName` - the one name that MUST resolve, because RUDE turns it into a
     `<CorpusRoot>/ydr/<assetName>.ydr.xml` lookup - resolves from the user's own data.
+    The same argument covers ydd ENTRY names: they are joaat hashes of names that are usually
+    asset filenames, so they resolve here or never.
+
+    ⭐ .ymt was ADDED 2026-07-30: meta2xml has decoded CScenarioPointRegion the whole time, but
+    this loop only walked ('ytyp', 'ymap') - so an extracted scenario .ymt stayed binary forever
+    and the scenario lane needed hand-run conversions. Same defect class as the unwired ybn
+    branch: the emitter existed, the pipeline stage did not. ⚠ Not every .ymt is META: the
+    sp_manifest class is a PSO ('PSIN') container, which is COUNTED and skipped here, not failed
+    (see pso_manifest.py for that format).
 
     Order is therefore:  extract  ->  meta  ->  resolve
     """
@@ -805,11 +839,11 @@ def cmd_meta(a):
     names = meta2xml.load_names(*[os.path.join(out, s) for s in slots])
     print(f'names    : {len(names):,} distinct asset names available')
 
-    ok = fail = 0
+    ok = fail = pso = 0
     unresolved = 0
     why = {}
     for slot in slots:
-        for kind in ('ytyp', 'ymap'):
+        for kind in ('ytyp', 'ymap', 'ymt'):
             d = os.path.join(out, slot, kind)
             if not os.path.isdir(d):
                 continue
@@ -817,6 +851,13 @@ def cmd_meta(a):
                 if not fn.lower().endswith('.' + kind):
                     continue
                 src = os.path.join(d, fn)
+                if kind == 'ymt':
+                    # ⚠ PSO ('PSIN') is a different container, not a decode failure - count it
+                    # apart from real failures or the summary cries wolf on every sp_manifest.
+                    with open(src, 'rb') as fh:
+                        if fh.read(4) == b'PSIN':
+                            pso += 1
+                            continue
                 try:
                     xml, got_kind, w = meta2xml.convert(src, names)
                 except Exception as ex:
@@ -831,13 +872,57 @@ def cmd_meta(a):
                 unresolved += w.warn.get('unresolved asset-name hash', 0)
                 ok += 1
 
-    print(f'converted {ok} ytyp/ymap -> XML, {fail} failed')
+    print(f'converted {ok} ytyp/ymap/ymt -> XML, {fail} failed'
+          + (f', {pso} PSO (PSIN) .ymt skipped - a different container, see pso_manifest.py'
+             if pso else ''))
     if unresolved:
         print(f'  unresolved name hashes: {unresolved:,} -> emitted as hash_XXXXXXXX. The '
               f'ymap<->ytyp join still holds (same hash both sides); only an assetName needs a '
               f'real name, and those come from the asset files themselves.')
     for m, n in sorted(why.items(), key=lambda kv: -kv[1])[:8]:
         print(f'  {n:5}x  {m}')
+
+    # ⭐ ydd ENTRY NAMES (added 2026-07-30). extract writes them as hash_%08X because this
+    # table did not exist yet - resolve them now, in place. The entry-level <Name> is the ONLY
+    # line in a .ydd.xml indented exactly two spaces (" <Item>" + one-space body lines), so an
+    # anchored rewrite cannot touch shader, texture or any deeper <Name>, which all sit at four
+    # spaces or more. Unresolved entries stay hash_%08X - the dictionary join is hash-to-hash,
+    # so an unresolved name costs nothing downstream; it is counted, never guessed.
+    ydd_pat = re.compile(r'^(  <Name>)hash_([0-9A-F]{8})(</Name>)$', re.MULTILINE)
+    ydd_files = ydd_hits = ydd_left = 0
+    for slot in slots:
+        d = os.path.join(out, slot, 'ydd')
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.lower().endswith('.ydd.xml'):
+                continue
+            p = os.path.join(d, fn)
+            with open(p, 'r', encoding='utf-8') as fh:
+                text = fh.read()
+            counts = {'hit': 0, 'left': 0}
+
+            def _sub(m):
+                nm = names.get(int(m.group(2), 16))
+                if nm is None:
+                    counts['left'] += 1
+                    return m.group(0)
+                counts['hit'] += 1
+                nm = nm.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                return m.group(1) + nm + m.group(3)
+
+            new = ydd_pat.sub(_sub, text)
+            if counts['hit']:
+                with open(p, 'w', encoding='utf-8', newline='') as fh:
+                    fh.write(new)
+                ydd_files += 1
+            ydd_hits += counts['hit']
+            ydd_left += counts['left']
+    if ydd_hits or ydd_left:
+        print(f'ydd entry names: resolved {ydd_hits:,} across {ydd_files:,} dictionaries; '
+              f'{ydd_left:,} stay hash_%08X (no asset filename hashes to them - the join is '
+              f'hash-to-hash, so nothing breaks)')
+
     print('\n  next: quarry.py resolve --out "<project>"   (flatten for RUDE)')
     return 0
 
@@ -1300,7 +1385,7 @@ def cmd_extract(a):
                 if getattr(a, 'xml', False):
                     try:
                         conv = to_interchange_xml(name, blob,
-                                                 getattr(a, 'textures', 'both'))
+                                                 getattr(a, 'textures', 'both'), stats)
                         if conv is not None:
                             xml_name, xml_bytes, extras = conv
                             written = file_into(a.out, slot, xml_name, xml_bytes, stats,
@@ -1363,6 +1448,11 @@ def cmd_extract(a):
                  else ''))
         for line in stats.get('xml_errors', [])[:8]:
             print(f'    {line}')
+        if stats.get('yft_extras_refused'):
+            print(f'yft extras refused (fell back to the visual drawable, counted): '
+                  f'{stats["yft_extras_refused"]}')
+            for line in stats.get('yft_extras_errors', [])[:8]:
+                print(f'    {line}')
     if stats.get('resumed'):
         print(f'resumed (already present, skipped): {stats["resumed"]}')
     print(f'name collisions (kept first, suffixed the rest): {stats.get("collisions", 0)}')
