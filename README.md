@@ -2,7 +2,7 @@
 
 The companion tool to **RUDE**.
 
-## ⛔ ZERO THIRD-PARTY TOOL AFFILIATION (Matt's requirement, 2026-07-27 — HARD)
+## ⛔ ZERO THIRD-PARTY TOOL AFFILIATION (maintainer's requirement, 2026-07-27 — HARD)
 **Neither QUARRY nor RUDE may be affiliated with the reference exporter in any way.** QUARRY's code never was:
 `quarry.py` and `ngcrypto.py` contain **no the reference exporter reference at all** (the word "magic" in
 `quarry.py` is the RPF7 file magic `7FPR`, unrelated). The single touchpoint was one optional helper,
@@ -151,7 +151,7 @@ it resolves the build-accurate copy by walking high → low:
 
 Type folders (`ydr/ ytd/ ybn/ …`) are created as files land.
 
-## 🎯 Where this is going (Matt's direction, 2026-07-27)
+## 🎯 Where this is going (maintainer's direction, 2026-07-27)
 
 1. ⛔ **No the reference exporter affiliation, anywhere.** Done in code (above). Key acquisition stays the
    operator's business.
