@@ -448,6 +448,24 @@ def sidecar_into(out_root, slot, type_dir, relpath, blob):
         f.write(blob)
 
 
+def embedded_texture_sidecars(res, stem, textures, base=0):
+    """A drawable's OWN texture dictionary (ShaderGroup+0x08) as sidecars: the
+    `<stem>__embedded.ytd.xml` manifest plus pixel files. Shared by the ydr and yft branches -
+    the full naming contract (why `__embedded`, why a sibling dictionary at all) is documented
+    at the ydr branch of to_interchange_xml, which established it."""
+    import ydr2xml
+    import ytd2xml
+    emb = ydr2xml.embedded_textures(res, base=base)
+    if not emb:
+        return []
+    emb_stem = stem + '__embedded'
+    sidecars = [(emb_stem + '.ytd.xml', ytd2xml.to_xml(emb).encode('utf-8'))]
+    if textures != 'none':
+        sidecars.extend(ytd2xml.sidecars(emb, emb_stem, want_png=(textures != 'dds'),
+                                         want_dds=(textures != 'png')))
+    return sidecars
+
+
 def to_interchange_xml(name, blob, textures='both', stats=None):
     """One asset -> (xml filename, xml bytes, [(sidecar relpath, bytes)]), or None when no
     converter exists for that type yet.
@@ -495,11 +513,7 @@ def to_interchange_xml(name, blob, textures='both', stats=None):
             # therefore rejected every texture and `continue`d SILENTLY: 1,943 manifests imported
             # with 0 textures and no error (2026-07-30). A double underscore is equally
             # collision-proof against a real dictionary name and is a legal path segment.
-            emb_stem = stem + '__embedded'
-            sidecars.append((emb_stem + '.ytd.xml', ytd2xml.to_xml(emb).encode('utf-8')))
-            if textures != 'none':
-                sidecars.extend(ytd2xml.sidecars(emb, emb_stem, want_png=(textures != 'dds'),
-                                                 want_dds=(textures != 'png')))
+            sidecars.extend(embedded_texture_sidecars(res, stem, textures))
         return stem + '.ydr.xml', ydr2xml.to_xml(res, inner).encode('utf-8'), tuple(sidecars)
     if t == 'ytd':
         import ytd2xml
@@ -554,6 +568,17 @@ def to_interchange_xml(name, blob, textures='both', stats=None):
                 stats['yft_extras_refused'] = stats.get('yft_extras_refused', 0) + 1
                 stats.setdefault('yft_extras_errors', []).append(f'{name}: {ex}')
             xml, sidecars = yft2xml.convert(res, stem, extras=False)
+        # ⭐ FRAGMENT EMBEDDED TEXTURES (2026-07-31). Same mechanism as the ydr branch, rebased
+        # to the fragment's MAIN drawable: measured over all 6,026 base-game binary yft, 1,558
+        # (25.9%) carry a dictionary at ShaderGroup+0x08 - 5,723 textures - and the sampled
+        # carriers request ONLY textures that dictionary holds (9/9, 12/12, 1/1), i.e. exactly
+        # the fragments that imported untextured before this. Child drawables have no
+        # ShaderGroup of their own (they index the fragment's), so the main drawable's
+        # dictionary is the whole story.
+        dbase = yft2xml.main_drawable_base(res)
+        if dbase is not None:
+            sidecars = list(sidecars) + embedded_texture_sidecars(res, stem, textures,
+                                                                  base=dbase)
         return stem + '.yft.xml', xml.encode('utf-8'), sidecars
     return None
 

@@ -298,6 +298,14 @@ def physics_lines(res, bones, groups, children, body_by_child, ind=" "):
     return L
 
 
+def main_drawable_base(res):
+    """System-segment offset of the fragment's MAIN visual drawable (+0x30), or None when the
+    pointer does not resolve. Exposed so callers (quarry's embedded-texture pass) can reuse the
+    measured offset instead of restating it."""
+    buf, base = res.deref(res.u32(DRAWABLE_SLOT), 0xD0)
+    return None if buf is None else base
+
+
 def convert(res, stem, extras=None):
     """-> (xml text, [(sidecar relpath, bytes)]). THE entry point; to_xml() is the text-only
     wrapper the existing callers already use."""
