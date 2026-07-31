@@ -1267,7 +1267,16 @@ def cmd_resolve(a):
 
     print(f'resolved -> {dest_root}')
     print(f'  slots walked (ascending precedence): {len(slots)}')
-    print(f'  files: {len(winner):,}   ' + '  '.join(f'{t}={n:,}' for t, n in sorted(per_type.items())))
+    # ⚠ Say WHICH number is which. A scoped run resolves only its own types but the manifest (and
+    # therefore per_type) is the MERGED record, so printing both on one line without labels read
+    # as an arithmetic error ("files: 639" beside types summing to 2,737).
+    if want is not None:
+        print(f'  files resolved THIS RUN: {len(winner):,}   ({",".join(sorted(want))})')
+        print(f'  manifest now records {sum(per_type.values()):,} across all types:   '
+              + '  '.join(f'{t}={n:,}' for t, n in sorted(per_type.items())))
+    else:
+        print(f'  files: {len(winner):,}   '
+              + '  '.join(f'{t}={n:,}' for t, n in sorted(per_type.items())))
     print(f'  overridden by a higher slot: {overridden:,}   (this is precedence doing its job)')
     print(f'  pixel sidecars carried: {sidecars:,}')
     print(f'  hardlinked {linked:,}, copied {copied:,}')

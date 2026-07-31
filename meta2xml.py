@@ -1581,6 +1581,16 @@ def roundtrip(kind, limit):
     """Reference XML -> dicts -> emit -> re-parse -> compare EVERY field, and separately assert the
     ImportMapArea contract fields survived, since those are what actually gate an import."""
     files = sorted(glob.glob(os.path.join(CORPUS, kind, "*.%s.xml" % kind)))[:limit]
+    # ⛔ ZERO EVIDENCE IS NOT A PASS (2026-07-31). This printed "0 reference files, 0 items" and
+    # returned success, so `--roundtrip --kind ymap` against a corpus holding no ymap/ dir
+    # reported a clean gate having compared NOTHING - the same shape as a --prune that deletes
+    # everything because it found no references. A harness that cannot see its subject must FAIL.
+    if not files:
+        print("=== %s round-trip: REFUSING - no reference files under %s/%s ===\n"
+              "    A harness with no subject cannot pass. Point --corpus (or QUARRY_CORPUS) at a\n"
+              "    reference tree that actually contains %s/*.%s.xml."
+              % (kind, CORPUS, kind, kind, kind))
+        return 1
     parse = parse_ytyp if kind == "ytyp" else parse_ymap
     emit = ytyp_xml if kind == "ytyp" else ymap_xml
     _container, must = CONTRACT[kind]
@@ -1631,7 +1641,13 @@ def census(kind, limit):
     tags = ("lodLevel", "priorityLevel") if kind == "ymap" else ("assetType",)
     seen = {t: collections.Counter() for t in tags}
     types = collections.Counter()
-    for f in sorted(glob.glob(os.path.join(CORPUS, kind, "*.%s.xml" % kind)))[:limit]:
+    census_files = sorted(glob.glob(os.path.join(CORPUS, kind, "*.%s.xml" % kind)))[:limit]
+    if not census_files:
+        # same law as roundtrip: an empty census is "nothing looked", not "nothing there"
+        print("=== %s enum census: REFUSING - no reference files under %s/%s ==="
+              % (kind, CORPUS, kind))
+        return 1
+    for f in census_files:
         text = open(f, encoding="utf-8", errors="replace").read()
         for k, blk in _items(text, CONTRACT[kind][0]):
             types[k] += 1

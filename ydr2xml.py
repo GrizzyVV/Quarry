@@ -540,15 +540,24 @@ BOUND_TYPE_NAMES = {0: "Sphere", 1: "Capsule", 3: "Box", 4: "Geometry", 8: "Geom
                     10: "Composite", 12: "Disc", 13: "Cylinder"}
 _BOUND_GEOMETRY_TYPES = (4, 8)
 
-# CompositeFlags1/2 share ONE enum; 25 bits named from 1,080 measured (value, name-list)
-# pairs with zero conflicts, and popcount==len(names) in 1,080/1,080 proves the names render
-# in ASCENDING BIT ORDER. Bits 0/8/14/18/28/29/31 exist but were never observed set.
+# CompositeFlags1/2 share ONE enum; 26 bits named from measured (value, name-list) pairs with
+# zero conflicts, and popcount==len(names) proves the names render in ASCENDING BIT ORDER.
+# ⭐ BIT 31 = MAP_DEEP_SURFACE, added 2026-07-31 — and the way it surfaced is the lesson.
+# The first 1,080 measured files came from archives where bit 31 never occurs, so this table
+# called it "never observed set" and the emitter (correctly) REFUSED rather than drop a filter
+# bit. That turned one missing name into a 15% conversion failure on x64p (131 of 870 ybn, all
+# carrying the identical 0x80000002), and ~879 ybn game-wide by oracle count. The name is not a
+# guess: 0x80000002 = bit1 + bit31, and the reference export of the same asset prints exactly
+# "MAP_WEAPON, MAP_DEEP_SURFACE" — so the oracle names the bit. ⛔ A "never observed" note is a
+# statement about the SAMPLE, never about the format: catalogue is a lower bound.
+# Bits 0/8/14/18/28/29 remain unobserved — same rule applies to them.
 BOUND_COMPOSITE_FLAG_BITS = {
     1: "MAP_WEAPON", 2: "MAP_DYNAMIC", 3: "MAP_ANIMAL", 4: "MAP_COVER", 5: "MAP_VEHICLE",
     6: "VEHICLE_NOT_BVH", 7: "VEHICLE_BVH", 9: "PED", 10: "RAGDOLL", 11: "ANIMAL",
     12: "ANIMAL_RAGDOLL", 13: "OBJECT", 15: "PLANT", 16: "PROJECTILE", 17: "EXPLOSION",
     19: "FOLIAGE", 20: "FORKLIFT_FORKS", 21: "TEST_WEAPON", 22: "TEST_CAMERA", 23: "TEST_AI",
     24: "TEST_SCRIPT", 25: "TEST_VEHICLE_WHEEL", 26: "GLASS", 27: "MAP_RIVER", 30: "MAP_STAIRS",
+    31: "MAP_DEEP_SURFACE",
 }
 
 # material Flags = bits 24-39 of the 8-byte material record (8,813 measured pairs, zero
