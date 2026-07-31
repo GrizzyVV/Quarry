@@ -771,8 +771,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(prog="meta_write")
     ap.add_argument("--selftest", nargs="?", const=120, type=int, metavar="N",
                     help="round-trip N random binaries per type (default 120)")
-    ap.add_argument("--root", default=r"B:\RUDE_Filebase_Full",
-                    help="filebase to sample binaries from")
+    ap.add_argument("--root", required=True,
+                    help="filebase to sample binaries from (your `quarry extract --out` folder; "
+                         "no default - this path is personal to each machine)")
     ap.add_argument("--seed", type=int, default=11)
     a = ap.parse_args()
     if a.selftest is None:

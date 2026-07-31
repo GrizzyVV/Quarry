@@ -32,7 +32,11 @@ import struct
 import sys
 import xml.etree.ElementTree as ET
 
-CORPUS = r"B:\ClaudeCode_Projects\_UEFiveMTool\warning_this_is_everything\_processed"
+# Reference corpus for the verification harnesses (--roundtrip / --census / --verify-binary):
+# a directory of reference XML exports laid out <corpus>/<kind>/*.<kind>.xml. This is personal
+# to each machine, so it is NEVER a hardcoded path in this (public) file - pass --corpus or set
+# QUARRY_CORPUS. Plain conversion (--convert) needs no corpus at all.
+CORPUS = os.environ.get("QUARRY_CORPUS")
 
 
 # ================================================================ RSC7 v2 META reader
@@ -1796,7 +1800,13 @@ def main():
                          "count proves build drift, so including them measures the corpus, not us")
     ap.add_argument("--kind", choices=("ytyp", "ymap", "both"), default="both")
     ap.add_argument("--limit", type=int, default=400)
+    ap.add_argument("--corpus", metavar="DIR",
+                    help="reference corpus root for --roundtrip/--census/--verify-binary "
+                         "(default: the QUARRY_CORPUS environment variable)")
     a = ap.parse_args()
+    global CORPUS
+    if a.corpus:
+        CORPUS = a.corpus
     kinds = ("ytyp", "ymap") if a.kind == "both" else (a.kind,)
 
     if a.convert is not None:
@@ -1836,6 +1846,9 @@ def main():
 
     if not (a.roundtrip or a.census or a.verify_binary):
         ap.error("give --roundtrip, --census, --verify-binary or --convert")
+    if not (CORPUS and os.path.isdir(CORPUS)):
+        ap.error("the verification harnesses need the reference corpus: pass --corpus DIR or "
+                 "set QUARRY_CORPUS (layout: <corpus>/<kind>/*.<kind>.xml)")
     rc = 0
     for k in kinds:
         if a.census:

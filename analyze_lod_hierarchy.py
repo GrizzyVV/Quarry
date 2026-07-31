@@ -11,7 +11,7 @@ actually is, what distances each level uses, and whether `parentIndex` is intra-
 first, and guessing the distances is exactly how an exported city ends up popping.
 
 Usage:
-  python analyze_lod_hierarchy.py --corpus B:/RUDE_Filebase_Full/_resolved [--prefix dt1_] [--out r.md]
+  python analyze_lod_hierarchy.py --corpus <filebase>/_resolved [--prefix dt1_] [--out r.md]
 """
 import argparse, os, re, sys
 from collections import Counter, defaultdict

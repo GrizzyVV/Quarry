@@ -18,8 +18,8 @@ Causes, and why each is a DIFFERENT fix:
                           Fix = decide the semantic and add a table row (a coverage decision).
 
 Usage:
-  python analyze_texture_residuals.py --corpus B:/RUDE_Filebase_Full/_resolved
-                                      --textures B:/UnrealProjectsMain/RUDE/Content/RUDE/Textures
+  python analyze_texture_residuals.py --corpus <filebase>/_resolved
+                                      --textures <UE project>/Content/RUDE/Textures
                                       [--list <file of ydr.xml paths>] [--limit N]
                                       [--out report.md]
 """
