@@ -839,9 +839,9 @@ def cmd_meta(a):
     names = meta2xml.load_names(*[os.path.join(out, s) for s in slots])
     print(f'names    : {len(names):,} distinct asset names available')
 
-    ok = fail = pso = 0
+    ok = fail = pso = rbf = 0
     unresolved = 0
-    why = {}
+    why, noemit = {}, {}
     for slot in slots:
         for kind in ('ytyp', 'ymap', 'ymt'):
             d = os.path.join(out, slot, kind)
@@ -852,14 +852,27 @@ def cmd_meta(a):
                     continue
                 src = os.path.join(d, fn)
                 if kind == 'ymt':
-                    # ⚠ PSO ('PSIN') is a different container, not a decode failure - count it
-                    # apart from real failures or the summary cries wolf on every sp_manifest.
+                    # ⚠ Not every .ymt is META, and neither of these is a decode failure -
+                    # count them apart from real failures or the summary cries wolf on every
+                    # run. Measured over update.rpf (733 ymt, 2026-07-31): 634 PSO ('PSIN',
+                    # the sp_manifest class - see pso_manifest.py) and 35 RBF ('RBF0', the
+                    # old binary-XML container, all bink_cnt_* video metadata - no reader
+                    # here and nothing map-relevant inside).
                     with open(src, 'rb') as fh:
-                        if fh.read(4) == b'PSIN':
-                            pso += 1
-                            continue
+                        magic = fh.read(4)
+                    if magic == b'PSIN':
+                        pso += 1
+                        continue
+                    if magic == b'RBF0':
+                        rbf += 1
+                        continue
                 try:
                     xml, got_kind, w = meta2xml.convert(src, names)
+                except meta2xml.UnsupportedRoot as ex:
+                    # a recognised boundary: well-formed META, no emitter for its root
+                    # (e.g. CStreamingRequestRecord - cutscene streaming request lists)
+                    noemit[ex.root_name] = noemit.get(ex.root_name, 0) + 1
+                    continue
                 except Exception as ex:
                     msg = f'{type(ex).__name__}: {ex}'
                     why[msg] = why.get(msg, 0) + 1
@@ -874,7 +887,11 @@ def cmd_meta(a):
 
     print(f'converted {ok} ytyp/ymap/ymt -> XML, {fail} failed'
           + (f', {pso} PSO (PSIN) .ymt skipped - a different container, see pso_manifest.py'
-             if pso else ''))
+             if pso else '')
+          + (f', {rbf} RBF0 (binary-XML) .ymt skipped - a different container, no reader here'
+             if rbf else ''))
+    for rn, n in sorted(noemit.items(), key=lambda kv: -kv[1]):
+        print(f'  {n:5}x  recognised META root {rn} - well-formed, no emitter (counted, not failed)')
     if unresolved:
         print(f'  unresolved name hashes: {unresolved:,} -> emitted as hash_XXXXXXXX. The '
               f'ymap<->ytyp join still holds (same hash both sides); only an assetName needs a '
@@ -1184,10 +1201,29 @@ def cmd_resolve(a):
                     shutil.copy2(s, d)
                 sidecars += 1
 
+    # ⭐ A TYPE-SCOPED RUN MERGES into the existing record (2026-07-31). This used to rewrite
+    # _RESOLVED.json from ONLY this run's winners, so `resolve --types ymt` after a whole-game
+    # resolve replaced the 100k-file record with a 62-entry one - every other type's files were
+    # still on disk but the manifest had forgotten them, and a consumer trusting perType would
+    # conclude the corpus is nearly empty. No --types stays the full authoritative rewrite;
+    # with --types, entries for types OUTSIDE the filter are carried forward unchanged.
+    man_path = os.path.join(dest_root, '_RESOLVED.json')
+    merged = {}
+    if want is not None and os.path.isfile(man_path):
+        try:
+            with open(man_path) as f:
+                prior = json.load(f).get('winners', {})
+            merged = {k: v for k, v in prior.items()
+                      if k.split('/', 1)[0].lower() not in want}
+        except Exception as ex:
+            print(f'  ⚠ could not carry forward the existing _RESOLVED.json ({ex}) - the new '
+                  f'record holds this run\'s types only')
+    merged.update({f'{t}/{n}': s for (t, n), s in winner.items()})
     per_type = {}
-    for (type_dir, _f) in winner:
-        per_type[type_dir] = per_type.get(type_dir, 0) + 1
-    with open(os.path.join(dest_root, '_RESOLVED.json'), 'w') as f:
+    for k in merged:
+        t = k.split('/', 1)[0]
+        per_type[t] = per_type.get(t, 0) + 1
+    with open(man_path, 'w') as f:
         json.dump({'quarryVersion': 1,
                    'note': 'Flat build-accurate view of the precedence tree. Point RUDE\'s '
                            'CorpusRoot here.',
@@ -1196,10 +1232,12 @@ def cmd_resolve(a):
                    # a contested name is TRUSTWORTHY depends entirely on whether the DLC order came
                    # from the game's own dlclist.xml, and a consumer needs to know which it got.
                    'dlcOrderAuthoritative': manifest_flag(out),
-                   'counts': {'files': len(winner), 'overriddenByHigherSlot': overridden,
+                   # counts other than 'files' describe THIS run (a type-scoped run reports its
+                   # own work, not history)
+                   'counts': {'files': len(merged), 'overriddenByHigherSlot': overridden,
                               'withinSlotAlternatesSkipped': ambiguous, 'sidecars': sidecars},
                    'perType': per_type,
-                   'winners': {f'{t}/{n}': s for (t, n), s in sorted(winner.items())}},
+                   'winners': dict(sorted(merged.items()))},
                   f, indent=1)
 
     print(f'resolved -> {dest_root}')

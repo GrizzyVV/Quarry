@@ -180,6 +180,10 @@ SCHEMA_NAMES = (
     "LODTYPES_DEPTH_HD", "LODTYPES_DEPTH_LOD", "LODTYPES_DEPTH_SLOD1", "LODTYPES_DEPTH_SLOD2",
     "LODTYPES_DEPTH_SLOD3", "LODTYPES_DEPTH_ORPHANHD",
     "PRI_REQUIRED", "PRI_OPTIONAL_HIGH", "PRI_OPTIONAL_MEDIUM", "PRI_OPTIONAL_LOW",
+    # roots we RECOGNISE but have no emitter for, so a refusal can name itself instead of
+    # printing hash_%08X: streaming request lists (*_srl.ymt - cutscene prefetch data,
+    # measured: gtao_intro_male_srl/mic_1_mcs_1_srl in update.rpf, 2026-07-31)
+    "CStreamingRequestRecord",
 )
 SCHEMA_BY_HASH = {joaat_case(n): n for n in SCHEMA_NAMES}
 
@@ -1340,6 +1344,16 @@ def scenario_from(root):
         LookUps=root.get("LookUps"))
 
 
+class UnsupportedRoot(ValueError):
+    """A WELL-FORMED META file whose root struct has no emitter here - a recognised boundary,
+    not a decode failure. Typed so a pipeline caller can count it apart from real failures;
+    .root_name says which root (schema-named where the hash is known, else hash_%08X)."""
+
+    def __init__(self, root_name):
+        super().__init__("no emitter for META root struct %r" % root_name)
+        self.root_name = root_name
+
+
 def convert_bytes(blob, stem, names=None):
     """binary ytyp/ymap/ymt -> (xml, kind, walker). Kind comes from the ROOT STRUCT, not the
     file extension, so a mislabelled file cannot be emitted as the wrong schema."""
@@ -1352,7 +1366,7 @@ def convert_bytes(blob, stem, names=None):
                 "ymap", w)
     if root_name == "CScenarioPointRegion":
         return scenario_xml(scenario_from(root)), "ymt", w
-    raise ValueError("unexpected META root struct %r" % root_name)
+    raise UnsupportedRoot(root_name)
 
 
 def convert(path, names=None):
