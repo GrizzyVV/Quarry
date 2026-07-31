@@ -26,7 +26,7 @@ Dictionary header: +0x20 hash array*, +0x28 (count<<16)|count, +0x30 pointer arr
 ⚠ The USAGE TABLE BELOW IS DERIVED FROM MEASUREMENT and covers only codes actually observed.
 An unobserved code emits UNKNOWN rather than a guessed enum name - a wrong Usage silently
 mis-authors a normal map as sRGB colour, which is worse than an honest UNKNOWN. Extend the
-table by measuring, never by assuming (see `--derive-usage`).
+table by measuring against real files, never by assuming.
 """
 import argparse
 import os

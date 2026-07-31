@@ -7,16 +7,16 @@ converter, so RUDE has nothing to read. A ydd is pgDictionary<gtaDrawable> - the
 mirrors ytd2xml's pgDictionary<grcTexture> and every entry is the gtaDrawable that ydr2xml
 already fully decodes (drawable_lines, base-offset form; A/B-proven byte-identical for ydr).
 
-FIELD MAP - TO BE MEASURED against real extracted ydd before the converter is trusted:
-    hypothesis from the measured ytd dictionary header (ytd2xml.py):
+FIELD MAP - MEASURED (2026-07-30 corpus rebuild: 20,328 ydd converted through this walk):
       +0x20 hash array*      (u32 joaat per entry, ascending)
       +0x28 (count<<16)|count
       +0x30 pointer array*   (8-byte tagged pointers, upper dword 0)
-    entry names: the hash array carries joaat(name); real names resolve via the same
-    filename-derived reverse table `meta` uses (meta2xml.load_names) - unresolved entries emit
-    hash_%08X, which is also the community convention. The ymap->ytyp->dictionary join is
-    hash-to-hash, so unresolved names cost nothing downstream.
-    RSC7 version for ydd: TO MEASURE (require_version pinned after the probe).
+    RSC7 version 165 - the DRAWABLE-FAMILY version (see YDD_VERSION below).
+    entry names: the hash array carries joaat(name); the pipeline emits hash_%08X at extract
+    time and `quarry meta` resolves them afterwards from the filename-derived reverse table
+    (meta2xml.load_names). Unresolved entries stay hash_%08X, which is also the community
+    convention - the ymap->ytyp->dictionary join is hash-to-hash, so unresolved names cost
+    nothing downstream. Standalone runs can pass --project to resolve inline.
 
 Usage:
     python ydd2xml.py --probe <file.ydd> [...]      # measure the header before trusting it

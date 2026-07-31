@@ -305,7 +305,7 @@ def value_param_name(hash32):
 
     ⭐ THE NAME TABLE IS DERIVED FROM THE GAME'S OWN COMPILED SHADERS (2026-07-30, Matt's lead:
     "I saw something that defined these values"). Every identifier in the 321 `.fxc` files under
-    common.rpf is hashed once into `shader_param_names.json` - 5,268 of them - so a parameter is
+    common.rpf is hashed once into `shader_param_names.json` - 5,058 of them - so a parameter is
     named because the shader that consumes it says so, not because someone guessed a spelling.
     That closed the last 7 unknowns instantly (envEffTexTileUV, specular2Color_DirLerp,
     matWheelWorldViewProj, UseTreeNormals, fillColor, furShadow03/47).
