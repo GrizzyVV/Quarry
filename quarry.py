@@ -1330,7 +1330,7 @@ def cmd_extract(a):
 
     # ---- key acquisition: NO --keys required for a normal user -------------------------------
     # Priority: existing key files (fast / the option-B path) -> the bundled game-gated blob opened
-    # with the AES key found in the user's OWN executable. See docs/FOUNDATION.md §"DECIDED".
+    # with the AES key found in the user's OWN executable (maintainer decision 2026-07-27, option A).
     # ⚠ ORDER MATTERS: this now runs BEFORE the project tree is written, because reading the game's
     # real DLC load order out of update.rpf needs the keys, and the tree encodes that order in its
     # folder names - building it first would bake in the guess.
@@ -1546,7 +1546,8 @@ def main():
                                       'without an installed copy of the game to open it')
         p.add_argument('--xml', action='store_true',
                        help='convert resources to the RAGE interchange XML on the way out, which is what '
-                            'the RUDE importer reads (ydr + ytd today; ytyp/ymap pending). Types with '
+                            'the RUDE importer reads (ydr/ydd/yft/ytd/ybn here; ytyp/ymap/ymt in the '
+                            '`meta` pass, which needs the complete name table). Types with '
                             'no converter yet are written as binary, never dropped')
         p.add_argument('--textures', choices=('both', 'png', 'dds', 'none'), default='both',
                        help='which ytd pixel sidecars to write. png = what ImportYtd loads; '
@@ -1585,8 +1586,9 @@ def main():
                          'your own game install, so anything pruned is re-extractable')
     pt.set_defaults(fn=cmd_textures)
 
-    pm = sub.add_parser('meta', help='convert binary ytyp/ymap to interchange XML (run AFTER '
-                                     'extract, so the joaat name table is complete)')
+    pm = sub.add_parser('meta', help='convert binary ytyp/ymap/ymt to interchange XML and resolve '
+                                     'ydd entry names (run AFTER extract, so the joaat name table '
+                                     'is complete)')
     pm.add_argument('--out', required=True, help='the project folder built by init/extract')
     pm.set_defaults(fn=cmd_meta)
 

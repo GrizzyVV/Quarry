@@ -6,7 +6,7 @@ __pycache__/
 # The standing non-negotiable is that we never ship a byte of Rockstar data or key material. Git
 # history is a ONE-WAY DOOR: once this blob is committed it survives every later `git remote add`
 # and push, and removing it from history is a rewrite. The file stays on disk and still ships by
-# whatever distribution route is chosen (Matt's option A, FOUNDATION "DECIDED") - it simply is not
+# whatever distribution route is chosen (maintainer decision 2026-07-27, option A) - it simply is not
 # in version control. Reversible: delete this line if versioning it is the deliberate call.
 resources/magic.dat
 

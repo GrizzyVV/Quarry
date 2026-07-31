@@ -1,8 +1,8 @@
 """keyderive - obtain the NG key material on THIS machine, with no the reference exporter dependency.
 
 WHAT THIS IS
-QUARRY ships `resources/magic.dat` (Matt's decision 2026-07-27, option A — see
-docs/FOUNDATION.md §"DECIDED"). The blob is GAME-GATED: it is inert without a 32-byte AES key that
+QUARRY consumes a local `resources/magic.dat` when present (maintainer decision 2026-07-27,
+option A). The blob is GAME-GATED: it is inert without a 32-byte AES key that
 only exists inside a genuine installed copy of the game. This module finds that key in the user's own
 executable and uses it to open the blob.
 

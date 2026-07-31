@@ -8,13 +8,13 @@ Nothing about the game is being modified: this converts the operator's own extra
 
 WHAT IS GROUNDED, AND IN WHAT
   * container + drawable graph + vertex declaration table: measured over all 3,479 real base-game
-    v165 ydrs / 17,370 geometries (docs/ENGINEERING_LOG "ydr VERTEX DECLARATION"). Channels sit in
+    v165 ydrs / 17,370 geometries (maintainer's engineering log, "ydr VERTEX DECLARATION"). Channels sit in
     ASCENDING BIT ORDER, offset = sum of sizes of lower set bits; the grcFvf u64 is a 16-slot TYPE
     TABLE indexed by channel bit (hence constant 0x7755555555996996 in 17,370/17,370).
-  * XML shape: measured over 25,936 third-party reference exports (LOG "ydr.xml schema"). Their `Data` field order ==
+  * XML shape: measured over 25,936 third-party reference exports (maintainer's log, "ydr.xml schema"). Their `Data` field order ==
     the `Layout` child order == ascending bit order, so the mapping is 1:1 with no reordering.
   * shader preset names: the binary stores only joaat(name), which is one-way, so names come from
-    joaat_shaders.json (133 presets inverted from the operator's own third-party reference exports).
+    joaat_shaders.json (216 presets inverted from the operator's own third-party reference exports).
   * sampler (texture param) names + RenderBucket: derived from the shader struct itself and
     validated against 866 third-party full-parameter reference exports by joining params BY NAME -
     bucket 99.989% (9,166/9,167), texture names 99.960%, vector values 99.933%, arrays 100%
