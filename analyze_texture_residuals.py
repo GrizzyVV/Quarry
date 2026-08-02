@@ -230,11 +230,20 @@ def main():
             w(f'| `{k}` | {v:,} |')
         w('')
     out = '\n'.join(lines)
-    print()
-    print(out[:4000])
+    # ⛔ WRITE THE FILE BEFORE PRINTING (2026-08-02). It was the other way round, and the console
+    # print raised UnicodeEncodeError on the first non-ASCII glyph under a cp1252 stdout — so
+    # `--out` NEVER produced a file and the run exited 1 after doing all the work. Hours of disk
+    # reading, then nothing to show for it. The durable artifact is written first; the console is
+    # best-effort and can never cost the report.
     if a.out:
         with open(a.out, 'w', encoding='utf-8', newline='\n') as fh:
             fh.write(out + '\n')
+    print()
+    try:
+        print(out[:4000])
+    except UnicodeEncodeError:
+        print(out[:4000].encode('ascii', 'replace').decode('ascii'))
+    if a.out:
         print(f'\nwritten -> {a.out}')
     return 0
 

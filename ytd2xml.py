@@ -51,10 +51,19 @@ BLOCK_FORMATS = {
 LINEAR_FORMATS = {
     21: ("D3DFMT_A8R8G8B8", 4),
     22: ("D3DFMT_X8R8G8B8", 4),
+    25: ("D3DFMT_A1R5G5B5", 2),   # 2026-08-02, see note
     28: ("D3DFMT_A8", 1),
     32: ("D3DFMT_A8B8G8R8", 4),
     50: ("D3DFMT_L8", 1),
 }
+# ⭐ 25 = D3DFMT_A1R5G5B5 (16-bit, 2 bytes/pixel) — a PUBLICLY DOCUMENTED Direct3D 9 enum value,
+# not a guess, and the only clean kind of source for a format name. Why it matters out of all
+# proportion to one texture: `describe_format` raises inside `read_textures`, so ONE unmapped
+# format aborted the WHOLE dictionary. `prop_muster_b1.ytd` carries 4 textures — one A1R5G5B5 and
+# three perfectly good DXT1 — and all four were lost. That is also why it is the single surviving
+# binary .ytd in a 40,078-dictionary corpus: it could never be converted.
+# ⚠ The all-or-nothing shape is the deeper issue and is NOT fixed here: an unmapped format in
+# texture N still costs textures 1..N-1. Registered rather than silently patched over.
 
 # grcTexture+0x40 bits 0..4 -> interchange <Usage>. Every row below was measured against
 # a third-party export of the same asset; the count is how many textures agreed, with zero
