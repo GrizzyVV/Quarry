@@ -47,6 +47,9 @@ BLOCK_FORMATS = {
     b"BC5U": ("D3DFMT_ATI2", 16),
     b"BC7 ": ("D3DFMT_BC7", 16),
 }
+# BC7 has NO legacy DDPF_FOURCC code - a .dds carrying b"BC7 " is unreadable by standard tools.
+# It must be written with the DX10 extension header (fourCC "DX10" + DDS_HEADER_DXT10).
+DXGI_BY_FOURCC = {b"BC7 ": 98}          # DXGI_FORMAT_BC7_UNORM
 # D3DFMT enum values for the uncompressed formats the corpus actually contains
 LINEAR_FORMATS = {
     21: ("D3DFMT_A8R8G8B8", 4),
@@ -124,8 +127,24 @@ def dds_header(w, h, mips, fmt, blk, bpp):
     flags |= 0x80000 if blk is not None else 0x8  # LINEARSIZE : PITCH
     pitch_or_linear = level_bytes(w, h, blk, bpp) if blk is not None else (w * (bpp or 4))
 
+    # ⛔ BC7 HAS NO LEGACY FourCC. Writing b"BC7 " into the DDPF_FOURCC slot produces a file no
+    # standard DDS reader can open (measured: Pillow raises "Unimplemented pixel format" on a real
+    # 64x64 BC7 from char_progress_hub.ytd, while every other FourCC we emit opens fine) - and
+    # write_all counted it as written. BC7 requires the DX10 extension header.
+    dxgi = DXGI_BY_FOURCC.get(struct.pack("<I", fmt)) if blk is not None else None
     if blk is not None:
-        pf = struct.pack("<2I4s5I", 32, DDPF_FOURCC, struct.pack("<I", fmt), 0, 0, 0, 0, 0)
+        fourcc = b"DX10" if dxgi else struct.pack("<I", fmt)
+        pf = struct.pack("<2I4s5I", 32, DDPF_FOURCC, fourcc, 0, 0, 0, 0, 0)
+    elif fmt == 25:
+        # ⛔ A1R5G5B5 IS 16 bpp AND MUST NOT FALL THROUGH TO THE 32-bit else-branch (fixed
+        # 2026-08-02, same day the enum was mapped). Mapping the enum made the dictionary
+        # CONVERT while the header still declared RGBBitCount=32 with 8-bit masks over a
+        # 2-bytes-per-pixel payload: internally inconsistent (pitch*h = 131,072 vs
+        # bits/8*w*h = 262,144), and Pillow "opens" it - so it looked like success and
+        # produced wrong pixels. Mapping a format is THREE edits, not one: the size table,
+        # the DDS header, and the renderer.
+        pf = struct.pack("<3I5I", 32, DDPF_RGB | DDPF_ALPHAPIXELS, 0, 16,
+                         0x7C00, 0x03E0, 0x001F, 0x8000)
     elif fmt == 28:                              # A8
         pf = struct.pack("<3I5I", 32, DDPF_ALPHA, 0, 8, 0, 0, 0, 0xFF)
     elif fmt == 50:                              # L8
@@ -301,6 +320,27 @@ def write_png(t, path):
     return True, ""
 
 
+def _decode_bc2(t2d, body, w, h):
+    """BC2 = BC1 colour half + 16 EXPLICIT 4-bit alphas per block. texture2ddecoder ships no BC2
+    decoder, and BC3's INTERPOLATED-alpha algorithm over BC2 bytes yields wrong alpha silently.
+    The colour half sits at the same offset in both, so only the alpha half is redone here."""
+    out = bytearray(t2d.decode_bc3(body, w, h))          # BGRA; colour half is correct
+    bx = (w + 3) // 4
+    for blk in range(len(body) // 16):
+        alphas = body[blk * 16: blk * 16 + 8]
+        ox, oy = (blk % bx) * 4, (blk // bx) * 4
+        for py in range(4):
+            for px in range(4):
+                x, y = ox + px, oy + py
+                if x >= w or y >= h:
+                    continue
+                i = py * 4 + px
+                nib = alphas[i >> 1]
+                a4 = (nib & 0x0F) if (i & 1) == 0 else (nib >> 4)
+                out[(y * w + x) * 4 + 3] = a4 * 17       # 4-bit -> 8-bit (0x0->0, 0xF->255)
+    return bytes(out)
+
+
 def _render(t, sink):
     mod = png_available()
     if not mod:
@@ -311,16 +351,31 @@ def _render(t, sink):
     try:
         if fmt > 0x1000000:
             fc = struct.pack("<I", fmt)
-            dec = {b"DXT1": t2d.decode_bc1, b"DXT3": t2d.decode_bc2 if hasattr(t2d, "decode_bc2")
-                   else t2d.decode_bc3, b"DXT5": t2d.decode_bc3, b"ATI1": t2d.decode_bc4,
-                   b"BC4U": t2d.decode_bc4, b"ATI2": t2d.decode_bc5, b"BC5U": t2d.decode_bc5,
-                   b"BC7 ": t2d.decode_bc7}.get(fc)
+            # ⛔ BC2 (DXT3) MUST NOT BE DECODED AS BC3. texture2ddecoder has no decode_bc2, and
+            # the old `decode_bc2 if hasattr(...) else decode_bc3` ALWAYS took the BC3 fallback.
+            # BC2 stores 16 EXPLICIT 4-bit alphas; BC3 interpolates from two endpoints, so the
+            # alpha comes out wrong while the colour half - at the same block offset in both -
+            # comes out right. That is exactly why it survived every eyeball check: measured over
+            # x64a+x64b, 19 of 20 DXT3 textures had wrong alpha, mean 42% of pixels, max delta 255.
+            dec = {b"DXT1": t2d.decode_bc1, b"DXT3": _decode_bc2, b"DXT5": t2d.decode_bc3,
+                   b"ATI1": t2d.decode_bc4, b"BC4U": t2d.decode_bc4, b"ATI2": t2d.decode_bc5,
+                   b"BC5U": t2d.decode_bc5, b"BC7 ": t2d.decode_bc7}.get(fc)
             if dec is None:
                 return False, f"no decoder for {fc!r}"
-            img = Image.frombuffer("RGBA", (w, h), dec(body, w, h), "raw", "BGRA", 0, 1)
+            raw = dec(t2d, body, w, h) if dec is _decode_bc2 else dec(body, w, h)
+            img = Image.frombuffer("RGBA", (w, h), raw, "raw", "BGRA", 0, 1)
         elif fmt in (21, 22, 32):
             raw = "BGRA" if fmt in (21, 22) else "RGBA"
             img = Image.frombuffer("RGBA", (w, h), body[:w * h * 4], "raw", raw, 0, 1)
+        elif fmt == 25:                          # A1R5G5B5 - 16 bpp, see dds_header
+            px = struct.unpack_from("<%dH" % (w * h), body, 0)
+            buf = bytearray()
+            for p in px:                         # expand 5/5/5/1 to 8/8/8/8, replicating high bits
+                r = ((p >> 10) & 0x1F) * 255 // 31
+                g = ((p >> 5) & 0x1F) * 255 // 31
+                b = (p & 0x1F) * 255 // 31
+                buf += bytes((b, g, r, 0xFF if (p & 0x8000) else 0))
+            img = Image.frombuffer("RGBA", (w, h), bytes(buf), "raw", "BGRA", 0, 1)
         elif fmt in (28, 50):
             img = Image.frombuffer("L", (w, h), body[:w * h], "raw", "L", 0, 1).convert("RGBA")
         else:
