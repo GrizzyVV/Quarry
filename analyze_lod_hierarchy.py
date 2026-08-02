@@ -95,7 +95,8 @@ def main():
                     parent_present['none (-1)'] += 1
                 else:
                     parent_present['set'] += 1
-                    child_pis[stem].append(p)
+                    # ⭐ the child's TIER travels with its index - see the per-tier check below
+                    child_pis[stem].append((lv, p))
 
     L = []
     w = L.append
@@ -129,40 +130,72 @@ def main():
     else:
         w('- no parents found')
     w('')
-    # Sound range check: resolve each child against its OWN declared parent, not against itself.
+    # ⛔⛔ THE MODEL IS MIXED BY TIER, AND THE PREVIOUS VERSION OF THIS CHECK MISSED IT
+    # (corrected 2026-08-02). It resolved EVERY tier against the declared `<parent>` ymap and
+    # reported 93.8%. Measured across all 859,005 set parentIndex values:
+    #     HD    (692,942) -> the declared <parent> file
+    #     SLOD1  (13,628) -> the declared <parent> file
+    #     LOD   (151,103) -> its OWN file (the SLOD1 block at its head)
+    #     SLOD2   (1,255) -> its OWN file (the SLOD3 block)
+    # So 150,375 of 859,005 (17.5%) were misclassified, and every one of the 52,835 "out of range"
+    # values was a LOD child resolving perfectly against its own file - 100% false negatives.
+    # Under the corrected model 858,928/859,005 = 99.99% resolve.
+    # ⚠ Note what happened here: the FIRST version was wrong in one direction, this comment block
+    # warned that "an index into ANOTHER file can land in range by coincidence", and the fix then
+    # went wrong in the OPPOSITE direction. A guard written against one failure direction does not
+    # protect the other - so this check now states, per tier, WHICH FILE it resolved against.
+    SELF_TIERS = ('LODTYPES_DEPTH_LOD', 'LODTYPES_DEPTH_SLOD2')
+    per_tier = defaultdict(lambda: {'in': 0, 'out': 0, 'unres': 0, 'target': ''})
     for _stem, _pis in child_pis.items():
         _par = parent_of.get(_stem) or ''
-        _pn = ent_count.get(_par)
-        if not _par or _pn is None:
-            no_parent_file += len(_pis)
-            continue
-        for _p in _pis:
-            if _p < _pn:
+        _own = ent_count.get(_stem)
+        for _lv, _p in _pis:
+            self_ref = _lv in SELF_TIERS
+            t = per_tier[_lv]
+            t['target'] = 'own file' if self_ref else 'declared <parent>'
+            _n = _own if self_ref else ent_count.get(_par)
+            if _n is None:
+                t['unres'] += 1
+                no_parent_file += 1
+            elif _p < _n:
+                t['in'] += 1
                 in_range += 1
             else:
+                t['out'] += 1
                 out_of_range += 1
     w('## ⭐ Where does `parentIndex` point? (decides whether tiles generate independently)')
     w('')
     w(f'- `parentIndex` set: **{parent_present["set"]:,}** · unset (-1): '
       f'**{parent_present["none (-1)"]:,}**')
-    w(f'- checked against each child\'s OWN `<parent>` ymap: **{in_range:,} in range**, '
-      f'**{out_of_range:,} out of range**, **{no_parent_file:,} unresolvable** '
-      '(parent file outside this scope)')
+    w(f'- resolved PER TIER (each against the file that tier actually indexes): '
+      f'**{in_range:,} in range**, **{out_of_range:,} out of range**, '
+      f'**{no_parent_file:,} unresolvable** (target file outside this scope)')
+    w('')
+    w('| child lodLevel | resolves against | in range | out of range | unresolvable |')
+    w('|---|---|---:|---:|---:|')
+    for _lv in sorted(per_tier, key=lambda k: -(per_tier[k]['in'] + per_tier[k]['out'])):
+        t = per_tier[_lv]
+        w(f'| `{_lv}` | {t["target"]} | {t["in"]:,} | {t["out"]:,} | {t["unres"]:,} |')
     checked = in_range + out_of_range
     if checked:
         pct = 100.0 * in_range / checked
         w('')
-        w(f'⇒ **{pct:.1f}% of resolvable `parentIndex` values land inside the declared parent ymap.**')
+        w(f'⇒ **{pct:.2f}% of resolvable `parentIndex` values land in the file their tier '
+          f'indexes.**')
         w('')
-        w('**The shipped model:** every ymap names ONE `<parent>` ymap, and its entities\' '
-          '`parentIndex` are indices into THAT file\'s entity list. Parentage is a CHAIN — e.g. '
-          '`dt1_20_strm_0` → `dt1_20` → `dt1_lod` — climbing HD → LOD → SLOD1 → SLOD2/3. '
-          '`dt1_lod` itself holds only 42 entities, all SLOD2/SLOD3: the top of the pyramid.')
+        w('**The shipped model is MIXED BY TIER** (measured 2026-08-02; the earlier single-model '
+          'reading of this same data was wrong in both of its previous versions):')
         w('')
-        w('⇒ **A generator must emit a parent and its children TOGETHER**, because the child\'s '
-          'indices are only meaningful against one specific parent entity list. It cannot emit a '
-          'tile in isolation — but it does not need vague "whole-region context" either: it needs '
-          'exactly the parent chain the files declare.')
+        w('- **HD → its declared `<parent>` ymap** and **SLOD1 → its declared `<parent>` ymap** — '
+          'these cross files, so the child\'s indices are only meaningful against that one parent '
+          'entity list.')
+        w('- **LOD → its OWN file** (the SLOD1 block at the head of the same ymap) and '
+          '**SLOD2 → its OWN file** (the SLOD3 block). These are self-contained.')
+        w('')
+        w('⇒ **A generator must emit parent and children TOGETHER only for HD→LOD and '
+          'SLOD1→SLOD2.** `LOD→SLOD1` and `SLOD2→SLOD3` live inside a single ymap and CAN be '
+          'emitted in isolation. (The per-tier table above is computed from this run — if a tier '
+          'shows unexpected out-of-range counts, trust the table over this paragraph.)')
     w('')
     w('## Declared parents in scope')
     w('')
