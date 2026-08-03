@@ -345,7 +345,20 @@ class Rpf:
         if got is not None:
             return got
         got = self._inflate(raw, e['usize'], oodle)     # unencrypted entry
-        return got if got is not None else raw
+        # ⛔ NEVER WRITE THE COMPRESSED BYTES AS IF THEY WERE THE FILE (2026-08-03).
+        # This used to `return got if got is not None else raw` - so an entry that decoded no way
+        # at all was written to disk as its own still-compressed body, with no counter and no way
+        # to tell it apart from a legitimately stored file. A corrupt file that looks like a
+        # success is strictly worse than a loud refusal: the refusal is counted in `failures` and
+        # the file is simply absent, which every downstream check can see.
+        if got is None:
+            raise ValueError('binary entry did not inflate plain, NG-decrypted, or via Oodle - '
+                             'refusing to write the compressed bytes as if they were the file')
+        # And the length the TOC declares is a free integrity check we were not taking.
+        if e['usize'] and len(got) != e['usize']:
+            raise ValueError(f'binary entry inflated to {len(got)} B but its TOC declares '
+                             f'{e["usize"]} B - refusing a body that disagrees with its own entry')
+        return got
 
 
 # ------------------------------------------------------------------ project folder
@@ -617,9 +630,20 @@ def file_into(out_root, slot, name, blob, stats=None, skip_existing=False):
         # loser must be kept as ~N). Silently skipping them would quietly drop real data, so resume
         # is something the operator asks for when continuing a known-interrupted run.
         if skip_existing:
-            if stats is not None:
-                stats['resumed'] = stats.get('resumed', 0) + 1
-            return None
+            # ⛔ 'ALREADY PRESENT' AND 'A DIFFERENT ASSET WITH THE SAME BASENAME' ARE NOT THE SAME
+            # EVENT (2026-08-03). Both used to hit this branch, so on a resumed run the 2nd..Nth
+            # distinct copy of a colliding name was DROPPED - and the summary still printed
+            # `collisions: 0`, because the collision path never ran. Resume may only skip a file
+            # whose bytes we would have written anyway; anything else falls through to the
+            # collision path and is kept as ~N and counted.
+            try:
+                same = os.path.getsize(target) == len(blob)
+            except OSError:
+                same = False
+            if same:
+                if stats is not None:
+                    stats['resumed'] = stats.get('resumed', 0) + 1
+                return None
         if stats is not None:
             stats['collisions'] = stats.get('collisions', 0) + 1
         stem, ext = split_type_ext(name)
@@ -1502,6 +1526,7 @@ def cmd_extract(a):
                 # so the pipeline is connected without any UE-side work. Binary is kept when a
                 # converter for that type does not exist yet.
                 if getattr(a, 'xml', False):
+                    written_path = None
                     try:
                         conv = to_interchange_xml(name, blob,
                                                  getattr(a, 'textures', 'both'), stats)
@@ -1510,8 +1535,11 @@ def cmd_extract(a):
                             written = file_into(a.out, slot, xml_name, xml_bytes, stats,
                                                 getattr(a, 'resume', False))
                             if written is None:
-                                n += 1     # already present from an earlier interrupted run
+                                # ⛔ do NOT count a resumed skip as an extracted file: `total` is
+                                # read as "files this run produced", and counting skips made a
+                                # resumed run report work it never did.
                                 continue
+                            written_path = os.path.join(a.out, slot, type_of(name), written)
                             # The pixel folder must follow the XML that was ACTUALLY written: on
                             # a basename collision the XML becomes foo~1.ytd.xml, and a sidecar
                             # folder still called `foo` would hand one dictionary's XML another
@@ -1537,6 +1565,22 @@ def cmd_extract(a):
                     except Exception as ex:
                         stats['xml_failed'] = stats.get('xml_failed', 0) + 1
                         stats.setdefault('xml_errors', []).append(f'{name}: {type(ex).__name__}: {ex}')
+                        # ⛔ UNWIND THE HALF-WRITTEN XML (2026-08-03). If the failure happened
+                        # AFTER file_into wrote the XML - i.e. anywhere in the sidecar loop - the
+                        # fallback below wrote the raw binary too, leaving BOTH artifacts on disk
+                        # for the same asset. `resolve` then picks by extension and a consumer
+                        # reads an XML whose pixel/child sidecars are missing or partial, while
+                        # the run reports "kept binary" and looks handled.
+                        if written_path:
+                            for p in (written_path, split_type_ext(written_path)[0]):
+                                try:
+                                    if os.path.isdir(p):
+                                        shutil.rmtree(p)
+                                    elif os.path.exists(p):
+                                        os.remove(p)
+                                except OSError:
+                                    pass
+                            stats['xml_unwound'] = stats.get('xml_unwound', 0) + 1
                         # fall through and keep the binary rather than losing the asset
                 file_into(a.out, slot, name, blob, stats, getattr(a, 'resume', False))
                 n += 1
@@ -1556,7 +1600,11 @@ def cmd_extract(a):
         _prev_failed = failed_now
         print(f'  {os.path.basename(path):<28} -> {slot:<28} {n} files{note}')
 
-    print(f'\nextracted {total} files; {skipped} archive(s) skipped')
+    print(f'\nextracted {total} files'
+          + (f' ({stats["resumed"]:,} already present, skipped)' if stats.get('resumed') else '')
+          + f'; {skipped} archive(s) skipped')
+    if stats.get('xml_unwound'):
+        print(f'half-written XML unwound after a mid-sidecar failure: {stats["xml_unwound"]}')
     print(f'nested archives opened: {stats.get("nested_opened", 0)}'
           f'   failed to open: {stats.get("nested_failed", 0)}'
           f'   AES-encrypted (no key, expected): {stats.get("nested_aes_skipped", 0)}'
@@ -1587,13 +1635,17 @@ def cmd_extract(a):
     # version of the failure this whole triage is about: a gate incapable of failing makes every
     # green result above it meaningless. Zero work = exit 2; work attempted but nothing landed
     # while archives were skipped = exit 1.
-    if total == 0:
+    # ⚠ A FULLY-RESUMED RUN IS A LEGITIMATE NO-OP, not a failure. Caught while testing the
+    # zero-work gate above: with everything already on disk, `total` is 0 and the gate cried wolf.
+    # A gate that fires on a healthy run gets disabled by whoever hits it, which would put us
+    # straight back to the un-failable gate this was meant to fix.
+    if total == 0 and not stats.get('resumed'):
         print('\n⛔ ZERO files were extracted. This is a FAILURE, not an empty success — check '
               '--only/--types spelling, and whether key material was available (see the "keys" '
               'line above).')
         return 2
-    if skipped and total == 0:
-        return 1
+    if total == 0:
+        print('\nnothing new to do - every target was already present (resume).')
     return 0
 
 
