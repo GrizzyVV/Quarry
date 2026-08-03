@@ -1704,6 +1704,17 @@ def cmd_extract(a):
                  else ''))
         for line in stats.get('xml_errors', [])[:8]:
             print(f'    {line}')
+        # ⛔ THE EMITTERS' OWN REFUSAL COUNTERS, SURFACED (2026-08-03). ydr2xml/yft2xml count every
+        # decline they make - an embedded dictionary that would not decode, a NaN snapped to zero,
+        # a geometry shortfall - into one run-global table. Without this call that table is a
+        # detector wired to nothing, which is the exact defect we found in Walker.warn hours
+        # earlier: raised seven classes, read one. A downgrade that never reaches a human is a
+        # silent one no matter how carefully it was counted.
+        try:
+            import ydr2xml
+            ydr2xml.report_refusals(stats)
+        except Exception as ex:
+            print(f'  (refusal report unavailable: {type(ex).__name__}: {ex})')
         if stats.get('yft_extras_refused'):
             print(f'yft extras refused (fell back to the visual drawable, counted): '
                   f'{stats["yft_extras_refused"]}')
