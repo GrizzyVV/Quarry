@@ -1737,6 +1737,172 @@ def cmd_extract(a):
     return 0
 
 
+REGRESS_BASELINE = '_regress_baseline.json'
+REGRESS_TYPES = ('ydr', 'ybn', 'ydd', 'yft', 'ytd')
+
+
+def _regress_fixtures(root, per_type, seed):
+    """A DETERMINISTIC sample of real binaries from the operator's own filebase.
+
+    Deterministic matters more than large: the same command must pick the same files on every
+    run, or a passing gate proves nothing about the run before it. Sorted names + a fixed seed
+    give that without recording any game data.
+    """
+    import random
+    out = []
+    for t in REGRESS_TYPES:
+        found = []
+        for slot in precedence_slots(root):
+            d = os.path.join(root, slot, t)
+            if not os.path.isdir(d):
+                continue
+            found += [os.path.join(d, f) for f in sorted(os.listdir(d))
+                      if f.lower().endswith('.' + t)]
+        if not found:
+            continue
+        rng = random.Random(f'{seed}:{t}')
+        out += sorted(rng.sample(found, min(per_type, len(found))))
+    return out
+
+
+def _regress_signature(path):
+    """(xml sha256, [(sidecar name, sha256)]) for one binary, through the REAL pipeline entry
+    point - so the gate measures what extract would actually write, not a private code path."""
+    import hashlib
+    blob = open(path, 'rb').read()
+    conv = to_interchange_xml(os.path.basename(path), blob, 'none', None)
+    if conv is None:
+        return {'converted': False}
+    _n, xml_bytes, sidecars = conv
+    # ⛔ JSON-STABLE BY CONSTRUCTION. The first version stored tuples; json.load returns them as
+    # LISTS, so the signature never equalled its own baseline and the gate failed the run
+    # immediately after blessing it. A gate that cries wolf on a healthy run gets switched off by
+    # whoever hits it - the same failure mode as the zero-work gate earlier today. Anything stored
+    # here must survive a dump/load round trip unchanged.
+    return {
+        'converted': True,
+        'xml': hashlib.sha256(xml_bytes).hexdigest(),
+        'bytes': len(xml_bytes),
+        'sidecars': [[rel, hashlib.sha256(p).hexdigest()]
+                     for rel, p in sorted(sidecars or [])],
+    }
+
+
+def cmd_regress(a):
+    """⛔⛔ THE CHURN GATE. Converter OUTPUT may not change unless someone says why.
+
+    Matt, 2026-08-03: "are we actually doing triage ... or just shuffling things around?" The
+    difference is measurable and therefore mechanizable: a genuine fix changes output ONLY where
+    a defect was measured, while churn changes output somewhere nobody predicted. Left to
+    attention, that check happens when a human happens to ask - which is exactly when it is
+    least likely to happen.
+
+    So: a fixed, deterministic sample of the operator's OWN binaries is converted through the
+    real pipeline entry point and hashed. Any hash that moves FAILS the run and prints what
+    moved. Accepting a change requires `--bless --reason "<why>"`, which records the reason and
+    the date beside the new hash - so the next reader sees a justification, not a mystery.
+
+    ⛔ The baseline lives in the project folder and is NEVER committed: it is derived from the
+    operator's own install (the same rule as every other artifact here).
+    """
+    import datetime
+    root = a.out
+    if not os.path.isdir(root):
+        print(f'no project folder at {root}')
+        return 2
+    bl_path = os.path.join(root, REGRESS_BASELINE)
+    baseline = {}
+    if os.path.isfile(bl_path):
+        try:
+            with open(bl_path) as f:
+                baseline = json.load(f)
+        except Exception as e:
+            print(f'baseline unreadable ({e}) - treating as absent')
+    fixtures = _regress_fixtures(root, a.per_type, a.seed)
+    if not fixtures:
+        print(f'STOP - no binary fixtures found under {root}. The gate needs real binaries; a '
+              f'--xml extract leaves none for converted types. Extract at least one archive '
+              f'WITHOUT --xml first (e.g. --types ydr,ytd --only x64a.rpf).')
+        return 2
+    print(f'fixtures  : {len(fixtures)} binaries (seed {a.seed}, {a.per_type}/type)')
+
+    sigs, errors = {}, {}
+    for p in fixtures:
+        key = os.path.relpath(p, root).replace(os.sep, '/')
+        try:
+            sigs[key] = _regress_signature(p)
+        except Exception as ex:
+            errors[key] = f'{type(ex).__name__}: {ex}'
+
+    if a.bless:
+        if not a.reason:
+            print('STOP - --bless requires --reason "<why the output changed>". A baseline moved '
+                  'without a recorded reason is indistinguishable from churn, which is the '
+                  'entire thing this gate exists to catch.')
+            return 2
+        stamp = a.date or datetime.date.today().isoformat()
+        moved = sum(1 for k, v in sigs.items() if baseline.get(k, {}).get('sig') != v)
+        for k, v in sigs.items():
+            prev = baseline.get(k, {})
+            if prev.get('sig') != v:
+                hist = prev.get('history', [])
+                hist.append({'date': stamp, 'reason': a.reason})
+                baseline[k] = {'sig': v, 'history': hist[-10:]}
+        with open(bl_path, 'w') as f:
+            json.dump(baseline, f, indent=1, sort_keys=True)
+        print(f'blessed {moved} fixture(s) -> {bl_path}\n  reason: {a.reason}')
+        return 0
+
+    if not baseline:
+        print('STOP - no baseline yet. Record one with:\n'
+              f'    quarry.py regress --out "{root}" --bless --reason "initial baseline"\n'
+              '  and commit nothing - the baseline is derived from your own install.')
+        return 2
+
+    changed, missing, new = [], [], []
+    for k, v in sigs.items():
+        if k not in baseline:
+            new.append(k)
+        elif baseline[k].get('sig') != v:
+            changed.append(k)
+    for k in baseline:
+        if k not in sigs and k not in errors:
+            missing.append(k)
+
+    print(f'compared  : {len(sigs)} fixtures against the baseline')
+    if errors:
+        print(f'\nSTOP - {len(errors)} fixture(s) FAILED TO CONVERT that the baseline expects:')
+        for k, e in list(errors.items())[:8]:
+            print(f'    {k}: {e}')
+    if changed:
+        print(f'\nSTOP - OUTPUT CHANGED for {len(changed)} fixture(s):')
+        for k in changed[:12]:
+            was, now = baseline[k]['sig'], sigs[k]
+            bits = []
+            if was.get('xml') != now.get('xml'):
+                bits.append(f'xml {was.get("bytes")}B -> {now.get("bytes")}B')
+            if was.get('sidecars') != now.get('sidecars'):
+                bits.append(f'sidecars {len(was.get("sidecars") or [])} -> '
+                            f'{len(now.get("sidecars") or [])}')
+            if was.get('converted') != now.get('converted'):
+                bits.append(f'converted {was.get("converted")} -> {now.get("converted")}')
+            print(f'    {k}: ' + ', '.join(bits or ['content differs']))
+        if len(changed) > 12:
+            print(f'    ... and {len(changed) - 12} more')
+        print('\n  If this change is INTENDED, say why and record it:\n'
+              f'    quarry.py regress --out "{root}" --bless --reason "<what defect this fixes>"')
+    if missing:
+        print(f'\n! {len(missing)} baseline fixture(s) are no longer in the sample (corpus '
+              f'changed?): ' + ', '.join(missing[:4]) + (' ...' if len(missing) > 4 else ''))
+    if new:
+        print(f'! {len(new)} fixture(s) have no baseline entry yet: ' + ', '.join(new[:4])
+              + (' ...' if len(new) > 4 else ''))
+    if changed or errors:
+        return 1
+    print('\nOK - every fixture produced byte-identical output. No churn.')
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(prog='quarry')
     sub = ap.add_subparsers(dest='cmd', required=True)
@@ -1811,6 +1977,18 @@ def main():
     pd.add_argument('--magic')
     pd.add_argument('--oodle')
     pd.set_defaults(fn=cmd_doctor)
+
+    pr = sub.add_parser('regress', help='THE CHURN GATE: converter output may not change '
+                                        'unless someone records why')
+    pr.add_argument('--out', required=True, help='project folder holding real BINARY fixtures')
+    pr.add_argument('--per-type', type=int, default=25, dest='per_type',
+                    help='fixtures sampled per type (default 25)')
+    pr.add_argument('--seed', default='rude', help='sample seed - changing it changes the sample')
+    pr.add_argument('--bless', action='store_true',
+                    help='accept the current output as the new baseline (requires --reason)')
+    pr.add_argument('--reason', help='WHY the output changed - recorded beside the new hash')
+    pr.add_argument('--date', help='override the recorded date (tests)')
+    pr.set_defaults(fn=cmd_regress)
 
     a = ap.parse_args()
     if a.cmd in ('init', 'extract') and not a.out:

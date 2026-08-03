@@ -20,3 +20,8 @@ resources/magic.dat
 #  * yft2xml_pre_vehicle.py - a superseded snapshot; noise in a public tree.
 # Remove this block only as a deliberate decision, not to make a push go through.
 _archive/
+
+# The churn gate's baseline is DERIVED FROM THE OPERATOR'S OWN INSTALL (asset names + output
+# hashes from their extraction), and it is machine-specific by design. Same rule as every other
+# game-derived artifact here: it lives in the project folder, never in the repo.
+_regress_baseline.json
