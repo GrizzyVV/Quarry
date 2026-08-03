@@ -1673,8 +1673,14 @@ def verify_binary(kind, bin_dir, limit, names, strict=False):
     """
     files = sorted(glob.glob(os.path.join(bin_dir, "*.%s" % kind)))[:limit]
     if not files:
-        print("=== %s binary verify: no files in %s ===" % (kind, bin_dir))
-        return 0
+        # ⛔ ZERO SUBJECTS IS A BROKEN QUESTION (2026-08-03). This printed "no files" and returned
+        # SUCCESS, so the harness the docstring calls "the real test, and the one that can catch a
+        # decode error the round-trip cannot" has been reporting a clean pass while comparing
+        # NOTHING - the ymap lane in particular ran compared-nothing for an unknown period.
+        print("⛔ %s binary verify: NO BINARIES in %s - a verification with no subject cannot "
+              "pass. (A --xml extract leaves no binaries for converted types; point --verify-binary"
+              " at a filebase extracted WITHOUT --xml for this kind.)" % (kind, bin_dir))
+        return 2
     parse = parse_ytyp if kind == "ytyp" else parse_ymap
     key = "name" if kind == "ytyp" else "archetypeName"
     numeric = (("lodDist", "flags", "bsRadius", "hdTextureDist") if kind == "ytyp"
@@ -1872,7 +1878,13 @@ def main():
         print("converted %d, failed %d -> %s" % (nok, nfail, a.out))
         for k, n in why.most_common(8):
             print("  %5dx %s" % (n, k))
-        return 1 if nfail and not nok else 0
+        # ⛔ PARTIAL FAILURE IS FAILURE (2026-08-03). This returned 0 unless EVERY file failed, so
+        # 999 conversions failing out of 1,000 exited 0 and any CI or driver above it saw success.
+        # And zero targets - a glob that matched nothing - also exited 0, the zero-evidence pass.
+        if not targets:
+            print("⛔ no .ytyp/.ymap/.ymt matched - a run with nothing to convert is not a pass")
+            return 2
+        return 1 if nfail else 0
 
     if not (a.roundtrip or a.census or a.verify_binary):
         ap.error("give --roundtrip, --census, --verify-binary or --convert")

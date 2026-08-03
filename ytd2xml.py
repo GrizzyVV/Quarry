@@ -464,7 +464,13 @@ def main():
         print("failure reasons:")
         for m, n in sorted(unmapped.items(), key=lambda kv: -kv[1]):
             print(f"  {n:5}x  {m}")
-    return 1 if fail and not ok else 0
+    # ⛔ PARTIAL FAILURE IS FAILURE, and zero subjects is not a pass (2026-08-03). This returned 0
+    # unless EVERY file failed, so 999 failures out of 1,000 exited 0; and a directory holding no
+    # .ytd printed "converted 0, failed 0" and exited 0 - silent success on a no-op.
+    if not ok and not fail:
+        print("⛔ no .ytd found - a run with nothing to convert is not a success")
+        return 2
+    return 1 if fail else 0
 
 
 if __name__ == "__main__":

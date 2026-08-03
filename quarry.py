@@ -672,9 +672,18 @@ def walk_archive(r, oodle, depth=0, max_depth=2, stats=None, path=''):
                     raise ValueError('nested TOC did not decode')
             except Exception as ex:
                 if stats is not None:
-                    stats['nested_failed'] = stats.get('nested_failed', 0) + 1
-                    stats.setdefault('failures', []).append(
-                        f'{path}/{name} (nested): {type(ex).__name__}: {ex}')
+                    # ⛔ A KNOWN, EXPECTED SKIP IS NOT A FAILURE — separate buckets (2026-08-03).
+                    # AES-encrypted archives (41 game-wide, all map set-pieces) landed in the SAME
+                    # counter as genuine TOC-decode failures, so "failed to open: 41" was both the
+                    # normal state AND what a real regression would look like. With the buckets
+                    # split, `nested_aes_skipped == 0` becomes a usable regression gate for the
+                    # AES work, and any non-zero `nested_failed` is a real problem again.
+                    aes = isinstance(ex, KeyError) and 'AES-encrypted archive' in str(ex)
+                    k = 'nested_aes_skipped' if aes else 'nested_failed'
+                    stats[k] = stats.get(k, 0) + 1
+                    if not aes:
+                        stats.setdefault('failures', []).append(
+                            f'{path}/{name} (nested): {type(ex).__name__}: {ex}')
                 continue
             if stats is not None:
                 stats['nested_opened'] = stats.get('nested_opened', 0) + 1
@@ -866,7 +875,7 @@ def cmd_meta(a):
 
     ok = fail = pso = rbf = 0
     unresolved = 0
-    why, noemit = {}, {}
+    why, noemit, warn_classes = {}, {}, {}
     for slot in slots:
         for kind in ('ytyp', 'ymap', 'ymt'):
             d = os.path.join(out, slot, kind)
@@ -908,6 +917,14 @@ def cmd_meta(a):
                           encoding='utf-8') as fh:
                     fh.write(xml)
                 unresolved += w.warn.get('unresolved asset-name hash', 0)
+                # ⛔ SURFACE EVERY warn CLASS, not just the one we happened to read (2026-08-03).
+                # Walker.warn is a real decode-failure detector that was wired to NOTHING: seven
+                # classes are raised and exactly one was ever read, so "unhandled type 0x40" fired
+                # ~970 times per run and reached no human. A detector nobody reads is not a
+                # detector - it is a comment that costs CPU.
+                for _k, _n in w.warn.items():
+                    if _k != 'unresolved asset-name hash':
+                        warn_classes[_k] = warn_classes.get(_k, 0) + _n
                 ok += 1
 
     print(f'converted {ok} ytyp/ymap/ymt -> XML, {fail} failed'
@@ -917,6 +934,10 @@ def cmd_meta(a):
              if rbf else ''))
     for rn, n in sorted(noemit.items(), key=lambda kv: -kv[1]):
         print(f'  {n:5}x  recognised META root {rn} - well-formed, no emitter (counted, not failed)')
+    if warn_classes:
+        print('decoder warnings (each one is data the walker did not fully understand):')
+        for _k, _n in sorted(warn_classes.items(), key=lambda kv: -kv[1]):
+            print(f'  {_n:7,}x  {_k}')
     if unresolved:
         print(f'  unresolved name hashes: {unresolved:,} -> emitted as hash_XXXXXXXX. The '
               f'ymap<->ytyp join still holds (same hash both sides); only an assetName needs a '
@@ -1398,7 +1419,14 @@ def cmd_extract(a):
             jobs.append((os.path.join(d, f),
                          os.path.join('20_dlc', '%03d_%s' % (i + 1, names[i]))))
     if a.only:
+        avail = sorted({os.path.basename(j[0]) for j in jobs})
         jobs = [j for j in jobs if os.path.basename(j[0]).lower() == a.only.lower()]
+        if not jobs:
+            # Fail HERE with the available names rather than walking zero archives and calling it
+            # a clean run - a typo in --only used to be indistinguishable from an empty game.
+            print(f'⛔ --only {a.only!r} matched NO archive. Available ({len(avail)}): '
+                  + ', '.join(avail[:24]) + (' …' if len(avail) > 24 else ''))
+            return 2
 
     want = None
     if getattr(a, 'types', None):
@@ -1512,6 +1540,7 @@ def cmd_extract(a):
     print(f'\nextracted {total} files; {skipped} archive(s) skipped')
     print(f'nested archives opened: {stats.get("nested_opened", 0)}'
           f'   failed to open: {stats.get("nested_failed", 0)}'
+          f'   AES-encrypted (no key, expected): {stats.get("nested_aes_skipped", 0)}'
           f'   past max-depth: {stats.get("nested_skipped", 0)}')
     if getattr(a, 'xml', False):
         print(f'XML converted: {stats.get("xml_ok", 0)}   conversion failed (kept binary): '
@@ -1533,6 +1562,19 @@ def cmd_extract(a):
         print(f'    {line}')
     if len(stats.get('failures', [])) > 15:
         print(f'    ... and {len(stats["failures"]) - 15} more')
+    # ⛔⛔ A RUN THAT DID NOTHING IS NOT A SUCCESS (2026-08-03). This returned 0 unconditionally,
+    # so `--only <typo>`, a `--types` filter that matches nothing, and a run that acquired no keys
+    # and skipped every archive ALL printed a clean summary and exited 0. That is the deepest
+    # version of the failure this whole triage is about: a gate incapable of failing makes every
+    # green result above it meaningless. Zero work = exit 2; work attempted but nothing landed
+    # while archives were skipped = exit 1.
+    if total == 0:
+        print('\n⛔ ZERO files were extracted. This is a FAILURE, not an empty success — check '
+              '--only/--types spelling, and whether key material was available (see the "keys" '
+              'line above).')
+        return 2
+    if skipped and total == 0:
+        return 1
     return 0
 
 
