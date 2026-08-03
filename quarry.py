@@ -801,7 +801,7 @@ def precedence_slots(out_root):
                     named.append(d)
             extra = sorted(on_disk - set(named))
             if extra:
-                print(f'⚠ {len(extra)} DLC director{"y" if len(extra) == 1 else "ies"} under '
+                print(f'! {len(extra)} DLC director{"y" if len(extra) == 1 else "ies"} under '
                       f'20_dlc are NOT in this project\'s manifest and are EXCLUDED from '
                       f'precedence (stale from an earlier extract): '
                       + ', '.join(extra[:6]) + (' …' if len(extra) > 6 else ''))
@@ -809,7 +809,7 @@ def precedence_slots(out_root):
         else:
             # No manifest (hand-assembled folder): fall back to the lexical read, but SAY so -
             # the caller is entitled to know the ordering is unverified.
-            print('⚠ no _FILEBASE.json dlcPacks - DLC precedence falls back to a lexical sort of '
+            print('! no _FILEBASE.json dlcPacks - DLC precedence falls back to a lexical sort of '
                   '20_dlc, which is only load order if one extraction produced every directory')
             slots += [os.path.join('20_dlc', d) for d in sorted(on_disk)]
     return slots
@@ -1248,7 +1248,7 @@ def cmd_textures(a):
     # not recoverable in one step, and "I found no evidence" must never be silently promoted to
     # "there is nothing worth keeping".
     if not drawables or not manifests:
-        print('\n⛔ REFUSING TO PRUNE: scanned %d drawables and %d ytd manifests. With no drawable'
+        print('\nSTOP - REFUSING TO PRUNE: scanned %d drawables and %d ytd manifests. With no drawable'
               ' XML to read, every dictionary looks unreferenced and this would delete them all.'
               '\n   Run `quarry extract --xml` then `quarry resolve` for this project first.'
               % (drawables, manifests))
@@ -1260,7 +1260,7 @@ def cmd_textures(a):
     # drawable lane that can reference a texture must be present before deletion is allowed.
     missing_kinds = sorted({'ydr', 'ydd', 'yft'} - kinds_seen)
     if missing_kinds:
-        print('\n⛔ REFUSING TO PRUNE: no %s drawable folder in the reference roots. Those '
+        print('\nSTOP - REFUSING TO PRUNE: no %s drawable folder in the reference roots. Those '
               'drawables reference textures too, so their names are missing from the keep set and '
               'pruning would delete pixels that ARE used.\n   Resolve every drawable type first '
               '(`quarry resolve --out <project>` with no --types), then prune.'
@@ -1387,7 +1387,7 @@ def cmd_resolve(a):
             merged = {k: v for k, v in prior.items()
                       if k.split('/', 1)[0].lower() not in want}
         except Exception as ex:
-            print(f'  ⚠ could not carry forward the existing _RESOLVED.json ({ex}) - the new '
+            print(f'  ! could not carry forward the existing _RESOLVED.json ({ex}) - the new '
                   f'record holds this run\'s types only')
     merged.update({f'{t}/{n}': s for (t, n), s in winner.items()})
     per_type = {}
@@ -1427,7 +1427,7 @@ def cmd_resolve(a):
     print(f'  pixel sidecars carried: {sidecars:,}')
     print(f'  hardlinked {linked:,}, copied {copied:,}')
     if ambiguous:
-        print(f'  ⚠ within-slot name alternates SKIPPED: {ambiguous:,} - the un-suffixed copy won.'
+        print(f'  ! within-slot name alternates SKIPPED: {ambiguous:,} - the un-suffixed copy won.'
               f' They remain in the precedence tree; see _RESOLVED.json')
     print(f'\n  point RUDE at: {dest_root}')
     return 0
@@ -1542,7 +1542,7 @@ def cmd_extract(a):
              and os.path.isfile(os.path.join(d, f))),
             key=lambda f: (len(f), f.lower()))
         if not found:
-            print(f'  ⚠ {names[i]}: no dlc*.rpf found in {d} - nothing to extract from this pack')
+            print(f'  ! {names[i]}: no dlc*.rpf found in {d} - nothing to extract from this pack')
             continue
         if len(found) > 1:
             print(f'  {names[i]}: {len(found)} archives -> {", ".join(found)}')
@@ -1555,7 +1555,7 @@ def cmd_extract(a):
         if not jobs:
             # Fail HERE with the available names rather than walking zero archives and calling it
             # a clean run - a typo in --only used to be indistinguishable from an empty game.
-            print(f'⛔ --only {a.only!r} matched NO archive. Available ({len(avail)}): '
+            print(f'STOP --only {a.only!r} matched NO archive. Available ({len(avail)}): '
                   + ', '.join(avail[:24]) + (' …' if len(avail) > 24 else ''))
             return 2
 
@@ -1575,13 +1575,13 @@ def cmd_extract(a):
             mode = getattr(a, 'textures', 'both')
             parts = ([] if mode == 'png' else ['.dds']) + ([] if mode == 'dds' else ['.png'])
             if mode == 'dds':
-                print('textures    : ytd -> .ytd.xml + .dds  ⚠ NO .png, and ImportYtd reads .png '
+                print('textures    : ytd -> .ytd.xml + .dds  ! NO .png, and ImportYtd reads .png '
                       '- this folder is an archive, not an importable one')
             elif ytd2xml.png_available():
                 print(f'textures    : ytd -> .ytd.xml + {" + ".join(parts)}'
                       f'   (ImportYtd reads the .png)')
             else:
-                print('textures    : ⚠ texture2ddecoder/Pillow NOT installed - ytd folders will '
+                print('textures    : ! texture2ddecoder/Pillow NOT installed - ytd folders will '
                       'hold .dds ONLY, and ImportYtd reads .png. `pip install texture2ddecoder '
                       'Pillow` to make the texture lane usable.')
         except Exception as e:
@@ -1728,7 +1728,7 @@ def cmd_extract(a):
     # A gate that fires on a healthy run gets disabled by whoever hits it, which would put us
     # straight back to the un-failable gate this was meant to fix.
     if total == 0 and not stats.get('resumed'):
-        print('\n⛔ ZERO files were extracted. This is a FAILURE, not an empty success — check '
+        print('\nSTOP - ZERO files were extracted. This is a FAILURE, not an empty success - check '
               '--only/--types spelling, and whether key material was available (see the "keys" '
               'line above).')
         return 2

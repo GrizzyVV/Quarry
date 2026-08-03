@@ -63,7 +63,10 @@ FIELD MAP FOR THE EXTRAS - all MEASURED 2026-07-28 against the reference _proces
       -> walking that chain reproduces the oracle's child index, geometry count, index count
          and per-geometry ShaderIndex on 16/16 vehicles (zentorno excepted = build drift).
     BoneTag is NOT stored on the child. It is DERIVED: Groups[GroupIndex].Name names a
-    skeleton bone, and that bone's Tag is the child's BoneTag - 376/376 children, 16 vehicles.
+    skeleton bone, and that bone's Tag is the child's BoneTag. ⚠ The "376/376 children, 16
+    vehicles" figure this line used to carry described a SAMPLE in which group name == bone name;
+    format-wide the join needs case folding and two suffix transforms - see _tag_of, which
+    measures 99.90% over 4,934 name-matched children where exact-case scored 91.9%.
     A child drawable has NO ShaderGroup of its own: its <ShaderIndex> values index the
     FRAGMENT's shader group (measured - 0 shaders read at every child base, and the reference
     corpus child <Drawable>s carry no <ShaderGroup> either). The sidecar therefore splices the
@@ -90,7 +93,10 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ydr2xml import Res, drawable_lines, esc, fmt_float, read_geometries
+# _refuse is shared deliberately: ONE counter table for the whole interchange-XML lane, so
+# quarry's single ydr2xml.report_refusals(stats) call reports fragment declines too. A second
+# private table here would be a second thing to remember to surface.
+from ydr2xml import Res, drawable_lines, esc, fmt_float, read_geometries, _refuse
 
 YFT_VERSION = 162       # measured 300/300 (yft_probe.py)
 DRAWABLE_SLOT = 0x30    # measured 300/300
@@ -227,11 +233,45 @@ def read_physics(res):
 
 
 def _tag_of(bones, name):
-    """Bone tag by name - the group<->bone join. -1 when the group names no bone, which is
-    real: a physics group can describe a collision-only part with no bone of its own."""
+    """Bone tag by name - the group<->bone join.
+
+    ⛔ EXACT, CASE-SENSITIVE MATCHING IS NOT THE RULE (measured 2026-08-03, 700 fragments /
+    4,934 children name-matched against the reference oracle). The old one-liner compared
+    b["name"] == name and returned -1 otherwise, with a comment calling -1 "real: a physics group
+    can describe a collision-only part with no bone of its own". THE ORACLE EMITS -1 ON 0 OF
+    4,934 CHILDREN - so -1 was never the data's answer, it was always ours, and the comment was
+    what made 400 wrong answers read as legitimate. Exact-case scored 4,534/4,934 = 91.9%.
+    The docstring's "376/376 children, 16 vehicles" is a SAMPLE-DESCRIPTIVE number, not a format
+    law: those 16 vehicles happened to be the case where group name == bone name.
+    Every mismatch is one of three authoring transforms, censused over the same 4,934:
+        case drift only ...................... 199   (cs2_02_tunnel_cloth_10 vs CS2_02_Tunnel_Cloth_10)
+        bone carries an `_ng` suffix ......... 138   (group tenf_skirt_bc2 -> bone tenf_skirt_bc2_ng)
+        group is <bone>physicsbody ........... 58    (skel_pelvisphysicsbody -> SKEL_Pelvis)
+    Case-insensitive first, then the two suffix transforms: 4,929/4,934 = 99.90%, -1 emitted 5.
+    Re-validated on a FRESH sample (seed 777777, 800 fragments / 5,795 children): 5,794/5,795 =
+    99.983%, -1 emitted 1.
+    ⚠ ONE UNEXPLAINED RESIDUAL CLASS REMAINS, and it is small: a full extras run over 1,500
+    fragments / 8,594 children emitted -1 exactly 4 times (0.047%), on groups "root",
+    "slod_human" and "slod_small_quadped" - a group whose name matches no bone under any of the
+    three transforms. In every instance checked the oracle answers 0, which is bones[0]["tag"]
+    (SKEL_ROOT on slod_human/slod_small_quadped; the lone bone on cs1_11_banner_ng_01), i.e.
+    "a group that names no bone hangs off the root". That hypothesis fits 3/3 files and is
+    STILL NOT IMPLEMENTED: three files is how a wrong rule gets written into a format, and
+    bones[0] vs "tag 0" cannot be told apart while every observed root tag is 0. The -1 is
+    COUNTED instead (bone_tag_unresolved) - if that counter climbs the rule is incomplete
+    rather than the data being odd, and the root hypothesis is the first thing to test."""
+    ln = name.lower()
     for b in bones:
-        if b["name"] == name:
+        if b["name"].lower() == ln:
             return b["tag"]
+    key = ln[:-11] if ln.endswith("physicsbody") else ln
+    for b in bones:
+        bn = b["name"].lower()
+        if bn.endswith("_ng"):
+            bn = bn[:-3]
+        if bn == key:
+            return b["tag"]
+    _refuse("bone_tag_unresolved", "group %r matches no bone" % name)
     return -1
 
 
@@ -318,7 +358,24 @@ def convert(res, stem, extras=None):
     if buf is None:
         raise ValueError("main drawable pointer (+0x30) does not resolve")
     inner = res.cstr(res.ptr(base + 0xA8)) or "skel"
-    body = drawable_lines(res, inner, base=base)
+    try:
+        body = drawable_lines(res, inner, base=base)
+    except ValueError as ex:
+        # ⛔ AN EMPTY MAIN DRAWABLE IS A LEGAL SHAPE, NOT A DECODE FAILURE (measured 2026-08-03).
+        # A handful of base-game fragments carry ZERO geometry in the visual drawable and all of
+        # it in a PHYSICS CHILD. drawable_lines raised "no geometry decoded", convert() died here
+        # before extras ever ran, and the fragment lost EVERYTHING - no .yft.xml, no skeleton, no
+        # child sidecar - while quarry filed it in the generic xml_failed bucket beside genuinely
+        # corrupt files, so "the yft lane converts 100% of what it sees" still read as true. The
+        # oracle export agrees the mesh is there (enduro_ex_2: DrawableModelsHigh 0 geometries,
+        # 2 children, child geometry counts [1, 0]). Tolerated ONLY with extras on, because only
+        # the extras lane can still deliver that mesh; a shortfall inside a NON-empty drawable
+        # (the "%d of %d geometries did not resolve" refusal) is a different message and still
+        # propagates.
+        if not extras or "no geometry decoded" not in str(ex):
+            raise
+        _refuse("main_drawable_empty_geometry_in_child", "%s: %s" % (stem, ex))
+        body = drawable_lines(res, inner, base=base, allow_empty=True)
 
     extra_lines, sidecars = [], []
     if extras:
@@ -416,6 +473,8 @@ def main():
                   + (f"  (+{len(sidecars)} sidecar)" if sidecars else ""))
         ok += 1
     print(f"\n{ok} converted, {fail} failed")
+    import ydr2xml
+    ydr2xml.report_refusals()      # shared table: bone-tag and empty-drawable declines land here
     return 1 if fail else 0
 
 

@@ -169,6 +169,12 @@ SCHEMA_NAMES = (
     "IgnoreLoitering", "UseSearchlight", "CheckCrossedArrivalPlane",
     "UseVehicleFrontForArrival", "IgnoreWeatherRestrictions",
     # CMapData / entities
+    # The nine NON-entity containers are named here so the emitter can SEE whether one holds
+    # content (see EMPTY_CONTAINERS). Every name PROVEN by hash-match against the root struct
+    # descriptors of real ymap - probe 2026-08-03, 6 random binaries, ONE root layout, 26
+    # entries: joaat_case(name) == the stored nameHash for all nine. Nothing is guessed here.
+    "containerLods", "boxOccluders", "occludeModels", "physicsDictionaries", "instancedData",
+    "carGenerators", "LODLightsSOA", "DistantLODLightsSOA",   # timeCycleModifiers: above
     "CMapData", "CEntityDef", "CMloInstanceDef", "entities", "parent", "contentFlags",
     "streamingExtentsMin", "streamingExtentsMax", "entitiesExtentsMin", "entitiesExtentsMax",
     "archetypeName", "guid", "position", "rotation", "scaleXY", "scaleZ", "parentIndex",
@@ -372,6 +378,13 @@ class Walker:
             if t == T_FIXEDARR:
                 ed = self.elem(s, e)
                 if ed is None or ed["type"] not in PRIM:
+                    # COUNTED, NEVER SILENT (2026-08-03): this was a bare `return None`, so a
+                    # fixed array of non-primitives dropped the whole field out of the XML with
+                    # no warn - structurally invisible, exactly like the T_PTR case below.
+                    # 0 occurrences in 499 real ytyp/ymap/ymt, so this is a latch on a latent
+                    # path, not a live loss.
+                    self.warn["fixed-array element type 0x%02X unsupported"
+                              % (ed["type"] if ed else -1)] += 1
                     return None
                 sz, f = PRIM[ed["type"]]
                 return [struct.unpack_from("<" + f, buf, o + i * sz)[0]
@@ -456,6 +469,13 @@ class Walker:
         if b is None:
             self.warn["string pointer out of range"] += 1
             return ""
+        if bo + n > len(b["data"]):
+            # An in-range block with an out-of-range OFFSET used to slice short (or to "") and
+            # return a truncated/empty name that reads like a legitimately empty field. Counted
+            # so a truncated block can never masquerade as blank data. 0 occurrences in 499 real
+            # files - a latch, not a live loss.
+            self.warn["string overruns its block"] += 1
+            return ""
         return b["data"][bo:bo + n].split(b"\x00")[0].decode("utf-8", "replace")
 
     def array(self, s, e, buf, base):
@@ -476,6 +496,14 @@ class Walker:
                 p = struct.unpack_from("<I", b["data"], bo + i * 8)[0]
                 tbi, tbo = self.metaptr(p)
                 tb = self.block(tbi)
+                if tb is None:
+                    # COUNTED, NEVER SILENT (2026-08-03): the None was appended and then quietly
+                    # filtered out by the `if not item: continue` guards in archetypes_from /
+                    # entities_from / entityset_from / ext_from, so a dropped entity produced a
+                    # SHORTER <entities> list with no error anywhere - indistinguishable from a
+                    # map area that legitimately has fewer props. 0 occurrences in 499 real
+                    # files, so this is a latch on a latent path.
+                    self.warn["array pointer element targets a missing block"] += 1
                 items.append(None if tb is None else
                              (schema_name(tb["structNameHash"]),
                               self.struct(tb["structNameHash"], tb["data"], tbo)))
@@ -933,7 +961,18 @@ def mlo_xml(a):
     return L
 
 
-def ytyp_xml(name, archetypes):
+def ytyp_dropped_from(root, w=None):
+    """compositeEntityTypes only. `extensions` and `dependencies` are populated in 0 of 930 real
+    ytyp binaries (census 2026-08-03) and 0 of the 1,707 reference exports, so their hardcoded
+    empty form is HONEST; compositeEntityTypes is populated in 35 of those 930 (37 records, all
+    des_* destruction sets) and was being written empty regardless."""
+    n = container_records(root.get("compositeEntityTypes"))
+    if n and w is not None:
+        w.warn["DROPPED ytyp compositeEntityTypes (emitter does not serialise it)"] += n
+    return {"compositeEntityTypes": n} if n else {}
+
+
+def ytyp_xml(name, archetypes, dropped=None):
     L = ['<?xml version="1.0" encoding="UTF-8"?>', "<CMapTypes>", " <extensions />"]
     if archetypes:
         L.append(" <archetypes>")
@@ -944,7 +983,14 @@ def ytyp_xml(name, archetypes):
         L.append(" <archetypes />")
     L.append(_txt("name", name, " "))
     L.append(" <dependencies />")
-    L.append(' <compositeEntityTypes itemType="CCompositeEntityType" />')
+    # Same class of defect as the ymap containers: this used to be the empty form UNCONDITIONALLY,
+    # so the 35 des_* ytyp that really carry composite entity types (des_shipsink alone is 1,872
+    # of its reference export's 3,277 lines) emitted an empty element no harness could see -
+    # parse_ytyp never looks at this container. Empty in the binary -> empty element; content in
+    # the binary -> omit + marker, so the loss is visible and counted.
+    n = (dropped or {}).get("compositeEntityTypes", 0)
+    L += (_omitted("compositeEntityTypes", n) if n
+          else [' <compositeEntityTypes itemType="CCompositeEntityType" />'])
     L.append("</CMapTypes>")
     return "\n".join(L) + "\n"
 
@@ -977,31 +1023,109 @@ def entity_xml(e, ind="  "):
     return L
 
 
+# The measured EMPTY spelling of the nine CMapData containers this emitter does not serialise,
+# in reference child order - now keyed by container so ymap_xml can tell an honest empty apart
+# from a drop.
+#
+# HARD - A FORGED EMPTY IS DATA LOSS THE CONSUMER CANNOT SEE (2026-08-03). This tuple used to be
+# appended VERBATIM to every emitted ymap, so `<carGenerators itemType="CCarGen" />` was written
+# even when the binary held 11 of them and the Walker had decoded all 11: "the binary has none",
+# "we dropped it" and "we never decoded it" all rendered as the same self-closing element, and not
+# one counter fired.
+# MEASURED over ALL 7,563 ymap binaries in B:/RUDE_Filebase_Full (00_base + 10_update + 20_dlc,
+# 2026-08-03, 0 decode errors, counts taken from the decoded root through container_records):
+#   physicsDictionaries 4,715 files /  33,266   instancedData         386 /  66,481
+#   carGenerators         700 files /  18,295   timeCycleModifiers    390 /   4,733
+#   boxOccluders          146 files /  15,120   occludeModels         173 /   1,535
+#   LODLightsSOA          320 files / 154,914   DistantLODLightsSOA   320 / 154,914
+#   containerLods           0 files (never populated anywhere in this corpus)
+# = 449,258 records across 5,929 of 7,563 files (78%). 1,215 ymap hold ZERO entities and 1,203 of
+# those carry content in a dropped container - i.e. one ymap in six converted to a syntactically
+# valid, COMPLETELY CONTENTLESS file and was counted as a successful conversion.
+#
+# THE RULE NOW: empty in the binary -> the measured empty element (honest). Content in the binary
+# -> OMIT the element and leave a marker, because `FindChildNode` is direct-children-only and
+# returns nullptr for a missing element (LOG "ImportMapArea's ACTUAL XML contract"), so an
+# omission reads as "not provided" while a forged empty reads as "provided, and it is empty".
+# Serialising them FOR REAL is the better fix and remains open: it needs a reference ymap XML
+# export to measure the per-Item field spelling against, and this machine has none (the oracle
+# tree has no ymap/ directory), so writing one now would be a guess. Priority order when that
+# corpus exists: physicsDictionaries first - the in-game world-collision pass loads ybn through
+# ymap <physicsDictionaries> (LOG 2026-07-24, Matt-witnessed), so an authored map round-tripped
+# through this emitter loses every collision reference.
 EMPTY_CONTAINERS = (
-    ' <containerLods itemType="rage__fwContainerLodDef" />',
-    ' <boxOccluders itemType="BoxOccluder" />',
-    ' <occludeModels itemType="OccludeModel" />',
-    " <physicsDictionaries />",
-    " <instancedData>",
-    "  <ImapLink />",
-    '  <PropInstanceList itemType="rage__fwPropInstanceListDef" />',
-    '  <GrassInstanceList itemType="rage__fwGrassInstanceListDef" />',
-    " </instancedData>",
-    ' <timeCycleModifiers itemType="CTimeCycleModifier" />',
-    ' <carGenerators itemType="CCarGen" />',
-    " <LODLightsSOA>",
-    '  <direction itemType="FloatXYZ" />',
-    "  <falloff />", "  <falloffExponent />", "  <timeAndStateFlags />", "  <hash />",
-    "  <coneInnerAngle />", "  <coneOuterAngleOrCapExt />", "  <coronaIntensity />",
-    " </LODLightsSOA>",
-    " <DistantLODLightsSOA>",
-    '  <position itemType="FloatXYZ" />', "  <RGBI />",
-    '  <numStreetLights value="0" />', '  <category value="0" />',
-    " </DistantLODLightsSOA>",
+    ("containerLods", (' <containerLods itemType="rage__fwContainerLodDef" />',)),
+    ("boxOccluders", (' <boxOccluders itemType="BoxOccluder" />',)),
+    ("occludeModels", (' <occludeModels itemType="OccludeModel" />',)),
+    ("physicsDictionaries", (" <physicsDictionaries />",)),
+    ("instancedData", (" <instancedData>",
+                       "  <ImapLink />",
+                       '  <PropInstanceList itemType="rage__fwPropInstanceListDef" />',
+                       '  <GrassInstanceList itemType="rage__fwGrassInstanceListDef" />',
+                       " </instancedData>")),
+    ("timeCycleModifiers", (' <timeCycleModifiers itemType="CTimeCycleModifier" />',)),
+    ("carGenerators", (' <carGenerators itemType="CCarGen" />',)),
+    ("LODLightsSOA", (" <LODLightsSOA>",
+                      '  <direction itemType="FloatXYZ" />',
+                      "  <falloff />", "  <falloffExponent />", "  <timeAndStateFlags />",
+                      "  <hash />", "  <coneInnerAngle />", "  <coneOuterAngleOrCapExt />",
+                      "  <coronaIntensity />",
+                      " </LODLightsSOA>")),
+    ("DistantLODLightsSOA", (" <DistantLODLightsSOA>",
+                             '  <position itemType="FloatXYZ" />', "  <RGBI />",
+                             '  <numStreetLights value="0" />', '  <category value="0" />',
+                             " </DistantLODLightsSOA>")),
 )
 
 
-def ymap_xml(name, entities, meta=None):
+def _omitted(container, n, ind=" "):
+    """The marker that replaces a container this emitter cannot write faithfully.
+
+    An XML COMMENT is deliberate: UE's own parser culls comments before tokenising
+    (`B:/UE_5.7/Engine/Source/Runtime/XmlParser/Private/XmlFile.cpp:190-241`, "Cull any text
+    inside of comments" -> WhiteOut), so the marker is invisible to FindChildNode - the element
+    is genuinely ABSENT for a consumer - while a human reading the file is told what was lost and
+    how much. Never emit "--" inside it; that is illegal in an XML comment.
+    """
+    return ["%s<!-- QUARRY DROPPED %s: %d record(s) present in this binary, NOT serialised by "
+            "this emitter. The element is omitted, not written empty, so it cannot be read as "
+            "'the binary holds none'. -->" % (ind, container, n)]
+
+
+def container_records(v):
+    """Record count of one decoded CMapData container.
+
+    A plain array counts its items. The struct containers (instancedData / LODLightsSOA /
+    DistantLODLightsSOA) hold PARALLEL arrays, so the record count is the LONGEST member, not the
+    sum: distlodlights_small017.ymap has 401 lights spread over 2 arrays, not 802 records.
+    """
+    if isinstance(v, list):
+        return len(v)
+    if isinstance(v, dict):
+        return max([len(x) for x in v.values() if isinstance(x, list)] or [0])
+    return 0
+
+
+def ymap_dropped_from(root, w=None):
+    """container -> record count, for every CMapData container this emitter drops.
+
+    Counted off the DECODED root, so the number can never disagree with what was emitted, and
+    pushed into the Walker's warn counter so `--convert` (and quarry's meta stage) print it.
+    """
+    out = {}
+    for cname, _lines in EMPTY_CONTAINERS:
+        n = container_records(root.get(cname))
+        if n:
+            out[cname] = n
+            if w is not None:
+                w.warn["DROPPED ymap container %s (emitter does not serialise it)" % cname] += n
+    return out
+
+
+def ymap_xml(name, entities, meta=None, dropped=None):
+    """`dropped` = {container: record count} from ymap_dropped_from(); anything not listed is
+    written in its measured empty form. Omitting it (the round-trip harness, which feeds
+    reference-parsed dicts) keeps the old all-empty behaviour."""
     m = meta or {}
     L = ['<?xml version="1.0" encoding="UTF-8"?>', "<CMapData>"]
     L.append(_txt("name", name, " "))
@@ -1018,7 +1142,10 @@ def ymap_xml(name, entities, meta=None):
         L.append(" </entities>")
     else:
         L.append(" <entities />")
-    L += list(EMPTY_CONTAINERS)
+    d = dropped or {}
+    for cname, lines in EMPTY_CONTAINERS:
+        n = d.get(cname, 0)
+        L += _omitted(cname, n) if n else list(lines)
     L.append("</CMapData>")
     return "\n".join(L) + "\n"
 
@@ -1360,10 +1487,11 @@ def convert_bytes(blob, stem, names=None):
     w = Walker(MetaFile(blob), names=names)
     root_name, root = w.root()
     if root_name == "CMapTypes":
-        return ytyp_xml(root.get("name") or stem, archetypes_from(root)), "ytyp", w
+        return (ytyp_xml(root.get("name") or stem, archetypes_from(root),
+                         ytyp_dropped_from(root, w)), "ytyp", w)
     if root_name == "CMapData":
-        return (ymap_xml(root.get("name") or stem, entities_from(root), ymap_meta_from(root)),
-                "ymap", w)
+        return (ymap_xml(root.get("name") or stem, entities_from(root), ymap_meta_from(root),
+                         ymap_dropped_from(root, w)), "ymap", w)
     if root_name == "CScenarioPointRegion":
         return scenario_xml(scenario_from(root)), "ymt", w
     raise UnsupportedRoot(root_name)
@@ -1595,13 +1723,18 @@ def roundtrip(kind, limit):
     emit = ytyp_xml if kind == "ytyp" else ymap_xml
     _container, must = CONTRACT[kind]
 
-    nfile = nitem = count_bad = 0
+    nfile = nitem = count_bad = nempty = 0
     field_bad = collections.Counter()
     contract_bad = collections.Counter()
     for f in files:
         text = open(f, encoding="utf-8", errors="replace").read()
         src = parse(text)
         if not src:
+            # HARD - A SKIPPED FILE IS NOT A PASSED FILE (2026-08-03). This was a bare `continue`,
+            # a corpus whose files exist but parse to zero items compared NOTHING and still
+            # printed the full green banner - proven by monkeypatching parse_ytyp to return []
+            # against the real 1,707-file oracle: rc=0, "every field byte-identical".
+            nempty += 1
             continue
         nfile += 1
         stem = os.path.basename(f)[:-len(".%s.xml" % kind)]
@@ -1622,6 +1755,14 @@ def roundtrip(kind, limit):
                     contract_bad[k] += 1
 
     print("=== %s round-trip: %s reference files, %s items ===" % (kind, f"{nfile:,}", f"{nitem:,}"))
+    if nempty:
+        print("  reference files that parsed to ZERO items (nothing compared): %d" % nempty)
+    if nitem == 0:
+        print("  STOP - REFUSING: %d reference file(s) present, but NOT ONE item was compared.\n"
+              "     The zero-evidence law from the glob guard above applies to the ITEM count\n"
+              "     too: a parser regression that returns [] must FAIL this gate, not pass it."
+              % len(files))
+        return 1
     print("  item-count mismatches : %d" % count_bad)
     print("  CONTRACT fields (%s): %s" % (", ".join(must),
           "ALL PRESERVED" if not contract_bad else "BROKEN %s" % dict(contract_bad)))
@@ -1677,7 +1818,12 @@ def verify_binary(kind, bin_dir, limit, names, strict=False):
         # SUCCESS, so the harness the docstring calls "the real test, and the one that can catch a
         # decode error the round-trip cannot" has been reporting a clean pass while comparing
         # NOTHING - the ymap lane in particular ran compared-nothing for an unknown period.
-        print("⛔ %s binary verify: NO BINARIES in %s - a verification with no subject cannot "
+        # ASCII-ONLY IS LOAD-BEARING IN A PRINT (2026-08-03): this line shipped with a U+26D4
+        # glyph and every one of its runs died with UnicodeEncodeError on this machine's cp1252
+        # console - the refusal text was destroyed and the deliberate `return 2` became a
+        # traceback exit 1, i.e. a refusal that looked like an ordinary failure. Measured by
+        # running --verify-binary at an empty dir. Keep printed strings ASCII (module docstring).
+        print("STOP - %s binary verify: NO BINARIES in %s - a verification with no subject cannot "
               "pass. (A --xml extract leaves no binaries for converted types; point --verify-binary"
               " at a filebase extracted WITHOUT --xml for this kind.)" % (kind, bin_dir))
         return 2
@@ -1860,13 +2006,15 @@ def main():
         os.makedirs(a.out, exist_ok=True)
         nok = nfail = 0
         why = collections.Counter()
+        warns = collections.Counter()
         for p in targets:
             try:
-                xml, kind, _w = convert(p, names)
+                xml, kind, w = convert(p, names)
             except Exception as e:
                 why["%s: %s" % (type(e).__name__, e)] += 1
                 nfail += 1
                 continue
+            warns.update(w.warn)
             stem = os.path.basename(p)
             for ext in (".ytyp", ".ymap", ".ymt"):
                 if stem.lower().endswith(ext):
@@ -1878,11 +2026,28 @@ def main():
         print("converted %d, failed %d -> %s" % (nok, nfail, a.out))
         for k, n in why.most_common(8):
             print("  %5dx %s" % (n, k))
+        # HARD - A COUNTER NOBODY PRINTS IS A SILENT FAILURE (2026-08-03). `Walker.warn` is a real
+        # decode-failure detector - dropped containers, unhandled types, short reads, missing
+        # blocks - and this loop used to throw the walker away entirely (`_w`), so a file could
+        # lose a whole container and still be reported as "converted". A conversion that dropped
+        # data is NOT a clean conversion, so the loss is named and counted here, at the exit.
+        unresolved = warns.pop("unresolved asset-name hash", 0)
+        if warns:
+            print("  DATA NOT CARRIED INTO THE XML - %s record(s)/field(s) dropped or undecoded:"
+                  % f"{sum(warns.values()):,}")
+            for k, n in warns.most_common(12):
+                print("    %10s  %s" % (f"{n:,}", k))
+        if unresolved:
+            print("  unresolved asset-name hashes: %s (KNOWN bounded degradation to "
+                  "hash_XXXXXXXX, not a decode failure)" % f"{unresolved:,}")
         # ⛔ PARTIAL FAILURE IS FAILURE (2026-08-03). This returned 0 unless EVERY file failed, so
         # 999 conversions failing out of 1,000 exited 0 and any CI or driver above it saw success.
         # And zero targets - a glob that matched nothing - also exited 0, the zero-evidence pass.
         if not targets:
-            print("⛔ no .ytyp/.ymap/.ymt matched - a run with nothing to convert is not a pass")
+            # ASCII (see the verify_binary refusal above): a non-ASCII glyph here killed this
+            # refusal with UnicodeEncodeError on the cp1252 console instead of printing it.
+            print("STOP - no .ytyp/.ymap/.ymt matched: a run with nothing to convert is not a "
+                  "pass")
             return 2
         return 1 if nfail else 0
 

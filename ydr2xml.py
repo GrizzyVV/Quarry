@@ -44,6 +44,7 @@ Usage:
     python ydr2xml.py --selftest      # convert + reparse, no files written
 """
 import argparse
+import collections
 import json
 import os
 import struct
@@ -52,6 +53,66 @@ import zlib
 
 from meta2xml import fmt_num          # THE proven float-text rule (7->9 sig digits,
                                       # ties away from zero) - single implementation
+
+# ---------------------------------------------------------------- refusal accounting
+
+# ⛔ A DROP WITH NO COUNTER IS INDISTINGUISHABLE FROM "NOTHING TO DO" (2026-08-03).
+# Every place this module declined to emit something used to do it silently: a bare `continue`,
+# a `return []`, or `except Exception: return []`. Measured today the rate is ZERO on real data
+# (3,479 base ydr: 13,693 declared geometries / 13,693 kept, 1,180/1,180 embedded dictionaries
+# decoded; 3,000 base yft: 12,032/12,032 main + 568/568 child geometries) - so what follows costs
+# nothing and buys the one thing the silence removed: the ability to tell a clean run from a
+# lossy one. The importer already fixed this shape on its side (RudeToolset.cpp:1745-1780,
+# "a skip with no counter is indistinguishable from nothing to do"); this is the emitter half.
+# ⭐ COUNTERS ARE PROCESS-GLOBAL AND ACCUMULATE ACROSS A WHOLE RUN. quarry surfaces them with a
+# single call - see report_refusals() for the exact line.
+REFUSALS = collections.Counter()
+REFUSAL_NOTES = []                    # sample "<key>: <detail>" lines, for humans
+_NOTES_PER_KEY = 3                    # per KEY, not global: one noisy counter must not crowd
+_NOTED = collections.Counter()        # the one rare decline you actually needed to see
+
+
+def _refuse(key, detail=None):
+    """Count a decline-to-emit, and keep a few named examples per kind.
+    Never raises - the caller decides whether the drop is survivable."""
+    REFUSALS[key] += 1
+    if detail is not None and _NOTED[key] < _NOTES_PER_KEY:
+        _NOTED[key] += 1
+        REFUSAL_NOTES.append("%s: %s" % (key, detail))
+
+
+def report_refusals(stats=None, stream=None):
+    """Fold the run-global emitter counters into `stats` and print them. Prints NOTHING when
+    every counter is zero, so a clean run stays clean. Covers ydd and yft too - both emit through
+    drawable_lines, and yft2xml counts its own declines into the SAME table, so one call reports
+    the whole interchange-XML lane rather than a third of it.
+
+    ⭐ THE ONE LINE QUARRY NEEDS (quarry.py cmd_extract, inside `if getattr(a, 'xml', False):`,
+    after the xml_errors loop):
+            ydr2xml.report_refusals(stats)
+    That is the whole wiring. The counters live here rather than being threaded through
+    to_interchange_xml's per-file `stats` because a drop happens six frames below that call and
+    the intermediate functions return lines, not diagnostics - passing a dict down all of them
+    was the change most likely to be half-done and then trusted.
+
+    ⚠ A COUNT IS A DECLINE, NOT A FILE. quarry's ydr branch reads the embedded dictionary once
+    itself and once more inside to_xml, so one bad dictionary scores 2. Read these as "how much
+    was declined", never as "how many assets are affected" - the notes carry the names.
+    """
+    if stats is not None:
+        for k, v in REFUSALS.items():
+            stats["emitter_" + k] = stats.get("emitter_" + k, 0) + v
+        if REFUSAL_NOTES:
+            stats.setdefault("emitter_refusal_notes", []).extend(REFUSAL_NOTES)
+    if not REFUSALS:
+        return
+    out = stream if stream is not None else sys.stdout
+    print("emitter declined to emit (run totals):", file=out)
+    for k, v in sorted(REFUSALS.items()):
+        print("    %-46s %d" % (k, v), file=out)
+    for line in REFUSAL_NOTES:
+        print("      e.g. %s" % line, file=out)
+
 
 # ---------------------------------------------------------------- container
 
@@ -77,7 +138,10 @@ class Res:
         self._load(blob)
         return self
 
+    name = None          # set when loaded from a path, so a refusal note can say WHICH file
+
     def __init__(self, path):
+        self.name = os.path.basename(path)
         self._load(open(path, "rb").read())
 
     def _load(self, blob):
@@ -194,26 +258,68 @@ def decode_vertices(res, vdata_tagged, count, stride, fields):
         for bit, _name, tokens, off, size, nb in fields:
             at = vb + off
             if bit in INT_CHANNELS:
+                # ⛔ THE (CHANNEL, NIBBLE) PAIRING WAS NEVER CHECKED (fixed 2026-08-03). This
+                # branch fired on the channel BIT alone and read `tokens` bytes; the float branch
+                # below read tokens*4 bytes - both regardless of the nibble's declared `size`,
+                # which is the ONLY thing build_decl uses for offsets and the stride equation.
+                # So a file pairing e.g. nibble 9 (4 B) with Position (3 float32 = 12 B) would
+                # read 8 bytes past the field into the next channel, `off == declared_stride`
+                # would still balance, and the file would convert as a clean success with
+                # scrambled vertices - invisible to import ok:true, geometry counts and bbox
+                # alike. MEASURED over 3,479 base ydr + 3,000 base yft (16,600 geometries,
+                # every pairing the game actually ships): bits 1/2/4/5 are ubyte4 nibble 9 in
+                # 100% of cases, so this guard has never fired and costs nothing.
+                if nb != 9 or tokens > size:
+                    raise ValueError("channel bit %d (%s) is ubyte4 x%d but nibble 0x%x "
+                                     "declares %d bytes" % (bit, _name, tokens, nb, size))
                 vals = [str(buf[at + i]) for i in range(tokens)]
             else:
                 if nb in (1, 3):
                     # half-float pair/quad (cloth TexCoord0 / Tangent) - value-validated
                     # against third-party reference exports within half-ULP
+                    if size // 2 < tokens:
+                        raise ValueError("nibble 0x%x holds %d halves, channel bit %d (%s) "
+                                         "wants %d" % (nb, size // 2, bit, _name, tokens))
                     raw = struct.unpack_from("<%de" % (size // 2), buf, at)
                 elif nb == 0xA:
                     # signed-byte4 normalized /127 (cloth Normal) - bit-exact vs the reference; the
                     # channel emits 3 tokens, the 4th byte (w) is dropped below
+                    if size < 4:
+                        raise ValueError("nibble 0xA reads 4 bytes but declares %d" % size)
                     raw = [max(by - 256 if by > 127 else by, -127) / 127.0
                            for by in buf[at:at + 4]]
-                else:
+                elif nb in (5, 6, 7):
+                    # float32 xN. `size` MUST cover the read or the unpack walks into the next
+                    # channel - see the ubyte4 note above; measured true in 16,600/16,600.
+                    if size != tokens * 4:
+                        raise ValueError("nibble 0x%x is %d B but channel bit %d (%s) wants "
+                                         "%d float32" % (nb, size, bit, _name, tokens))
                     raw = struct.unpack_from("<%df" % tokens, buf, at)
-                if len(raw) < tokens:
-                    raise ValueError("nibble 0x%x yields %d values, channel wants %d tokens"
-                                     % (nb, len(raw), tokens))
+                else:
+                    # NIBBLE_SIZE knows this nibble's width (build_decl passed it) but this
+                    # decoder has no rule for its CONTENT - guessing float32 is how a whole
+                    # drawable family would emit scrambled vertices as a success.
+                    raise ValueError("channel bit %d (%s) nibble 0x%x has no decode rule"
+                                     % (bit, _name, nb))
                 # real shipped assets contain literal NaN (e.g. prop_dock_crane_01) and UE's mesh
-                # builder chokes on NaN UVs, so neutralise here rather than downstream
-                vals = [fmt_float(x if x == x and abs(x) != float("inf") else 0.0)
-                        for x in raw[:tokens]]
+                # builder chokes on NaN UVs, so neutralise here rather than downstream.
+                # ⛔ COUNTED BY CHANNEL, AND POSITION REFUSES (2026-08-03). The substitution used
+                # to be an invisible inline conditional. Measured: 1,333 substitutions over
+                # 3,479 base ydr (933 Tangent + 400 TexCoord0, all in prop_dock_crane_01) and
+                # 5,320 over 3,000 base yft (all TexCoord1, 7 `_hi` vehicles) - ZERO in Position
+                # in either. A NaN normal or UV neutralises to something harmless; a NaN POSITION
+                # would silently snap a vertex to the world origin and stretch a triangle across
+                # the map, readable downstream as a placement or importer bug rather than as
+                # corrupt source data. Nothing measured is lost by refusing it.
+                clean = []
+                for x in raw[:tokens]:
+                    if x != x or abs(x) == float("inf"):
+                        if _name == "Position":
+                            raise ValueError("NaN/inf in the Position channel (vertex %d)" % v)
+                        _refuse("nan_substituted_zero:" + _name)
+                        x = 0.0
+                    clean.append(x)
+                vals = [fmt_float(x) for x in clean]
             groups.append(" ".join(vals))
         lines.append("   ".join(groups))
     return lines
@@ -223,17 +329,69 @@ def decode_vertices(res, vdata_tagged, count, stride, fields):
 
 _SHADERS = None
 
+# ⛔ THE NAME TABLES USED TO FAIL OPEN (fixed 2026-08-03). Both resolvers wrapped their load in a
+# bare `except`, so a missing or corrupt table made EVERY preset and EVERY value parameter degrade
+# to hash_%08X while the conversion still reported success, exit 0. Proven by patching json.load
+# to raise: preset_name(0x2f8bc40d) returned 'hash_2F8BC40D' with no exception, no warning and no
+# counter. That is not a cosmetic loss - RUDE GENERATES its materials from the preset name, so an
+# absent joaat_shaders.json silently routes the whole corpus to fallback masters and the only
+# symptom is "everything looks generic", which reads as a material-quality problem rather than a
+# missing file. It would also reset the "100% named value params" figure to 0% with every gate
+# still green.
+# The two tables are NOT equally optional, and that distinction is the fix:
+#   joaat_shaders.json      216 presets, THE ONLY source of preset names -> absent = 100%
+#                           degradation with no fallback at all -> REQUIRED, refuse.
+#   shader_param_names.json 5,058 generated names -> absent leaves the 50 hand-verified
+#                           VALUE_PARAM_NAMES working, a real if partial fallback -> counted,
+#                           warned, and flagged; never silent.
+# Either table PRESENT BUT UNREADABLE always refuses: a corrupt table is a broken install, not a
+# lean one.
+NAME_TABLES_DEGRADED = []             # names of optional tables that were missing this run
+
+
+class NameTableError(RuntimeError):
+    """A shipped name table is missing (when required) or unreadable. Loud on purpose: naming
+    every hash `hash_XXXXXXXX` and exiting 0 is the failure this class exists to prevent."""
+
+
+def _load_name_table(fname, required):
+    """-> dict, or None when an OPTIONAL table is simply absent (counted + warned)."""
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), fname)
+    if not os.path.exists(p):
+        if required:
+            raise NameTableError(
+                "%s is missing - it is the only source of shader preset names, so every "
+                "material would be generated from hash_XXXXXXXX. Refusing." % fname)
+        if fname not in NAME_TABLES_DEGRADED:
+            NAME_TABLES_DEGRADED.append(fname)
+            print("WARN %s is missing: value-parameter naming falls back to the %d "
+                  "hand-verified names only" % (fname, len(VALUE_PARAM_NAMES)),
+                  file=sys.stderr)
+        _refuse("name_table_MISSING:" + fname)
+        return None
+    try:
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        raise NameTableError("%s is present but does not load (%s: %s) - a corrupt name table "
+                             "silently renames every shader. Refusing."
+                             % (fname, type(e).__name__, e))
+
 
 def preset_name(hash32):
     """joaat is one-way, so recover the preset name from the table built off third-party reference exports."""
     global _SHADERS
     if _SHADERS is None:
-        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "joaat_shaders.json")
-        try:
-            _SHADERS = json.load(open(p))
-        except Exception:
-            _SHADERS = {}
-    return _SHADERS.get("0x%08x" % hash32) or "hash_%08X" % hash32
+        _SHADERS = _load_name_table("joaat_shaders.json", required=True)
+    nm = _SHADERS.get("0x%08x" % hash32)
+    if nm:
+        return nm
+    # Not a failure by itself - 53 of ~33k shader items across 3,479 base ydr resolve to no
+    # known preset (10 distinct hashes) and the consumer clamps them to a fallback master. It IS
+    # the number that would jump to "all of them" if the table ever stopped loading, so it is
+    # counted rather than assumed.
+    _refuse("preset_name_unresolved", "0x%08X" % hash32)
+    return "hash_%08X" % hash32
 
 
 # ---------------------------------------------------------------- drawable walk
@@ -315,16 +473,18 @@ def value_param_name(hash32):
     global _VALUE_PARAMS
     if _VALUE_PARAMS is None:
         _VALUE_PARAMS = {_joaat(n.lower()): n for n in VALUE_PARAM_NAMES}
-        try:
-            import json as _json
-            _p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              "shader_param_names.json")
-            with open(_p, encoding="utf-8") as _f:
-                for _h, _n in _json.load(_f).items():
-                    _VALUE_PARAMS.setdefault(int(_h, 16), _n)
-        except Exception:
-            pass          # the hand-verified core still works without the generated table
-    return _VALUE_PARAMS.get(hash32) or "hash_%08X" % hash32
+        # ⛔ WAS `except Exception: pass` with the comment "the hand-verified core still works
+        # without the generated table" - true, but the core is 50 names against 5,058, and
+        # nothing said which one you were running. Absent = counted + warned (see
+        # _load_name_table); corrupt = refuse.
+        gen = _load_name_table("shader_param_names.json", required=False)
+        for _h, _n in (gen or {}).items():
+            _VALUE_PARAMS.setdefault(int(_h, 16), _n)
+    nm = _VALUE_PARAMS.get(hash32)
+    if nm:
+        return nm
+    _refuse("value_param_unresolved", "0x%08X" % hash32)
+    return "hash_%08X" % hash32
 
 
 _SAMPLERS = None
@@ -348,8 +508,9 @@ def sampler_name(hash32):
     return _SAMPLERS.get(hash32) or "hash_%08X" % hash32
 
 
-def embedded_textures(res, base=0):
+def embedded_textures(res, base=0, what=None):
     """The drawable's OWN texture dictionary -> ytd2xml texture dicts (name/format/pixels), or [].
+    `what`: a name for refusal notes (quarry loads from bytes, so res.name is often unset).
 
     ⛔ WHY THIS EXISTS (2026-07-29). A gtaDrawable can carry its textures INTERNALLY, at
     ShaderGroup+0x08, instead of referencing a standalone .ytd. Nothing here read it, so those
@@ -365,21 +526,47 @@ def embedded_textures(res, base=0):
     reads it verbatim once told where it lives - no second implementation to drift.
     """
     sg = res.ptr(base + 0x10)
+    if sg == 0:
+        return []                      # legitimate: fragment child drawables carry no ShaderGroup
     buf, o = res.deref(sg, 0x40)
     if buf is None:
+        # read_shaders RAISES on this same pointer, but quarry calls embedded_textures directly
+        # before to_xml, so it would be reached first and must not vanish here either.
+        _refuse("embedded_dict_shadergroup_unresolved", "0x%08x" % sg)
         return []
     tp = res.u32(o + 0x08)
     if not tp:
-        return []
+        return []                      # ordinary: 2,299 of 3,479 base ydr carry no dictionary
     tbuf, to = res.deref(tp, 0x40)
     if tbuf is None:
+        # non-NULL pointer that does not resolve: the drawable SAYS it carries textures and we
+        # cannot reach them. Distinct from tp == 0 above, which is the ordinary "no embedded
+        # dictionary" shape (2,299 of 3,479 base ydr). Measured 0 on real data.
+        _refuse("embedded_dict_ptr_unresolved", "0x%08x" % tp)
         return []
     try:
         import ytd2xml
         return ytd2xml.read_textures(res, base=to)
-    except Exception:
+    except Exception as e:
         # A malformed embedded dictionary must not lose the whole drawable - the geometry and
-        # shader data are still good. Report nothing rather than raising.
+        # shader data are still good, so this stays a downgrade rather than a refusal.
+        # ⛔ IT USED TO BE A SILENT ONE (fixed 2026-08-03). `except Exception: return []` emitted
+        # a fully "successful" .ydr.xml with no <TextureDictionary>, no message, no counter,
+        # exit 0 - while the shader Parameters still NAMED every one of those textures. Proven
+        # by monkeypatching ytd2xml.read_textures to raise on ce_xr_ctr2.ydr: embedded count
+        # 28 -> 0, <TextureDictionary> present -> absent, 2,512,630 B -> 2,503,351 B, nothing on
+        # stdout or stderr. The cost is not the file, it is the MEASUREMENT: an untextured
+        # drawable becomes indistinguishable from one whose .ytd is genuinely missing, so
+        # "our decoder refused" lands in the corpus's missingTextures residual instead.
+        # Rate on real data is 0 (1,180/1,180 dictionaries decode across 3,479 base ydr,
+        # 794/794 across 3,000 base yft) - but OPEN_ITEMS #29 records this exact failure live
+        # (describe_format raising on an unmapped pixel enum loses the whole dictionary), and
+        # this except is what hid it. The exception TYPE is in the key so a systemic breakage
+        # (an ImportError on every file) cannot read as scattered bad data.
+        _refuse("embedded_dict_refused:" + type(e).__name__,
+                "%s: %s" % (what or res.name or "drawable at +0x%x" % base, e))
+        print("WARN embedded texture dictionary refused (%s: %s) - the drawable's own textures "
+              "are NOT in this XML" % (type(e).__name__, e), file=sys.stderr)
         return []
 
 
@@ -397,20 +584,38 @@ def read_shaders(res, base=0):
     faithful detail map impossible and is not fixable downstream.
     MEASURED LAYOUT: class byte 0 = texture; N>0 = a count of float4s, and the entry's +0x08 field
     is a TAGGED POINTER to N*16 bytes of float data (verified by dereferencing it, not by assuming
-    it sits at the data-region offset - the two happen to coincide and only one is the contract)."""
+    it sits at the data-region offset - the two happen to coincide and only one is the contract).
+
+    ⛔ AN UNREADABLE SHADER GROUP IS NOT A DRAWABLE WITH NO SHADERS (2026-08-03). Both early exits
+    below used to `return out` empty, and drawable_lines then substituted ONE ("default",0,[],[])
+    while the geometries kept ShaderIndex values up to N-1 - the consumer clamps
+    (RudeToolset.cpp:1843), so every geometry silently rendered on the default material. The two
+    causes are now split by MEASUREMENT: a NULL pointer at +0x10 is the ordinary shape of a
+    fragment CHILD drawable (19,493 of 19,493 children over 3,000 base yft read exactly 0 there -
+    children index the FRAGMENT's group, which yft2xml splices in), while a non-NULL pointer that
+    does not resolve was seen 0 times in 3,479 base ydr + 3,000 base yft and is a decode failure."""
     out = []
     sg = res.ptr(base + 0x10)
+    if sg == 0:
+        return out                     # legitimate: fragment child drawables carry no ShaderGroup
     buf, o = res.deref(sg, 0x40)
     if buf is None:
-        return out
+        raise ValueError("ShaderGroup pointer 0x%08x does not resolve" % sg)
     arr_p, nsh = res.u32(o + 0x10), res.u16(o + 0x18)
+    if nsh == 0:
+        _refuse("shader_group_declares_zero_shaders")
+        return out
     abuf, ao = res.deref(arr_p, nsh * 8)
     if abuf is None:
-        return out
+        raise ValueError("shader array of %d entries at 0x%08x does not resolve" % (nsh, arr_p))
     for si in range(nsh):
         bp = res.u32(ao + si * 8)
         bbuf, bo = res.deref(bp, 0x30)
         if bbuf is None:
+            # Keep the slot so every later ShaderIndex still points at the right material, but
+            # say so: this entry's preset, bucket, textures and value params are all gone.
+            _refuse("shader_block_unresolved_default_substituted", "shader %d ptr 0x%08x"
+                    % (si, bp))
             out.append(("default", 0, [], []))
             continue
         preset = preset_name(res.u32(bo + 0x08))
@@ -421,64 +626,120 @@ def read_shaders(res, base=0):
         texs = []
         vals = []
         # max npar measured in the lane is 32; clamp keeps a corrupt count from walking off.
-        # A texture is any class-0 entry whose stub derefs, whose type word's low u16 is 1
-        # (every real stub reads xxxx0001; 0x0002=external ref, 0x0080=embedded, measured),
+        # A texture is any class-0 entry whose stub derefs, whose type word's low u16 is 1,
         # and whose +0x28 name is printable - unbound slots (NULL ptr) simply do not emit.
+        # ⛔ THE TYPE-WORD COMMENT WAS A CLAIM NOBODY COULD REPRODUCE (corrected 2026-08-03). It
+        # read "0x0002=external ref, 0x0080=embedded, measured". Re-measured here: 48,339 of
+        # 48,339 stubs across 3,479 base ydr + a 600-file ydd sample read exactly 0x0001, so
+        # neither of those two values occurs anywhere reachable. They may still exist in a bucket
+        # nobody has sampled - and every such binding used to vanish with a bare `continue`, which
+        # would have charged the loss to the texture corpus rather than to this reader. UNMEASURED
+        # values are now COUNTED BY VALUE, so the first file that carries one says so by name.
         if 0 < npar <= 96 and dsize >= npar * 16:
             tbuf, to = res.deref(tbl_p, dsize + npar * 4)
-            if tbuf is not None:
+            if tbuf is None:
+                _refuse("shader_param_table_unresolved",
+                        "%s: %d params, %d B" % (preset, npar, dsize))
+            else:
                 hashes = struct.unpack_from("<%dI" % npar, tbuf, to + dsize)
                 for pi in range(npar):
                     cls = tbuf[to + pi * 16]
                     if cls != 0:
                         # A VALUE param: cls = how many float4s, +0x08 = tagged pointer to them.
                         # Clamped: a corrupt count must not turn into a huge read.
-                        if cls <= 64:
-                            vp = struct.unpack_from("<I", tbuf, to + pi * 16 + 8)[0]
-                            vbuf, vo = res.deref(vp, cls * 16) if vp else (None, 0)
-                            if vbuf is not None:
-                                vals.append((value_param_name(hashes[pi]),
-                                             [struct.unpack_from("<4f", vbuf, vo + k * 16)
-                                              for k in range(cls)]))
+                        if cls > 64:
+                            _refuse("value_param_count_implausible", "%s: cls=%d" % (preset, cls))
+                            continue
+                        vp = struct.unpack_from("<I", tbuf, to + pi * 16 + 8)[0]
+                        vbuf, vo = res.deref(vp, cls * 16) if vp else (None, 0)
+                        if vbuf is None:
+                            _refuse("value_param_data_unresolved" if vp else
+                                    "value_param_data_NULL",
+                                    "%s: %s" % (preset, value_param_name(hashes[pi])))
+                            continue
+                        vals.append((value_param_name(hashes[pi]),
+                                     [struct.unpack_from("<4f", vbuf, vo + k * 16)
+                                      for k in range(cls)]))
                         continue
                     sp = struct.unpack_from("<I", tbuf, to + pi * 16 + 8)[0]
-                    sbuf, so = res.deref(sp, 0x34) if sp else (None, 0)
-                    if sbuf is None or struct.unpack_from("<H", sbuf, so + 0x30)[0] != 1:
+                    if sp == 0:
+                        continue                      # unbound sampler slot - the normal shape
+                    sbuf, so = res.deref(sp, 0x34)
+                    if sbuf is None:
+                        _refuse("texture_stub_unresolved", "%s: 0x%08x" % (preset, sp))
+                        continue
+                    tw = struct.unpack_from("<H", sbuf, so + 0x30)[0]
+                    if tw != 1:
+                        _refuse("texture_stub_typeword_0x%04x" % tw, preset)
                         continue
                     nm = res.cstr(struct.unpack_from("<I", sbuf, so + 0x28)[0])
-                    if nm and all(31 < ord(ch) < 127 for ch in nm):
-                        texs.append((sampler_name(hashes[pi]), nm))
+                    if not (nm and all(31 < ord(ch) < 127 for ch in nm)):
+                        _refuse("texture_name_unusable", "%s: %r" % (preset, nm[:24]))
+                        continue
+                    texs.append((sampler_name(hashes[pi]), nm))
+        elif npar:
+            _refuse("shader_param_header_implausible",
+                    "%s: npar=%d dsize=%d" % (preset, npar, dsize))
         out.append((preset, bucket, texs, vals))
     return out
+
+
+class GeometryList(list):
+    """A plain list of geometry dicts that also remembers how many the BINARY DECLARED.
+
+    ⛔ WHY A SUBCLASS AND NOT A (list, int) PAIR: read_geometries has three callers
+    (drawable_lines here, yft2xml.read_physics's truthiness test, and any future one), and a
+    changed return shape is exactly the kind of edit that gets applied to two of the three.
+    Every existing caller keeps working - it is a list - while drawable_lines can ask
+    `geos.declared` and refuse a shortfall."""
+    declared = 0
 
 
 def read_geometries(res, base=0):
     """All four LOD arrays are real; +0xa0 is a byte-identical ALIAS of +0x50 and must NOT be walked
     (it would double every mesh). We emit only the High group, which is what the importer reads.
-    base: see read_shaders."""
-    geos = []
+    base: see read_shaders.
+
+    -> GeometryList; `.declared` is the count the file's own model records claim. Every drop below
+    is COUNTED and the shortfall is what drawable_lines refuses on: a partially decoded mesh used
+    to be indistinguishable from a genuinely smaller one at every level above (corpus counter,
+    import verdict, geometry count, visual check). Measured shortfall today is ZERO - 13,693 of
+    13,693 over 3,479 base ydr, 12,032/12,032 main + 568/568 child over 3,000 base yft - so this
+    is the SHAPE being closed, not a live loss."""
+    geos = GeometryList()
     mh_p = res.ptr(base + 0x50)
+    if mh_p == 0:
+        # No DrawableModelsHigh group at all. Ordinary for a fragment child that carries only
+        # collision (19,102 of 19,493 child drawables over 3,000 base yft) - and for a MAIN
+        # drawable it is caught by drawable_lines, which refuses an empty geometry list.
+        return geos
     buf, mh = res.deref(mh_p, 0x10)
     if buf is None:
+        _refuse("model_group_unresolved", "0x%08x" % mh_p)
         return geos
     marr_p, nmod = res.u32(mh + 0x00), res.u16(mh + 0x08)
     mbuf, ma = res.deref(marr_p, nmod * 8)
     if mbuf is None:
+        _refuse("model_array_unresolved", "%d models at 0x%08x" % (nmod, marr_p))
         return geos
     for mi in range(nmod):
         mp = res.u32(ma + mi * 8)
         _b, m = res.deref(mp, 0x30)
         if _b is None:
+            _refuse("model_unresolved", "model %d ptr 0x%08x" % (mi, mp))
             continue
         garr_p, ngeo = res.u32(m + 0x08), res.u16(m + 0x10)
+        geos.declared += ngeo
         gb_p = res.u32(m + 0x18)
         gbuf, ga = res.deref(garr_p, ngeo * 8)
         if gbuf is None:
+            _refuse("geometry_array_unresolved", "model %d: %d geometries" % (mi, ngeo))
             continue
         for gi in range(ngeo):
             gp = res.u32(ga + gi * 8)
             _b2, g = res.deref(gp, 0x80)
             if _b2 is None:
+                _refuse("geometry_unresolved", "model %d geometry %d" % (mi, gi))
                 continue
             vb_p, ib_p = res.u32(g + 0x18), res.u32(g + 0x38)
             idx_count = res.u32(g + 0x58)
@@ -486,10 +747,12 @@ def read_geometries(res, base=0):
             stride = res.u16(g + 0x70)      # U16 - a u32 read yields 983,100 on skinned meshes
             _b3, vb = res.deref(vb_p, 0x40)
             if _b3 is None:
+                _refuse("vertex_buffer_unresolved", "model %d geometry %d" % (mi, gi))
                 continue
             vdata_p, fvf_p = res.u32(vb + 0x10), res.u32(vb + 0x30)
             _b4, fvf = res.deref(fvf_p, 0x10)
             if _b4 is None:
+                _refuse("vertex_declaration_unresolved", "model %d geometry %d" % (mi, gi))
                 continue
             mask = res.u32(fvf + 0x00)
             nibbles = struct.unpack_from("<Q", res.sys, fvf + 0x08)[0]
@@ -497,10 +760,13 @@ def read_geometries(res, base=0):
             vlines = decode_vertices(res, vdata_p, vcnt, stride, fields)
             _b5, ib = res.deref(ib_p, 0x20)
             if _b5 is None:
+                _refuse("index_buffer_unresolved", "model %d geometry %d" % (mi, gi))
                 continue
             idata_p = res.u32(ib + 0x10)
             ibuf, io = res.deref(idata_p, idx_count * 2)
             if ibuf is None:
+                _refuse("index_data_unresolved",
+                        "model %d geometry %d: %d indices" % (mi, gi, idx_count))
                 continue
             indices = list(struct.unpack_from("<%dH" % idx_count, ibuf, io))
             # shaderMap: u16 per geometry -> shader index (often non-identity in real files)
@@ -819,15 +1085,26 @@ def esc(s):
     return s
 
 
-def drawable_lines(res, name, base=0):
+def drawable_lines(res, name, base=0, allow_empty=False):
     """The <Drawable> BODY (Name/bounds/ShaderGroup/DrawableModelsHigh) as lines with the standalone
     file's one-space indent. Shared: the ydr wrapper adds declaration+root; a dictionary converter
     (ydd/yft) wraps each entry as <Item> and re-indents. Whitespace is free to the consumer -
-    FXmlFile tokenises on any whitespace - so only token count and order matter."""
+    FXmlFile tokenises on any whitespace - so only token count and order matter.
+
+    allow_empty: emit a drawable with NO geometry instead of refusing. Only yft2xml sets it, and
+    only for the measured case where a fragment's visual mesh lives entirely in a physics child -
+    see the comment at its call site."""
     shaders = read_shaders(res, base)
     geos = read_geometries(res, base)
-    if not geos:
+    if not geos and not allow_empty:
         raise ValueError("no geometry decoded")
+    # ⛔ 9 OF 10 GEOMETRIES USED TO BE "COMPLETE SUCCESS" (2026-08-03). The only geometry gate here
+    # was `if not geos`, so every partial loss inside read_geometries was invisible - the XML, the
+    # corpus counter, the import verdict and the geometry count all agreed with a file that simply
+    # had fewer meshes. Refusing on the shortfall is what makes them disagree.
+    if len(geos) != geos.declared:
+        raise ValueError("%d of %d geometries did not resolve"
+                         % (geos.declared - len(geos), geos.declared))
     b = read_bounds(res, base)
     ff = fmt_float
     L = []
@@ -837,7 +1114,7 @@ def drawable_lines(res, name, base=0):
     L.append(' <BoundingBoxMin x="%s" y="%s" z="%s" />' % tuple(ff(v) for v in b["bb_min"]))
     L.append(' <BoundingBoxMax x="%s" y="%s" z="%s" />' % tuple(ff(v) for v in b["bb_max"]))
     L.append(" <ShaderGroup>")
-    emb = embedded_textures(res, base)
+    emb = embedded_textures(res, base, what=name)
     if emb:
         # The drawable's own textures, emitted so a consumer can see and import them. Pixel
         # sidecars are written alongside by the caller (quarry.to_interchange_xml).
@@ -858,6 +1135,14 @@ def drawable_lines(res, name, base=0):
         L.append("  </TextureDictionary>")
     L.append("  <Shaders>")
     if not shaders:
+        # One default material for geometries whose ShaderIndex may run up to N-1; the consumer
+        # clamps (RudeToolset.cpp:1843). For a fragment CHILD drawable this is the CORRECT and
+        # measured shape - it has no ShaderGroup pointer at all and yft2xml splices the
+        # fragment's group into the sidecar - so only the other cause is counted: a drawable
+        # that HAS a shader group and still yielded nothing is silently rendering everything on
+        # the default material.
+        if res.ptr(base + 0x10):
+            _refuse("shader_group_yielded_nothing_default_substituted", name)
         shaders = [("default", 0, [], [])]
     for preset, bucket, texs, vals in shaders:
         L.append("   <Item>")
@@ -959,6 +1244,7 @@ def main():
             print(f"OK   {os.path.basename(p)} -> {dst}  ({len(xml):,} B)")
         ok += 1
     print(f"\n{ok} converted, {fail} failed")
+    report_refusals()          # a downgrade that never reaches a human is still a silent one
     return 1 if fail else 0
 
 
