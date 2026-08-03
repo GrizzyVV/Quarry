@@ -38,6 +38,10 @@ import xml.etree.ElementTree as ET
 # QUARRY_CORPUS. Plain conversion (--convert) needs no corpus at all.
 CORPUS = os.environ.get("QUARRY_CORPUS")
 
+# `extract` renames a WITHIN-slot basename collision to `X~1`, `X~2`, ... ANCHORED to the end on
+# purpose: a bare `'~' in stem` also matches a real game asset whose name merely contains a tilde.
+_ALT_SUFFIX = re.compile(r"~\d+$")
+
 
 # ================================================================ RSC7 v2 META reader
 # THE UNLOCK: meta SCHEMA hashes (field names, struct names, enum member names) are
@@ -1513,16 +1517,59 @@ def load_names(*roots):
     This is what keeps the tool self-sufficient: `assetName` is the only name that MUST resolve
     (it becomes a `<CorpusRoot>/ydr/<assetName>.ydr.xml` lookup), and it is always a real asset
     filename - so the user's own extraction supplies it. No shipped hash dictionary needed.
+
+    ONLY NAMES THE GAME SHIPPED MAY ENTER THIS TABLE (2026-08-03). It used to hash EVERY filename
+    in the tree, including the two kinds QUARRY invents itself:
+      `X__embedded` - the sibling manifest written for a drawable's own texture dictionary
+      `X~1`         - the rename applied to a within-slot basename collision
+    No META hash can legitimately mean either, so their only possible effect is a FALSE
+    resolution - and `setdefault` made which one won depend on os.walk order, with no counter.
+    COST, measured over all 551,920 files in B:/RUDE_Filebase_Full (00_base+10_update+20_dlc,
+    284,750 distinct stems): TWO synthetic names collide with a real asset hash -
+    joaat('ch3_04_d39x__embedded') == joaat('hei_country_03_metadata_001') == F4A44F28, and
+    joaat('m24_1_mp2024_01_additions_carrmp_rigging__embedded') == joaat('sm_11_bld1+hidr') ==
+    FFC94D14. The first one already fired: 10_update/ytyp/hei_country_03_metadata_001.ytyp.xml
+    emitted `<name>ch3_04_d39x__embedded</name>` where the reference export says
+    `hei_country_03_metadata_001`. It is invisible to the "unresolved asset-name hash" counter
+    precisely BECAUSE the hash resolved - only an oracle export could catch it.
+
+    Genuine name/name joaat collisions get no guess either: 0 exist in this corpus, but a
+    first-writer-wins answer would be a coin flip emitted with full confidence, while
+    hash_XXXXXXXX is honestly unresolved and the ymap<->ytyp join is hash-to-hash regardless.
     """
-    names = {}
+    names, collisions, synth_hashes = {}, {}, {}
     for root in roots:
         if not root or not os.path.isdir(root):
             continue
         for dirpath, _dirs, files in os.walk(root):
             for f in files:
                 stem = f.split(".")[0]
-                if stem:
-                    names.setdefault(joaat(stem), stem.lower())
+                if not stem:
+                    continue
+                low = stem.lower()
+                if low.endswith("__embedded") or _ALT_SUFFIX.search(low):
+                    synth_hashes.setdefault(joaat(low), low)
+                    continue
+                h = joaat(low)
+                prev = names.get(h)
+                if prev is None:
+                    names[h] = low
+                elif prev != low:
+                    collisions.setdefault(h, set()).update((prev, low))
+    for h in collisions:
+        names.pop(h, None)
+    if collisions:
+        print("names    : %d joaat COLLISION(S) between distinct asset names - left UNRESOLVED "
+              "rather than guessed:" % len(collisions))
+        for h, v in sorted(collisions.items())[:8]:
+            print("             %08X  %s" % (h, " | ".join(sorted(v))))
+    poisoned = [(h, n) for h, n in synth_hashes.items() if h in names]
+    if poisoned:
+        print("names    : %d QUARRY-generated filename(s) collide with a real asset hash and were "
+              "kept OUT of the table (each would have been emitted as a confident wrong name):"
+              % len(poisoned))
+        for h, n in sorted(poisoned)[:8]:
+            print("             %08X  %s  -> resolves to %s" % (h, n, names[h]))
     return names
 
 
@@ -1804,6 +1851,32 @@ def census(kind, limit):
     return 0
 
 
+def _hash_degraded(ours, theirs):
+    """Which side of a name pair is the KNOWN `hash_XXXXXXXX` degradation - PROVEN, not assumed.
+
+    Returns "ours", "ref", or None (a genuine disagreement that must still be scored).
+
+    An unresolved name is a bounded degradation, not a decode error, so it must not be scored as a
+    mismatch. But "starts with hash_" alone is NOT proof of that: a decoder that read the WRONG
+    four bytes also emits a hash_ string, and simply excusing every hash_ would hide exactly the
+    class of bug this harness exists to catch. So the excuse is earned by re-hashing the side that
+    DID resolve and requiring it to equal the unresolved side's hash.
+    """
+    def _h(v):
+        if isinstance(v, str) and v.startswith("hash_"):
+            try:
+                return int(v[5:], 16)
+            except ValueError:
+                return None
+        return None
+    ho, ht = _h(ours), _h(theirs)
+    if ho is not None and ht is None and isinstance(theirs, str) and theirs:
+        return "ours" if joaat(theirs) == ho else None
+    if ht is not None and ho is None and isinstance(ours, str) and ours:
+        return "ref" if joaat(ours) == ht else None
+    return None
+
+
 def verify_binary(kind, bin_dir, limit, names, strict=False):
     """Decode real BINARY ytyp/ymap and diff the emitted XML against the reference export for the
     same asset - the real test, and the one that can catch a decode error the round-trip cannot.
@@ -1846,6 +1919,17 @@ def verify_binary(kind, bin_dir, limit, names, strict=False):
     fmt_wrong = collections.Counter()
     drift_bits = collections.Counter()
     unresolved = 0
+    # THE HEADLINE NUMBER WAS WRONG, NOT THE DECODER (2026-08-03). The docstring above promised
+    # "a name that could not be reversed is reported separately rather than counted as a
+    # mismatch", but only the PAIRING check honoured it - the field loop scored every
+    # hash_XXXXXXXX against the oracle's resolved name as a defect. COST, measured on the 80-file
+    # ytyp run against the reference exports: it printed "121,880 exact, 6,331 mismatched =
+    # 95.062%" when the truth is 121,889 exact / 1 genuine (99.999%), the 6,330 excluded ones all
+    # being names this filebase has no file for (assetName 6,324, textureDictionary 6). A standing
+    # 5% error rate on the format's primary lane invites a hunt for a decode bug that is not there.
+    degraded = collections.Counter()      # OUR value unresolved, proven equal by re-hashing theirs
+    degraded_ref = collections.Counter()  # the ORACLE's value unresolved and ours resolved
+    pair_degraded = collections.Counter()
     decode_fail = collections.Counter()
     for f in files:
         ref = os.path.join(CORPUS, kind, os.path.basename(f) + ".xml")
@@ -1882,15 +1966,31 @@ def verify_binary(kind, bin_dir, limit, names, strict=False):
         for m, t in pairs:
             if t is None:
                 continue
-            if m.get(key) and t.get(key) and m[key] != t[key] and not m[key].startswith("hash_"):
-                bad["PAIRING: %s %r vs %r" % (key, m[key], t[key])] += 1
-                continue
+            if m.get(key) and t.get(key) and m[key] != t[key]:
+                # The old test excused OUR hash_ names unconditionally and excused the ORACLE's
+                # not at all, so a reference export that itself degraded (ours
+                # 'bh1_33_shop_lod', ref 'hash_C855767A') was thrown out as a pairing failure and
+                # its whole item - ~10 fields - went unscored. Both sides are now excused only
+                # when re-hashing the resolved side proves they name the same asset.
+                side = _hash_degraded(m[key], t[key])
+                if side is None:
+                    bad["PAIRING: %s %r vs %r" % (key, m[key], t[key])] += 1
+                    continue
+                pair_degraded[side] += 1
             matched += 1
             for fld in numeric + strings + vectors:
                 if t.get(fld) is None:
                     continue
                 a_, b_ = m.get(fld), t.get(fld)
                 same = (a_ == b_)
+                if not same:
+                    side = _hash_degraded(a_, b_)
+                    if side == "ours":
+                        degraded[fld] += 1
+                        continue      # KNOWN bounded degradation - excluded from BOTH scores
+                    if side == "ref":
+                        degraded_ref[fld] += 1
+                        continue
                 # TEXT-exactness is scored separately from value-equality. A tolerant comparison
                 # alone hid a real formatting defect in fmt_num for an entire session.
                 if same:
@@ -1953,6 +2053,19 @@ def verify_binary(kind, bin_dir, limit, names, strict=False):
         n_bad = sum(v for k, v in bad.items() if k.startswith(fld + ":"))
         if n_ok or n_bad:
             print("    %-26s %7s ok  %5s bad" % (fld, f"{n_ok:,}", f"{n_bad:,}"))
+    nd, ndr = sum(degraded.values()), sum(degraded_ref.values())
+    if nd or ndr or pair_degraded:
+        print("  EXCLUDED as the KNOWN hash_XXXXXXXX degradation (each one PROVEN by re-hashing "
+              "the side that resolved - an unproven hash_ is still scored as a mismatch):")
+        if nd:
+            print("    ours unresolved, oracle resolved : %s  %s"
+                  % (f"{nd:,}", dict(degraded)))
+        if ndr:
+            print("    ORACLE unresolved, ours resolved : %s  %s  <- we know more than the export"
+                  % (f"{ndr:,}", dict(degraded_ref)))
+        if pair_degraded:
+            print("    item-pairing key excused         : %s"
+                  % dict(pair_degraded))
     if unresolved:
         print("  unresolved asset-name hashes: %s (degrade to hash_XXXXXXXX; the ymap<->ytyp "
               "join still holds, only assetName lookups need a real name)" % f"{unresolved:,}")

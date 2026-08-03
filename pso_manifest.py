@@ -207,6 +207,18 @@ def read_manifest(path_or_bytes, strict_schema=True):
             if s:
                 strings[joaat(s.lower())] = s.decode('latin1')
     def bslice(idx1):
+        # A NULL POINTER USED TO RESOLVE TO THE LAST BLOCK (2026-08-03). `_ptr(0)` yields block
+        # index 0, and `blocks[0-1]` is Python's `blocks[-1]` - the u32-hash pool - so a zero
+        # pointer silently dereferenced into unrelated data instead of being rejected.
+        # COST, measured on B:/RUDE_Filebase_Full/_resolved/ymt/sp_manifest.ymt: zeroing region[0]'s
+        # entry in the pointer pool and the 12 incidental guard bytes made the read SUCCEED and
+        # hand back Region(0x9bc3ca0a, min=(-87673.6, -1.05e+36, 3.06e-17),
+        # max=(-1.8e-15, 53244.6, 8.07e+32)) - a fabricated scenario volume, no error anywhere.
+        # Only the accidental `Name bytes 4..15 nonzero` padding check stopped the un-doctored
+        # case. Vanilla data never hits this; an authored or damaged manifest can.
+        if not (1 <= idx1 <= len(blocks)):
+            raise PsoError('block index %d out of range 1..%d (null or corrupt pointer)'
+                           % (idx1, len(blocks)))
         bid, boff, bsize = blocks[idx1-1]
         return boff, bsize
     def deref(ptrval, need_size):
@@ -408,25 +420,60 @@ if __name__ == "__main__":
         ap.error("no manifest given: pass --manifest <sp_manifest.ymt> (a server's own file is "
                  "the correct oracle; a vanilla Rockstar manifest legitimately round-trips "
                  "smaller because PSIG/STRE/CHKS are not emitted)")
-    rc = 0
+    rc = noted = 0
     for p in paths:
         if not _os.path.isfile(p):
             print(f"  MISSING {p}")
             rc = 1
             continue
         blob = open(p, "rb").read()
+        # A GATE THAT CRIES WOLF GETS IGNORED (fixed 2026-08-03). This used to score every file on
+        # byte identity alone, so the stock Rockstar manifest - which the header above already
+        # documents as legitimately round-tripping SMALLER - printed DIFF / SELFTEST FAILED and
+        # exited 1. Measured on B:/RUDE_Filebase_Full/_resolved/ymt/sp_manifest.ymt: input carries
+        # PSIN+PMAP+PSCH+PSIG+STRF+STRE+CHKS (27,264 B), output PSIN+PMAP+PSCH+STRF (21,532 B), so
+        # byte identity is impossible BY CONSTRUCTION. Cost: the only documented command for this
+        # module reported the writer as broken when it was correct, which is how a REAL pso
+        # regression gets waved through as "the expected failure". The two properties that ARE
+        # meaningful on a vanilla file both hold and are what NOTE now asserts.
         try:
             m = read_manifest(blob)
-            ok = write_manifest(m) == blob
+            out = write_manifest(m)
+            if out == blob:
+                verdict = "OK  "
+                note = ""
+            elif any(s[0] in ("PSIG", "STRE", "CHKS") for s in m.sections):
+                m2 = read_manifest(out)
+
+                def _model(x):
+                    return ([(r.name, r.name_hash, r.mn, r.mx) for r in x.regions],
+                            list(x.groups), list(x.interiors), x.unk0)
+
+                if _model(m) == _model(m2) and write_manifest(m2) == out:
+                    verdict = "NOTE"
+                    note = ("  (vanilla: PSIG/STRE/CHKS are unrecovered so the interchange layout "
+                            "is emitted instead - model round-trip and writer fixpoint verified, "
+                            f"{len(blob)} -> {len(out)} bytes)")
+                else:
+                    verdict = "DIFF"
+                    note = "  (vanilla, and the model did NOT survive write->read - a real defect)"
+            else:
+                verdict = "DIFF"
+                note = ""
         except Exception as e:
             print(f"  ERROR   {p}: {type(e).__name__}: {e}")
             rc = 1
             continue
         cc = sum(1 for r in m.regions
                  if str(getattr(r, "name", "")).lower().startswith("compcache"))
-        print(f"  {'OK  ' if ok else 'DIFF'}  {_os.path.basename(p)}  regions={len(m.regions)} "
-              f"compcache={cc} bytes={len(blob)}")
-        if not ok:
+        print(f"  {verdict}  {_os.path.basename(p)}  regions={len(m.regions)} "
+              f"compcache={cc} bytes={len(blob)}{note}")
+        if verdict == "DIFF":
             rc = 1
-    print("SELFTEST PASSED" if rc == 0 else "SELFTEST FAILED")
+        noted += (verdict == "NOTE")
+    if rc == 0:
+        print("SELFTEST PASSED" + (" (%d file(s) PASSED WITH NOTE - see above; byte identity is "
+                                   "not achievable on a vanilla manifest)" % noted if noted else ""))
+    else:
+        print("SELFTEST FAILED")
     _sys.exit(rc)
