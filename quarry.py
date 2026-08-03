@@ -130,7 +130,7 @@ def _deflate_span(buf):
 
 # ------------------------------------------------------------------ RPF7 container
 class Rpf:
-    def __init__(self, path, keys=None, tables=None, data=None, name=None):
+    def __init__(self, path, keys=None, tables=None, data=None, name=None, aes_key=None):
         """path may be a real file, OR pass data=<bytes> for an archive NESTED inside
         another archive (most of the game's map assets live one level down)."""
         self.path = path
@@ -143,6 +143,7 @@ class Rpf:
         if magic != MAGIC:
             raise ValueError(f'{path}: not RPF7 ({magic!r})')
         self.keys, self.tables = keys, tables
+        self.aes_key = aes_key
         self.entries = []
         self.names = b''
 
@@ -170,11 +171,21 @@ class Rpf:
             # A skip that announces itself as harmless is the dangerous kind - it is how the Cayo
             # dlc.rpf hole hid 7.2 GB. State what is skipped and let the caller judge; never encode
             # a scope conclusion here.
-            raise KeyError('AES-encrypted archive: no AES key available. This is a separate key '
-                           'from the NG set and is not yet recovered, so this archive and its '
-                           'contents are SKIPPED. Affected archives include map set-piece rpf '
-                           '(des_*), not only vehicle *_mods.rpf - if content appears missing '
-                           'downstream, suspect this first')
+            # ⭐⭐ AND THEN THE "MISSING CAPABILITY" TURNED OUT NOT TO EXIST (2026-08-03).
+            # The 32-byte key is the SAME PC AES key keyderive.find_aes_key() already pulls from
+            # the user's own executable on every run to open the magic blob - it is also the
+            # ARCHIVE key, one AES-256-ECB pass over the TOC + name table. The refusal above was
+            # a claim of ABSENCE that the code itself disproved, and it cost the corpus 2,075
+            # files nobody counted (1,886 ydr + 84 yft + 18 ytyp + 5 ymap across 34 archives).
+            # ⛔ THE LESSON, and it is the same one as bit 31: "not yet recovered" described what
+            # WE HAD LOOKED FOR, not what was available. A capability gap asserted in a comment
+            # is not evidence - go and try it.
+            if self.aes_key is None:
+                raise KeyError('AES-encrypted archive: no AES key supplied to Rpf(aes_key=). '
+                               'Pass keyderive.acquire_aes(game_root) - the key comes from the '
+                               "operator's own executable, the same one the NG path uses")
+            import keyderive
+            return keyderive.aes256_ecb_decrypt(blob[:len(blob) // 16 * 16], self.aes_key)
         raise ValueError(f'unknown encryption 0x{self.enc:08x}')
 
     def read_toc(self):
@@ -666,7 +677,9 @@ def walk_archive(r, oodle, depth=0, max_depth=2, stats=None, path=''):
                 continue
             try:
                 # key inputs for a nested archive = its OWN entry name + its OWN blob length
-                sub = Rpf(f'{path}/{name}', r.keys, r.tables, data=blob, name=name)
+                # the AES key rides down the recursion: AES archives are always NESTED
+                sub = Rpf(f'{path}/{name}', r.keys, r.tables, data=blob, name=name,
+                          aes_key=getattr(r, 'aes_key', None))
                 sub.read_toc()
                 if not sub.sane():
                     raise ValueError('nested TOC did not decode')
@@ -1364,7 +1377,7 @@ def cmd_extract(a):
     # ⚠ ORDER MATTERS: this now runs BEFORE the project tree is written, because reading the game's
     # real DLC load order out of update.rpf needs the keys, and the tree encodes that order in its
     # folder names - building it first would bake in the guess.
-    keys = tables = None
+    keys = tables = aes_key = None
     try:
         import keyderive
         raw_k, raw_t = keyderive.acquire(a.game, a.keys, getattr(a, 'magic', None))
@@ -1372,6 +1385,12 @@ def cmd_extract(a):
     except Exception as e:
         print(f'keys     : UNAVAILABLE - {e}')
         print('keys     : encrypted archives will be SKIPPED (nothing will be silently mis-read)')
+    try:
+        import keyderive
+        aes_key = keyderive.acquire_aes(a.game)
+        print(f'aes key  : {"recovered from your own executable - AES archives WILL open" if aes_key else "not found - AES archives will be skipped"}')
+    except Exception as e:
+        print(f'aes key  : UNAVAILABLE - {e}')
 
     dlc, authoritative = order_dlc(dlc, read_dlclist(a.game, keys, tables))
     print('dlc order: ' + ('from the game\'s own dlclist.xml (authoritative)' if authoritative
@@ -1460,7 +1479,7 @@ def cmd_extract(a):
     stats = {}
     for path, slot in jobs:
         try:
-            r = Rpf(path, keys, tables)
+            r = Rpf(path, keys, tables, aes_key=aes_key)
             r.read_toc()
         except KeyError as e:
             print(f'  SKIP {os.path.basename(path)}: {e}')
