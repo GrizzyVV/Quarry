@@ -475,14 +475,25 @@ def sidecar_into(out_root, slot, type_dir, relpath, blob):
         f.write(blob)
 
 
-def embedded_texture_sidecars(res, stem, textures, base=0):
+def embedded_texture_sidecars(res, stem, textures, base=0, bases=None):
     """A drawable's OWN texture dictionary (ShaderGroup+0x08) as sidecars: the
-    `<stem>__embedded.ytd.xml` manifest plus pixel files. Shared by the ydr and yft branches -
-    the full naming contract (why `__embedded`, why a sibling dictionary at all) is documented
-    at the ydr branch of to_interchange_xml, which established it."""
+    `<stem>__embedded.ytd.xml` manifest plus pixel files. Shared by the ydr, yft AND ydd branches
+    - the full naming contract (why `__embedded`, why a sibling dictionary at all) is documented
+    at the ydr branch of to_interchange_xml, which established it.
+
+    `bases` = several drawable offsets to merge into ONE sibling dictionary, which is what a ydd
+    needs: a drawable DICTIONARY holds many drawables and each may carry its own textures.
+    De-duplicated by name, because entries in one dictionary routinely share a texture.
+    """
     import ydr2xml
     import ytd2xml
-    emb = ydr2xml.embedded_textures(res, base=base)
+    emb, seen = [], set()
+    for b in (bases if bases is not None else [base]):
+        for t in ydr2xml.embedded_textures(res, base=b):
+            k = t['name'].lower()
+            if k not in seen:
+                seen.add(k)
+                emb.append(t)
     if not emb:
         return []
     emb_stem = stem + '__embedded'
@@ -575,7 +586,22 @@ def to_interchange_xml(name, blob, textures='both', stats=None):
         # (the same second pass that names ytyp/ymap hashes). Dictionary joins are hash-to-hash,
         # so nothing downstream depends on the resolution - it is for humans and by-name lookups.
         xml, _n = ydd2xml.to_xml(res, {})
-        return stem + '.ydd.xml', xml.encode('utf-8'), []
+        # ⭐ A DICTIONARY'S ENTRIES CARRY EMBEDDED TEXTURES TOO (2026-08-03). This branch was the
+        # last of the three drawable lanes still hardcoding `[]`: ydr got sidecars 07-30, yft
+        # 07-31, and ydd was simply never revisited - the same "built for one lane, never wired
+        # for the next" shape as the ybn converter and the yft extras before it.
+        # The cost was not zero-but-invisible: `drawable_lines` emits <ShaderGroup>
+        # <TextureDictionary> for EVERY entry, so a .ydd.xml NAMED textures whose pixels were
+        # never written - the XML advertised files that do not exist. Measured over 600 real
+        # dictionaries: 35.3% contain at least one entry with an embedded dictionary.
+        # Each entry is a gtaDrawable at its own offset, so all of them are merged into ONE
+        # sibling `<stem>__embedded.ytd.xml`, de-duplicated by name.
+        try:
+            bases = [off for _h, off in ydd2xml.entry_offsets(res)]
+        except Exception:
+            bases = []
+        sidecars = embedded_texture_sidecars(res, stem, textures, bases=bases) if bases else []
+        return stem + '.ydd.xml', xml.encode('utf-8'), sidecars
     if t == 'yft':
         # ⭐ EXTRAS ARE PIPELINE-WIRED (2026-07-30). yft2xml.convert() has emitted the skeleton,
         # the physics group/child join and one importable <stem>/<group>.ydr.xml sidecar per
@@ -1112,11 +1138,13 @@ def cmd_textures(a):
     # 1) every texture NAME the drawables ask for
     wanted = set()
     drawables = 0
+    kinds_seen = set()
     for root in ref_roots:
         for kind in ('ydr', 'ydd', 'yft'):
             d = os.path.join(root, kind)
             if not os.path.isdir(d):
                 continue
+            kinds_seen.add(kind)
             for fn in os.listdir(d):
                 if not fn.lower().endswith('.xml'):
                     continue
@@ -1224,6 +1252,19 @@ def cmd_textures(a):
               ' XML to read, every dictionary looks unreferenced and this would delete them all.'
               '\n   Run `quarry extract --xml` then `quarry resolve` for this project first.'
               % (drawables, manifests))
+        return 1
+    # ⛔ PRESENCE IS NOT COVERAGE (2026-08-03). The zero-check above catches a binary-only
+    # project; a PARTIAL one sailed straight through. `resolve --types ydr,ytd` leaves _resolved
+    # with no ydd/ and no yft/ at all, so `wanted` never learns the textures those drawables name
+    # - and --prune then deletes those pixels from the SLOTS as well as from _resolved. Every
+    # drawable lane that can reference a texture must be present before deletion is allowed.
+    missing_kinds = sorted({'ydr', 'ydd', 'yft'} - kinds_seen)
+    if missing_kinds:
+        print('\n⛔ REFUSING TO PRUNE: no %s drawable folder in the reference roots. Those '
+              'drawables reference textures too, so their names are missing from the keep set and '
+              'pruning would delete pixels that ARE used.\n   Resolve every drawable type first '
+              '(`quarry resolve --out <project>` with no --types), then prune.'
+              % '/'.join(missing_kinds))
         return 1
     removed = 0
     for pngs in victims:
