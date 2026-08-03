@@ -35,6 +35,9 @@ MAGIC = b'7FPR'
 DIR_IDENT = 0x7FFFFF00
 ENC_OPEN, ENC_AES, ENC_NG = 0x00000000, 0x0FFFFFF9, 0x0FEFFFFF
 SIZE_SATURATED = 0xFFFFFF     # a u24 FileSize field that ran out of bits: real length >= 16MB
+# The within-slot collision suffix file_into writes: `<stem>~<n>`. ANCHORED - a tilde anywhere
+# else in a name is part of the asset's real name and must not be read as an alternate.
+_ALT_RE = re.compile(r'~\d+$')
 
 TYPES_CORE = ('ydr', 'ydd', 'ytd', 'ybn', 'ytyp', 'ymap')
 
@@ -742,13 +745,47 @@ def manifest_flag(out_root, key='dlcOrderAuthoritative', default=False):
 
 def precedence_slots(out_root):
     """Every slot in ASCENDING load order - the order the game itself resolves in, so a later
-    entry legitimately overrides an earlier one."""
+    entry legitimately overrides an earlier one.
+
+    ⛔ THE DLC LIST COMES FROM THE MANIFEST, NOT FROM listdir (2026-08-03). The numbered names
+    encode load order ONLY if they all came from ONE extraction. This used to lexically sort
+    whatever directories existed, and B:/RUDE_Filebase_Full held 175 dirs for 92 packs - 83 left
+    over from an earlier HEURISTIC-ordered extract, so ordinal 001 existed twice (001_mpheist AND
+    001_mpairraces) and the merged sort was NEITHER ordering. Precedence silently stopped meaning
+    load order while `_RESOLVED.json` kept stamping dlcOrderAuthoritative: true - i.e. the one
+    field a consumer checks to decide whether to trust the winner was lying.
+    A directory not named by the manifest is REPORTED and excluded, never silently included.
+    """
     slots = [s for s in ('00_base', '10_update') if os.path.isdir(os.path.join(out_root, s))]
     dlc_root = os.path.join(out_root, '20_dlc')
     if os.path.isdir(dlc_root):
-        # names are NNN_<pack>, so lexical sort IS load order
-        slots += [os.path.join('20_dlc', d) for d in sorted(os.listdir(dlc_root))
-                  if os.path.isdir(os.path.join(dlc_root, d))]
+        on_disk = {d for d in os.listdir(dlc_root)
+                   if os.path.isdir(os.path.join(dlc_root, d))}
+        packs = []
+        try:
+            with open(os.path.join(out_root, '_FILEBASE.json')) as f:
+                packs = json.load(f).get('dlcPacks') or []
+        except Exception:
+            packs = []
+        if packs:
+            named = []
+            for p in packs:
+                d = '%03d_%s' % (p['order'], p['name']) if isinstance(p, dict) else str(p)
+                if d in on_disk:
+                    named.append(d)
+            extra = sorted(on_disk - set(named))
+            if extra:
+                print(f'⚠ {len(extra)} DLC director{"y" if len(extra) == 1 else "ies"} under '
+                      f'20_dlc are NOT in this project\'s manifest and are EXCLUDED from '
+                      f'precedence (stale from an earlier extract): '
+                      + ', '.join(extra[:6]) + (' …' if len(extra) > 6 else ''))
+            slots += [os.path.join('20_dlc', d) for d in named]
+        else:
+            # No manifest (hand-assembled folder): fall back to the lexical read, but SAY so -
+            # the caller is entitled to know the ordering is unverified.
+            print('⚠ no _FILEBASE.json dlcPacks - DLC precedence falls back to a lexical sort of '
+                  '20_dlc, which is only load order if one extraction produced every directory')
+            slots += [os.path.join('20_dlc', d) for d in sorted(on_disk)]
     return slots
 
 
@@ -1240,7 +1277,11 @@ def cmd_resolve(a):
                 if os.path.isdir(os.path.join(tp, fname)):
                     continue          # sidecar folders travel with their XML, handled below
                 stem, ext = split_type_ext(fname)
-                if '~' in stem:
+                # ⛔ ANCHOR THE TEST (2026-08-03). `'~' in stem` dropped ANY asset whose name
+                # merely contains a tilde and miscounted it as a collision alternate. The suffix
+                # this is looking for is the one file_into writes: `~<n>` at the END.
+                base = stem[:-len('__embedded')] if stem.endswith('__embedded') else stem
+                if _ALT_RE.search(base):
                     # a WITHIN-slot basename collision: genuinely two different assets sharing
                     # one name. Which is canonical is unknowable from here, so the un-suffixed
                     # copy wins and the alternates are COUNTED, not silently flattened away.
@@ -1268,11 +1309,17 @@ def cmd_resolve(a):
             copied += 1
         # a converted asset's payload folder must follow its winning XML or the XML points at
         # nothing (ytd) - resolve it from the SAME slot, never from a mix
-        side_src = os.path.join(out, slot, type_dir, split_type_ext(fname)[0])
+        # ⛔ CLEAR A STALE DESTINATION FOLDER EVEN WHEN THE WINNER HAS NONE (2026-08-03). The
+        # rmtree used to live INSIDE `if os.path.isdir(side_src)`, so when the new winner carried
+        # no payload folder, a folder left by a previous resolve (from a slot that used to win)
+        # survived in _resolved - pairing one dictionary's manifest with ANOTHER dictionary's
+        # pixels, which is exactly the mix-up the same-slot rule exists to prevent.
+        side_name = split_type_ext(fname)[0]
+        side_src = os.path.join(out, slot, type_dir, side_name)
+        side_dst = os.path.join(dest_root, type_dir, side_name)
+        if os.path.isdir(side_dst):
+            shutil.rmtree(side_dst)
         if os.path.isdir(side_src):
-            side_dst = os.path.join(dest_root, type_dir, split_type_ext(fname)[0])
-            if os.path.isdir(side_dst):
-                shutil.rmtree(side_dst)
             os.makedirs(side_dst, exist_ok=True)
             for pf in sorted(os.listdir(side_src)):
                 s, d = os.path.join(side_src, pf), os.path.join(side_dst, pf)
