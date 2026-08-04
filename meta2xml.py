@@ -179,6 +179,35 @@ SCHEMA_NAMES = (
     # entries: joaat_case(name) == the stored nameHash for all nine. Nothing is guessed here.
     "containerLods", "boxOccluders", "occludeModels", "physicsDictionaries", "instancedData",
     "carGenerators", "LODLightsSOA", "DistantLODLightsSOA",   # timeCycleModifiers: above
+    # ...and the STRUCT + FIELD names INSIDE those containers, which is what the emitter needs
+    # to write them instead of dropping them. Knowing the container name only told it whether
+    # content existed; without these every field decoded as `hash_XXXXXXXX` and no faithful
+    # element name could be written.
+    # HOW EACH ONE IS PROVEN (probe 2026-08-04): the candidate string is taken from the
+    # REFERENCE'S OWN element vocabulary - `reports/snapshots/ymap.json`, mined by
+    # tools/schema_miner.py from 11,052 reference ymap XML exports - and then tested by exact
+    # case-sensitive joaat preimage against the nameHash the binary descriptor actually stores.
+    # 64 of 64 matched. NOTHING here is a guess; a name that had failed to hash-match would have
+    # been left unresolved and its container left dropped, because an invented element name is
+    # invisible to a consumer in a way an omission marker is not.
+    # !! The census is ALPHABETICALLY SORTED, so it supplies names/nesting/attr-vs-text but NOT
+    # child order. Order comes from the binary struct descriptor - see CONTAINER_EMITTERS.
+    "CCarGen", "orientX", "orientY", "perpendicularLength", "carModel",
+    "bodyColorRemap1", "bodyColorRemap2", "bodyColorRemap3", "bodyColorRemap4",
+    "popGroup", "livery",
+    "CTimeCycleModifier", "minExtents", "maxExtents",
+    "BoxOccluder", "iCenterX", "iCenterY", "iCenterZ", "iCosZ", "iLength", "iWidth",
+    "iHeight", "iSinZ",
+    "OccludeModel", "bmin", "bmax", "dataSize", "verts", "numVertsInBytes", "numTris",
+    "rage__fwInstancedMapData", "ImapLink", "PropInstanceList", "GrassInstanceList",
+    "rage__fwPropInstanceListDef", "rage__fwGrassInstanceListDef",
+    "rage__fwGrassInstanceListDef__InstanceData", "rage__fwContainerLodDef",
+    "rage__spdAABB", "BatchAABB", "min", "max", "ScaleRange", "LodFadeStartDist",
+    "LodInstFadeRange", "OrientToTerrain", "InstanceList",
+    "NormalX", "NormalY", "Color", "Scale", "Ao", "Pad",
+    "CLODLight", "timeAndStateFlags", "hash", "coneOuterAngleOrCapExt",
+    "CDistantLODLight", "RGBI", "numStreetLights", "category",
+    "FloatXYZ", "x", "y", "z",
     "CMapData", "CEntityDef", "CMloInstanceDef", "entities", "parent", "contentFlags",
     "streamingExtentsMin", "streamingExtentsMax", "entitiesExtentsMin", "entitiesExtentsMax",
     "archetypeName", "guid", "position", "rotation", "scaleXY", "scaleZ", "parentIndex",
@@ -644,6 +673,39 @@ def scalar_list(tag, vals, indent):
     return out
 
 
+def num_list(tag, vals, indent):
+    """Whitespace-separated NUMERIC array - scalar_list's measured layout law, but formatted
+    through fmt_num instead of int().
+
+    WHY A SECOND FUNCTION INSTEAD OF REUSING scalar_list: scalar_list spells every value
+    `str(int(x))`. Two of CLODLight's eight members are float32 arrays, and they are genuinely
+    fractional - MEASURED over all 625 lodlights-family ymap in B:/RUDE_Filebase_Full
+    (2026-08-04): 29,663 of 311,414 falloff / falloffExponent values, 9.5%, across 313 files, are
+    non-integral. Reusing scalar_list would have truncated every one of them to an integer and
+    still produced well-formed XML - the exact profile of a loss no gate sees. scalar_list is
+    left byte-for-byte alone because the ytyp/ymt lanes are measured against it.
+
+    THE LAYOUT LAW IS RE-MEASURED, not assumed (2026-08-04). scalar_list's `<=10 on one line,
+    then TEN per line indented one deeper` was measured on the scenario oracle; it is confirmed
+    again here on the SURVIVING reference exports, and for floats as well as ints:
+    `ymt` EdgeIds / CommonAddSets, `yld` Unknown60 / Unknown20, `ycd` Values - all render exactly
+    ten values per line, single-space separated, continuation lines one indent deeper than the
+    tag. (`yld` CompositeTransform and `ypt` Data break the rule at 4 and 12 per line, but both
+    are STRUCTURED blocks - matrix rows and interleaved vertex channels - not scalar arrays, and
+    neither shape occurs in CMapData.)
+    """
+    if not vals:
+        return ["%s<%s />" % (indent, tag)]
+    s = [fmt_num(v) for v in vals]
+    if len(s) <= 10:
+        return ["%s<%s>%s</%s>" % (indent, tag, " ".join(s), tag)]
+    out = ["%s<%s>" % (indent, tag)]
+    for i in range(0, len(s), 10):
+        out.append("%s %s" % (indent, " ".join(s[i:i + 10])))
+    out.append("%s</%s>" % (indent, tag))
+    return out
+
+
 def pick(d, key, default):
     """`dict.get(k, default)` is WRONG here: a parsed field is PRESENT-but-None when the source tag
     was absent, so .get returns None and hands it straight to the formatter."""
@@ -1040,9 +1102,14 @@ def entity_xml(e, ind="  "):
     return L
 
 
-# The measured EMPTY spelling of the nine CMapData containers this emitter does not serialise,
-# in reference child order - now keyed by container so ymap_xml can tell an honest empty apart
-# from a drop.
+# The measured EMPTY spelling of the nine non-entity CMapData containers, in reference child
+# order - keyed by container so ymap_xml can tell an honest empty apart from a drop.
+#
+# ** SEVEN OF THE NINE ARE NOW SERIALISED FOR REAL (2026-08-04) - see CONTAINER_EMITTERS below.
+# This tuple is no longer "containers we cannot write"; it is the empty form each one takes when
+# the binary genuinely holds none of it. The two still unwritten are occludeModels (blocked, and
+# the reason is recorded at OccludeModel.verts) and containerLods (0 records in the whole corpus,
+# so its empty form is never wrong).
 #
 # HARD - A FORGED EMPTY IS DATA LOSS THE CONSUMER CANNOT SEE (2026-08-03). This tuple used to be
 # appended VERBATIM to every emitted ymap, so `<carGenerators itemType="CCarGen" />` was written
@@ -1054,35 +1121,66 @@ def entity_xml(e, ind="  "):
 #   physicsDictionaries 4,715 files /  33,266   instancedData         386 /  66,481
 #   carGenerators         700 files /  18,295   timeCycleModifiers    390 /   4,733
 #   boxOccluders          146 files /  15,120   occludeModels         173 /   1,535
-#   LODLightsSOA          320 files / 154,914   DistantLODLightsSOA   304 / 153,582
+#   LODLightsSOA          320 files / 154,914   DistantLODLightsSOA   320 / 154,914
 #   containerLods           0 files (never populated anywhere in this corpus)
-# = 447,926 records across 5,929 of 7,563 files (78%). 1,215 ymap hold ZERO entities and 1,203 of
+#   ^ the DistantLODLightsSOA cell was overwritten with 304 / 153,582 by the correction below and
+#     is RESTORED here; that correction is withdrawn - see it for why.
+# = 449,258 records across 5,929 of 7,563 files (78%). 1,215 ymap hold ZERO entities and 1,203 of
 # those carry content in a dropped container - i.e. one ymap in six converted to a syntactically
 # valid, COMPLETELY CONTENTLESS file and was counted as a successful conversion.
 #
 # TWO CORRECTIONS TO THE ROW ABOVE (2026-08-04), because a census is only worth what its scope is:
-#  * DistantLODLightsSOA was recorded as "320 / 154,914", a duplicate of the LODLightsSOA row
-#    beside it. RE-MEASURED over every lodlights-named ymap in the same 7,563 (624 files - the only
-#    files that can hold either container): 320 files/154,914 for LODLightsSOA, which reproduces
-#    exactly, and 304 files/153,582 for DistantLODLightsSOA, which does not. The two containers are
-#    also DISJOINT - 0 of the 624 carry both - so equal counts were never expected. Total corrected
-#    449,258 -> 447,926. The other seven rows are NOT re-measured here and are carried forward.
+#  * [WITHDRAWN - THE CORRECTION WAS THE ERROR. Kept in full because the way it went wrong is the
+#    lesson.] It read: "DistantLODLightsSOA was recorded as 320 / 154,914, a duplicate of the
+#    LODLightsSOA row beside it. RE-MEASURED over every lodlights-named ymap in the same 7,563
+#    (624 files - the only files that can hold either container): 320 files/154,914 for
+#    LODLightsSOA, which reproduces exactly, and 304 files/153,582 for DistantLODLightsSOA, which
+#    does not. The two containers are also DISJOINT - 0 of the 624 carry both - so equal counts
+#    were never expected. Total corrected 449,258 -> 447,926."
+#    RE-RUN AT THAT EXACT SCOPE (2026-08-04): 304 / 153,582 reproduces, so the arithmetic was
+#    fine - the FILE FILTER was not. "the only files that can hold either container" is false:
+#    `"lodlights" in name` matches lodlights_* and distlodlights_* but MISSES the 16 ymap named
+#    *_distantlights.ymap (prologue_distantlights, hei_carrier_distantlights,
+#    apa_ch2_04_mansion_*_distantlights, ...), which hold 1,332 DistantLODLightsSOA records
+#    between them. 304 + 16 = 320 files and 153,582 + 1,332 = 154,914 records, so the ORIGINAL
+#    row was right and the total goes back to 449,258. The two containers ARE disjoint (0 of
+#    8,076 carry both, re-measured) and their totals ARE equal, because R* ships lodlights_X and
+#    distlodlights_X as PAIRS describing one light set at two LOD tiers - equal counts are
+#    evidence OF the pairing, not of a copy-paste. Both agents reasoned from a shape ("equal
+#    numbers look copied") instead of from the population, and a name-pattern filter is exactly
+#    where a census silently stops being a census. Full scope, no filter, is the row below.
 #  * The scope line read "00_base + 10_update + 20_dlc". It is 00_base (4,588) + 10_update (2,975)
 #    ONLY; 20_dlc's 513 ymap were never censused. That matters more than it looks - the DLC is
 #    where the map's newest data lives (all 71 LODTYPES_DEPTH_SLOD4 ymap are in 20_dlc/mpheist4,
 #    and 20_dlc/053_mpheist4/island_lodlights.ymap alone adds 793 LODLightsSOA records on top of
 #    the figures above), so every number here is a LOWER BOUND on the real corpus.
 #
-# THE RULE NOW: empty in the binary -> the measured empty element (honest). Content in the binary
-# -> OMIT the element and leave a marker, because `FindChildNode` is direct-children-only and
-# returns nullptr for a missing element (LOG "ImportMapArea's ACTUAL XML contract"), so an
-# omission reads as "not provided" while a forged empty reads as "provided, and it is empty".
-# Serialising them FOR REAL is the better fix and remains open: it needs a reference ymap XML
-# export to measure the per-Item field spelling against, and this machine has none (the oracle
-# tree has no ymap/ directory), so writing one now would be a guess. Priority order when that
-# corpus exists: physicsDictionaries first - the in-game world-collision pass loads ybn through
-# ymap <physicsDictionaries> (LOG 2026-07-24, Matt-witnessed), so an authored map round-tripped
-# through this emitter loses every collision reference.
+# RE-MEASURED AT FULL SCOPE - ALL 8,076 ymap, 00_base + 10_update + 20_dlc (2026-08-04, 0 decode
+# failures). This is the BEFORE number for the serialisation work below, and it supersedes both
+# rows above because it is the first census taken over the whole corpus:
+#   physicsDictionaries 4,867 files /  34,225   instancedData         396 /  69,142
+#   carGenerators         702 files /  18,342   timeCycleModifiers    396 /   5,288
+#   boxOccluders          155 files /  15,414   occludeModels         183 /   1,702
+#   LODLightsSOA          321 files / 155,707   DistantLODLightsSOA   321 / 155,707
+#   containerLods           0 files (never populated - the struct is not even registered in any
+#                                    ymap's schema table, so its empty form can never be wrong)
+# = 455,527 records. The instancedData row counts grass BATCHES; the batches hold 30,535,076
+# individual instances, which is the number that actually leaves the emitter.
+#
+# THE RULE: empty in the binary -> the measured empty element (honest). Content in the binary and
+# no emitter -> OMIT the element and leave a marker, because `FindChildNode` is
+# direct-children-only and returns nullptr for a missing element (LOG "ImportMapArea's ACTUAL XML
+# contract"), so an omission reads as "not provided" while a forged empty reads as "provided, and
+# it is empty".
+#
+# ** THE "NO EMITTER" HALF IS NOW MOSTLY CLOSED (2026-08-04) - see CONTAINER_EMITTERS. The block
+# above used to end "serialising them for real needs a reference ymap XML export and this machine
+# has none, so writing one now would be a guess." The ORACLE EXISTS, just not as XML: the reference
+# corpus was mined into `reports/snapshots/ymap.json` (tools/schema_miner.py, 11,052 reference ymap
+# exports) before it was deleted, and it records every element path, its nesting, whether each
+# field is a value= attribute / an x,y,z attribute / element text, and each container's itemType.
+# What it does NOT record is CHILD ORDER, because to_json() writes `sorted(stats.items())`.
+# Order is supplied by a SEPARATE measured rule - see CONTAINER_EMITTERS.
 EMPTY_CONTAINERS = (
     ("containerLods", (' <containerLods itemType="rage__fwContainerLodDef" />',)),
     ("boxOccluders", (' <boxOccluders itemType="BoxOccluder" />',)),
@@ -1136,27 +1234,367 @@ def container_records(v):
     return 0
 
 
+# ------------------------------------------------ the seven serialised CMapData containers
+#
+# WHERE EVERY PART OF THESE SHAPES COMES FROM (nothing below is invented; 2026-08-04):
+#
+#  ELEMENT NAMES  - the reference's own vocabulary in `reports/snapshots/ymap.json`, then each one
+#                   CONFIRMED by exact case-sensitive joaat preimage against the nameHash the
+#                   binary descriptor stores. 64/64 matched (see the SCHEMA_NAMES block). A name
+#                   that had failed to match would have left its container dropped.
+#  NESTING        - the census path (`CMapData/<c>/Item/<field>`), which agrees with the binary
+#                   struct graph in every case.
+#  attr vs TEXT   - the census: `attrs=['value']` -> `<f value="x" />`, `attrs=['x','y','z']` ->
+#                   `<f x= y= z= />`, `text=['string']` -> element text, `text=['numlist']` ->
+#                   the num_list law. `<Item>` carries NO type attribute here - the miner rewrites
+#                   `Item` to `Item[T]` when a type attribute exists, and every census path under
+#                   these containers is a bare `Item` (unlike `entities/Item[CEntityDef]`).
+#  CHILD ORDER    - THE BINARY STRUCT-DESCRIPTOR ORDER, which is a MEASURED rule, not an
+#                   assumption. Tested by pairing 928 surviving reference ytyp exports with their
+#                   binaries and comparing, per struct, the XML child order against the descriptor
+#                   order: 23 struct types, every one with exactly ONE observed XML order across
+#                   all 928 files, and ZERO relative-order disagreements. The only deviation is
+#                   that CBaseArchetypeDef / CTimeArchetypeDef / CMloArchetypeDef / CEntityDef
+#                   emit exporter-synthesised `padding0` / `padding1` elements the descriptor does
+#                   not carry - extra elements, never a reordering.
+#                   THE RULE IS THEN CONFIRMED THREE MORE TIMES INSIDE THIS VERY LANE: the
+#                   already-measured empty forms of instancedData (ImapLink, PropInstanceList,
+#                   GrassInstanceList), LODLightsSOA (direction, falloff, falloffExponent,
+#                   timeAndStateFlags, hash, coneInnerAngle, coneOuterAngleOrCapExt,
+#                   coronaIntensity) and DistantLODLightsSOA (position, RGBI, numStreetLights,
+#                   category) reproduce their binary descriptor order EXACTLY - and those empty
+#                   forms were measured off real reference ymap XML, so this is ymap evidence,
+#                   not ytyp evidence carried across.
+#
+# !! WHAT IS STILL DEGRADED, AND IT IS NOT SMALL. T_HASH fields hold a one-way lowercase joaat and
+# resolve only against the names the user's own extraction yields, so where the reference spells a
+# string this writes `hash_XXXXXXXX`. MEASURED over all 8,076 ymap in B:/RUDE_Filebase_Full:
+#   physicsDictionaries entries  10,828 / 34,225 unresolved (32%)   - ybn dictionaries not extracted
+#   timeCycleModifiers name       5,283 /  5,288 unresolved (99.9%) - timecycle names live in
+#                                 timecycle_mods_*.xml, which is NOT an archive filename, so this
+#                                 table can never resolve them; a name source would have to be added
+#   carGenerators carModel/popGroup - vehicle model + popgroup names, same story
+# This is honest and counted (`unresolved asset-name hash` in the Walker's warn), and it is
+# strictly more information than dropping the record - the extents, hours, flags and geometry all
+# survive - but do NOT read a round-tripped file as byte-faithful to the reference.
+#
+# HOW THIS WAS VERIFIED, because `quarry.py regress` CANNOT SEE THIS LANE (its fixture project
+# holds zero ytyp/ymap/ymt binaries, so a green regress run says nothing about meta2xml). Four
+# measurements, all over B:/RUDE_Filebase_Full, 2026-08-04:
+#  1. RECORD COUNTS. Every ymap decoded -> expected count per container off the value model; the
+#     emitted XML then re-read with a stock ElementTree iterparse (an independent reader keyed on
+#     the FULL element path, so a field written at the wrong depth counts as a different path and
+#     shows up as a miss). 8,066 files, 16 paths, 32,234,352 records: EMITTED == DECODED on every
+#     path, 0 files disagreeing, and 0 XML parse failures.
+#     (10 of 8,076 do not emit at all - a PRE-EXISTING refusal, `unknown extension type
+#     hash_32818195`, in the entity extension path. Not touched here; still open.)
+#  2. SHAPE COMPLETENESS. Every element path the reference census records under these nine
+#     containers vs every path this emitter produces: 90 census paths, 82 emitted, and the 8
+#     missing are ALL occludeModels/* - the container deliberately left dropped. ZERO paths are
+#     emitted that the reference never had, and ZERO attribute-set disagreements across all 82
+#     shared paths (value= vs x,y,z vs w vs itemType vs bare text).
+#  3. NO COLLATERAL. ytyp and ymt output is BYTE-IDENTICAL across this change - 600 ytyp + 124
+#     ymt re-emitted and sha256-compared before/after - which matters because adding names to
+#     SCHEMA_NAMES changes schema_name() globally and could have renamed a tag in another lane.
+#     The ytyp oracle diff also still reads 366,250/366,250 text-exact.
+#  4. COST. The seven containers add 39.2M lines / 1.03 GB across a 1,152-file sample. 93% of that
+#     is grass: 35 files exceed +10 MB and the largest single ymap goes 1.4 KB -> 49.4 MB. Those
+#     1.4 KB files are the "syntactically valid, COMPLETELY CONTENTLESS" case named above - the
+#     size IS the defect being repaired - but a 49 MB ymap XML is a real operational fact for
+#     whatever reads these, and it is recorded here rather than quietly capped. A cap would be the
+#     forged-empty defect again, one level up.
+
+
+def _floatxyz_array(tag, items, ind):
+    """A FloatXYZ array (LODLightsSOA/direction, DistantLODLightsSOA/position).
+
+    MEASURED (census, 11,052 reference ymap): the container carries itemType="FloatXYZ" and each
+    <Item> spells x/y/z as CHILD ELEMENTS with a value attribute - `CMapData/LODLightsSOA/
+    direction/Item/x` has attrs=['value']. That is the OPPOSITE of CEntityDef's
+    `<position x= y= z= />`, and it follows the binary: FloatXYZ is a real 3-field struct with its
+    own descriptor here, not a VEC3 field. Writing the attribute form would have been the natural
+    guess and it would have been wrong."""
+    items = _inline_items(items)
+    if not items:
+        return ['%s<%s itemType="FloatXYZ" />' % (ind, tag)]
+    L = ['%s<%s itemType="FloatXYZ">' % (ind, tag)]
+    for d in items:
+        L.append("%s <Item>" % ind)
+        for c in "xyz":
+            L.append(_val(c, pick(d, c, 0), ind + "  "))
+        L.append("%s </Item>" % ind)
+    L.append("%s</%s>" % (ind, tag))
+    return L
+
+
+def physdict_xml(v, ind=" "):
+    """<physicsDictionaries> - a flat T_HASH array, each entry a ybn dictionary name.
+
+    NO itemType on the container (census: `CMapData/physicsDictionaries` has no attrs in any of
+    11,052 files) and each entry is bare element text. This one matters most per line of code:
+    the in-game world-collision pass loads ybn through exactly this list (LOG 2026-07-24,
+    Matt-witnessed), so every map this emitter round-tripped previously lost all of its
+    collision references."""
+    L = ["%s<physicsDictionaries>" % ind]
+    for s in v or []:
+        L.append(_txt("Item", s, ind + " "))
+    L.append("%s</physicsDictionaries>" % ind)
+    return L
+
+
+def cargen_item_xml(d, ind):
+    f = ind + " "
+    L = ["%s<Item>" % ind]
+    L.append(_vec("position", d.get("position"), f))
+    L.append(_val("orientX", pick(d, "orientX", 0), f))
+    L.append(_val("orientY", pick(d, "orientY", 0), f))
+    L.append(_val("perpendicularLength", pick(d, "perpendicularLength", 0), f))
+    L.append(_txt("carModel", d.get("carModel"), f))
+    L.append(_val("flags", pick(d, "flags", 0), f))
+    for i in range(1, 5):
+        L.append(_val("bodyColorRemap%d" % i, pick(d, "bodyColorRemap%d" % i, -1), f))
+    L.append(_txt("popGroup", d.get("popGroup"), f))
+    L.append(_val("livery", pick(d, "livery", -1), f))
+    L.append("%s</Item>" % ind)
+    return L
+
+
+def cargens_xml(v, ind=" "):
+    return _container("carGenerators", _inline_items(v), "CCarGen", ind, cargen_item_xml)
+
+
+def map_tcmod_item_xml(d, ind):
+    """One CMapData <timeCycleModifiers> Item. NOT the same struct as the MLO
+    CMloTimeCycleModifier that tcmod_xml writes - that one is (name, sphere, percentage, range,
+    startHour, endHour); this one is (name, minExtents, maxExtents, percentage, range, startHour,
+    endHour) and its name is a HASH, not a string."""
+    f = ind + " "
+    L = ["%s<Item>" % ind]
+    L.append(_txt("name", d.get("name"), f))
+    L.append(_vec("minExtents", d.get("minExtents"), f))
+    L.append(_vec("maxExtents", d.get("maxExtents"), f))
+    L.append(_val("percentage", pick(d, "percentage", 0), f))
+    L.append(_val("range", pick(d, "range", 0), f))
+    L.append(_val("startHour", pick(d, "startHour", 0), f))
+    L.append(_val("endHour", pick(d, "endHour", 0), f))
+    L.append("%s</Item>" % ind)
+    return L
+
+
+def map_tcmods_xml(v, ind=" "):
+    return _container("timeCycleModifiers", _inline_items(v), "CTimeCycleModifier", ind,
+                      map_tcmod_item_xml)
+
+
+BOX_OCCLUDER_FIELDS = ("iCenterX", "iCenterY", "iCenterZ", "iCosZ",
+                       "iLength", "iWidth", "iHeight", "iSinZ")
+
+
+def boxoccluder_item_xml(d, ind):
+    L = ["%s<Item>" % ind]
+    for k in BOX_OCCLUDER_FIELDS:
+        L.append(_val(k, pick(d, k, 0), ind + " "))
+    L.append("%s</Item>" % ind)
+    return L
+
+
+def boxoccluders_xml(v, ind=" "):
+    return _container("boxOccluders", _inline_items(v), "BoxOccluder", ind, boxoccluder_item_xml)
+
+
+def lodlights_soa_xml(v, ind=" "):
+    """CLODLight: eight PARALLEL arrays, so the record count is the longest member (see
+    container_records), and any member may be shorter than the others - each renders its own
+    measured empty form when it is."""
+    v = v or {}
+    f = ind + " "
+    L = ["%s<LODLightsSOA>" % ind]
+    L += _floatxyz_array("direction", v.get("direction"), f)
+    for tag in ("falloff", "falloffExponent", "timeAndStateFlags", "hash",
+                "coneInnerAngle", "coneOuterAngleOrCapExt", "coronaIntensity"):
+        L += num_list(tag, v.get(tag) or [], f)
+    L.append("%s</LODLightsSOA>" % ind)
+    return L
+
+
+def distlodlights_soa_xml(v, ind=" "):
+    v = v or {}
+    f = ind + " "
+    L = ["%s<DistantLODLightsSOA>" % ind]
+    L += _floatxyz_array("position", v.get("position"), f)
+    L += num_list("RGBI", v.get("RGBI") or [], f)
+    L.append(_val("numStreetLights", pick(v, "numStreetLights", 0), f))
+    L.append(_val("category", pick(v, "category", 0), f))
+    L.append("%s</DistantLODLightsSOA>" % ind)
+    return L
+
+
+def grass_instance_xml(d, ind):
+    """One rage__fwGrassInstanceListDef__InstanceData <Item>.
+
+    Every value is spelled RAW - the stored integer, not a decoded world-space float. MEASURED:
+    the census value inventories for Ao (22..255), NormalX/NormalY (23..231) and Scale span the
+    u8 range, and Position is a fixed[3] u16 rendered as a numlist. Normalising here would put
+    plausible-looking wrong numbers in every instance."""
+    f = ind + " "
+    L = ["%s<Item>" % ind]
+    L += num_list("Position", d.get("Position") or [], f)
+    L.append(_val("NormalX", pick(d, "NormalX", 0), f))
+    L.append(_val("NormalY", pick(d, "NormalY", 0), f))
+    L += num_list("Color", d.get("Color") or [], f)
+    L.append(_val("Scale", pick(d, "Scale", 0), f))
+    L.append(_val("Ao", pick(d, "Ao", 0), f))
+    L += num_list("Pad", d.get("Pad") or [], f)
+    L.append("%s</Item>" % ind)
+    return L
+
+
+def grass_batch_xml(d, ind):
+    """One rage__fwGrassInstanceListDef <Item> (a grass BATCH).
+
+    BatchAABB is a nested rage__spdAABB whose min/max are VEC4 - the census records a `w`
+    attribute on both, always 0 - so they take the four-component attribute form while
+    ScaleRange, a plain VEC3 field, takes three."""
+    f = ind + " "
+    aabb = d.get("BatchAABB") or {}
+    L = ["%s<Item>" % ind]
+    L.append("%s<BatchAABB>" % f)
+    L.append(_vec("min", aabb.get("min"), f + " ", "xyzw"))
+    L.append(_vec("max", aabb.get("max"), f + " ", "xyzw"))
+    L.append("%s</BatchAABB>" % f)
+    L.append(_vec("ScaleRange", d.get("ScaleRange"), f))
+    L.append(_txt("archetypeName", d.get("archetypeName"), f))
+    L.append(_val("lodDist", pick(d, "lodDist", 0), f))
+    L.append(_val("LodFadeStartDist", pick(d, "LodFadeStartDist", 0), f))
+    L.append(_val("LodInstFadeRange", pick(d, "LodInstFadeRange", 0), f))
+    L.append(_val("OrientToTerrain", pick(d, "OrientToTerrain", 0), f))
+    L += _container("InstanceList", _inline_items(d.get("InstanceList")),
+                    "rage__fwGrassInstanceListDef__InstanceData", f, grass_instance_xml)
+    L.append("%s</Item>" % ind)
+    return L
+
+
+def instanceddata_xml(v, ind=" "):
+    """<instancedData> - a rage__fwInstancedMapData STRUCT (not an array), so its three children
+    are always present.
+
+    PropInstanceList is written EMPTY, never guessed: it holds zero items in all 11,052 reference
+    exports AND no ymap binary in B:/RUDE_Filebase_Full even registers a
+    rage__fwPropInstanceListDef in its schema table, so there is no oracle for its Item shape. If
+    one ever decodes non-empty, ymap_dropped_from raises the marker for it rather than letting
+    this write an invented element - a wrong shape is invisible, an omission is not."""
+    v = v or {}
+    f = ind + " "
+    L = ["%s<instancedData>" % ind]
+    L.append(_txt("ImapLink", v.get("ImapLink"), f))
+    props = _inline_items(v.get("PropInstanceList"))
+    if props:
+        L += _omitted("instancedData/PropInstanceList", len(props), f)
+    else:
+        L.append('%s<PropInstanceList itemType="rage__fwPropInstanceListDef" />' % f)
+    L += _container("GrassInstanceList", _inline_items(v.get("GrassInstanceList")),
+                    "rage__fwGrassInstanceListDef", f, grass_batch_xml)
+    L.append("%s</instancedData>" % ind)
+    return L
+
+
+# container -> renderer. A container ABSENT here is one this emitter still cannot write
+# faithfully, and ymap_xml leaves its omission marker instead.
+#
+# occludeModels IS DELIBERATELY ABSENT AND MUST STAY ABSENT UNTIL A verts ORACLE EXISTS.
+# Its shape is otherwise fully known - bmin, bmax, dataSize, verts, numVertsInBytes, numTris,
+# flags, all seven names hash-proven - but `verts` is entry type 0x59, which the Walker does not
+# decode: it returns None and counts `unhandled type 0x59` for all 1,702 items in the corpus. The
+# census says the reference spells verts as element TEXT classified 'string' (so NOT a
+# whitespace-separated number list) and its value inventory overflowed, so the census cannot show
+# what the encoding is, and no reference ymap XML survives on this machine to read one from.
+# Emitting the container with a hollow `<verts />` would be the exact defect this whole section
+# exists to prevent, one level down: six fields that look right wrapped around the one field that
+# carries the geometry, with nothing to tell the consumer it is missing.
+# containerLods is absent for the opposite reason - 0 records in all 8,076 ymap, so its empty form
+# is never wrong and it can never reach a renderer.
+CONTAINER_EMITTERS = {
+    "boxOccluders": boxoccluders_xml,
+    "physicsDictionaries": physdict_xml,
+    "instancedData": instanceddata_xml,
+    "timeCycleModifiers": map_tcmods_xml,
+    "carGenerators": cargens_xml,
+    "LODLightsSOA": lodlights_soa_xml,
+    "DistantLODLightsSOA": distlodlights_soa_xml,
+}
+
+
+def container_has_content(cname, v):
+    """Whether a container is worth rendering at all.
+
+    NOT the same question as container_records, and the difference is a real trap:
+    container_records counts ARRAY records, which is the right number to put in a marker but the
+    wrong test for two struct containers. instancedData's `ImapLink` and DistantLODLightsSOA's
+    `numStreetLights` / `category` are SCALAR fields, so a file carrying only those scores zero
+    records, takes the empty form, and has them silently rewritten to nothing / 0.
+
+    !! THIS IS A LATCH, NOT A LIVE FIX, and saying so is the point - measured over all 8,076 ymap
+    in B:/RUDE_Filebase_Full (2026-08-04): ImapLink is non-empty in 0 files, and of the 266 files
+    whose numStreetLights/category are non-zero, 0 have an empty position array. So the two
+    predicates agree on every file that exists today and this changes no output. It is here
+    because the failure it prevents is silent, and because the shape of the data - not its
+    current contents - is what says the guard is needed.
+    """
+    if container_records(v):
+        return True
+    if not isinstance(v, dict):
+        return False
+    if cname == "instancedData":
+        return bool(v.get("ImapLink"))
+    if cname == "DistantLODLightsSOA":
+        return bool(v.get("numStreetLights")) or bool(v.get("category"))
+    return False
+
+
+def ymap_containers_from(root):
+    """The nine non-entity CMapData containers, straight off the decoded root.
+
+    Deliberately NOT normalised into plain dicts the way entities_from does: the renderers
+    unwrap with _inline_items at the point of use, so there is exactly one place per container
+    that knows its shape and no intermediate model to drift out of step with the decode."""
+    return {cname: root.get(cname) for cname, _lines in EMPTY_CONTAINERS}
+
+
 def ymap_dropped_from(root, w=None):
-    """container -> record count, for every CMapData container this emitter drops.
+    """container -> record count, for the CMapData containers this emitter STILL drops.
 
     Counted off the DECODED root, so the number can never disagree with what was emitted, and
     pushed into the Walker's warn counter so `--convert` (and quarry's meta stage) print it.
+    A container with a renderer in CONTAINER_EMITTERS is NOT listed here - it is written for real
+    - which is precisely why the marker disappearing from a file is a claim this function makes,
+    not a claim the caller makes.
     """
     out = {}
     for cname, _lines in EMPTY_CONTAINERS:
+        if cname in CONTAINER_EMITTERS:
+            continue
         n = container_records(root.get(cname))
         if n:
             out[cname] = n
             if w is not None:
                 w.warn["DROPPED ymap container %s (emitter does not serialise it)" % cname] += n
+    # the one sub-container with a renderer above it but no oracle of its own
+    props = (root.get("instancedData") or {}).get("PropInstanceList") or []
+    if props and w is not None:
+        w.warn["DROPPED ymap container instancedData/PropInstanceList "
+               "(emitter does not serialise it)"] += len(props)
     return out
 
 
-def ymap_xml(name, entities, meta=None, dropped=None):
-    """`dropped` = {container: record count} from ymap_dropped_from(); anything not listed is
-    written in its measured empty form. Omitting it (the round-trip harness, which feeds
-    reference-parsed dicts) keeps the old all-empty behaviour."""
+def ymap_xml(name, entities, meta=None, dropped=None, containers=None):
+    """`containers` = the decoded CMapData root's non-entity containers (ymap_containers_from);
+    `dropped` = {container: record count} from ymap_dropped_from() for the ones with no renderer.
+
+    Omitting BOTH - which the round-trip harness does, since it feeds reference-PARSED dicts that
+    never carried these containers - keeps the old all-empty behaviour, so that gate still
+    measures exactly what it measured before."""
     m = meta or {}
+    c = containers or {}
     L = ['<?xml version="1.0" encoding="UTF-8"?>', "<CMapData>"]
     L.append(_txt("name", name, " "))
     L.append(_txt("parent", m.get("parent"), " "))
@@ -1175,7 +1613,14 @@ def ymap_xml(name, entities, meta=None, dropped=None):
     d = dropped or {}
     for cname, lines in EMPTY_CONTAINERS:
         n = d.get(cname, 0)
-        L += _omitted(cname, n) if n else list(lines)
+        if n:
+            L += _omitted(cname, n)                       # content, still no emitter
+            continue
+        render = CONTAINER_EMITTERS.get(cname)
+        if render is None or not container_has_content(cname, c.get(cname)):
+            L += list(lines)                              # honestly empty (or nothing decoded)
+            continue
+        L += render(c.get(cname))
     L.append("</CMapData>")
     return "\n".join(L) + "\n"
 
@@ -1521,7 +1966,7 @@ def convert_bytes(blob, stem, names=None):
                          ytyp_dropped_from(root, w)), "ytyp", w)
     if root_name == "CMapData":
         return (ymap_xml(root.get("name") or stem, entities_from(root), ymap_meta_from(root),
-                         ymap_dropped_from(root, w)), "ymap", w)
+                         ymap_dropped_from(root, w), ymap_containers_from(root)), "ymap", w)
     if root_name == "CScenarioPointRegion":
         return scenario_xml(scenario_from(root)), "ymt", w
     raise UnsupportedRoot(root_name)

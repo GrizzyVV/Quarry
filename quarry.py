@@ -976,6 +976,30 @@ def cmd_meta(a):
     ok = fail = pso = rbf = 0
     unresolved = 0
     why, noemit, warn_classes = {}, {}, {}
+    # ⛔⛔ STALE OUTPUT IS INVISIBLE UNLESS SOMEONE LOOKS FOR IT (2026-08-04). This loop writes an
+    # .xml ONLY on success, and never touches the file a previous run left behind - so a binary
+    # that converted last week and FAILS today keeps its week-old .xml, `resolve` hardlinks that
+    # into `_resolved`, and RUDE joins against a corpus that silently mixes converter generations.
+    # HOW IT WAS FOUND: Layer-4 Area C measured 1,264 map entities landing as proxy cubes because
+    # their ymap `archetypeName` was still `hash_XXXXXXXX` even though the real name was on disk.
+    # It was not a resolver bug - all 183 of those names ARE in today's names table (checked
+    # against load_names over B:/RUDE_Filebase_Full: 183/183 present). The XML holding the hashes
+    # was written 2026-07-27 by an emitter that dropped <extensions> entirely; today's meta2xml
+    # raises `unknown extension type 'hash_32818195' - refusing to emit a guess` on the very same
+    # binary (B:/RUDE_Filebase_Full/00_base/ymap/po1_07_strm_1.ymap, 207 entities), so this run
+    # cannot replace it and says nothing. COST: a downstream audit spent its budget designing a
+    # plugin-side hash-recovery for entities that a re-convert would have fixed for free.
+    # ⛔ NOTHING IS DELETED (preserve-don't-delete): the file is COUNTED and NAMED, and the
+    # operator decides. Deleting it would also destroy the only copy of that ymap's placements.
+    stale, stale_examples = 0, []
+
+    def _prior_xml(d, stem):
+        """Any .xml this stem already has on disk, whatever kind it was emitted as - a .ymt whose
+        root is CMapData is written `<stem>.ymap.xml`, so checking only `<stem>.<kind>.xml` would
+        miss exactly the mislabelled files the root-struct dispatch exists to handle."""
+        return ['%s.%s.xml' % (stem, k) for k in ('ytyp', 'ymap', 'ymt')
+                if os.path.isfile(os.path.join(d, '%s.%s.xml' % (stem, k)))]
+
     for slot in slots:
         for kind in ('ytyp', 'ymap', 'ymt'):
             d = os.path.join(out, slot, kind)
@@ -985,6 +1009,17 @@ def cmd_meta(a):
                 if not fn.lower().endswith('.' + kind):
                     continue
                 src = os.path.join(d, fn)
+                stem = fn[:-(len(kind) + 1)]
+
+                def _note_stale(reason):
+                    prior = _prior_xml(d, stem)
+                    if not prior:
+                        return
+                    nonlocal stale
+                    stale += 1
+                    if len(stale_examples) < 8:
+                        stale_examples.append((os.path.join(slot, kind, prior[0]), reason))
+
                 if kind == 'ymt':
                     # ⚠ Not every .ymt is META, and neither of these is a decode failure -
                     # count them apart from real failures or the summary cries wolf on every
@@ -996,9 +1031,11 @@ def cmd_meta(a):
                         magic = fh.read(4)
                     if magic == b'PSIN':
                         pso += 1
+                        _note_stale('PSO (PSIN) container - not META, never emitted by this pass')
                         continue
                     if magic == b'RBF0':
                         rbf += 1
+                        _note_stale('RBF0 container - not META, never emitted by this pass')
                         continue
                 try:
                     xml, got_kind, w = meta2xml.convert(src, names)
@@ -1006,13 +1043,14 @@ def cmd_meta(a):
                     # a recognised boundary: well-formed META, no emitter for its root
                     # (e.g. CStreamingRequestRecord - cutscene streaming request lists)
                     noemit[ex.root_name] = noemit.get(ex.root_name, 0) + 1
+                    _note_stale(f'no emitter for root {ex.root_name}')
                     continue
                 except Exception as ex:
                     msg = f'{type(ex).__name__}: {ex}'
                     why[msg] = why.get(msg, 0) + 1
                     fail += 1
+                    _note_stale(msg)
                     continue
-                stem = fn[:-(len(kind) + 1)]
                 with open(os.path.join(d, f'{stem}.{got_kind}.xml'), 'w',
                           encoding='utf-8') as fh:
                     fh.write(xml)
@@ -1044,7 +1082,6 @@ def cmd_meta(a):
               f'real name, and those come from the asset files themselves.')
     for m, n in sorted(why.items(), key=lambda kv: -kv[1])[:8]:
         print(f'  {n:5}x  {m}')
-
     # ⭐ ydd ENTRY NAMES (added 2026-07-30). extract writes them as hash_%08X because this
     # table did not exist yet - resolve them now, in place. The entry-level <Name> is the ONLY
     # line in a .ydd.xml indented exactly two spaces (" <Item>" + one-space body lines), so an
@@ -1085,6 +1122,23 @@ def cmd_meta(a):
         print(f'ydd entry names: resolved {ydd_hits:,} across {ydd_files:,} dictionaries; '
               f'{ydd_left:,} stay hash_%08X (no asset filename hashes to them - the join is '
               f'hash-to-hash, so nothing breaks)')
+
+    # ⛔ PRINTED LAST ON PURPOSE. A `meta` run over the whole game prints thousands of lines; a
+    # warning in the middle of that is a warning nobody reads. This is the one thing that makes
+    # the NEXT step produce a corpus that lies, so it sits directly above the next-step line.
+    if stale:
+        print(f'\n⛔ STALE OUTPUT: {stale:,} .xml file(s) on disk were emitted by an EARLIER '
+              f'converter run and THIS run could not reproduce them. `resolve` will hardlink them '
+              f'into _resolved and RUDE will join against a MIXTURE of converter generations - '
+              f'which reads as corpus damage (missing archetypes, hash_ names that a current run '
+              f'would resolve), not as a converter boundary.'.replace('⛔', '!!'))
+        for _p, _r in stale_examples:
+            print(f'    {_p}  <- {_r}')
+        if stale > len(stale_examples):
+            print(f'    ... and {stale - len(stale_examples):,} more')
+        print('  Nothing was deleted. Either fix the emitter and re-run `meta`, or delete those '
+              '.xml files yourself so the gap is HONEST (a missing file is a countable hole; a '
+              'stale one is a wrong answer with no counter).')
 
     print('\n  next: quarry.py resolve --out "<project>"   (flatten for RUDE)')
     return 0
@@ -1334,20 +1388,34 @@ def cmd_resolve(a):
                 winner[key] = slot
 
     linked = copied = sidecars = 0
+    blocked = []
     for (type_dir, fname), slot in sorted(winner.items()):
         src = os.path.join(out, slot, type_dir, fname)
         dst = os.path.join(dest_root, type_dir, fname)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
-        if os.path.exists(dst):
-            os.remove(dst)
+        # ⛔ A LOCKED FILE MUST NOT ABORT THE WHOLE RESOLVE (2026-08-04). This died with
+        # PermissionError [WinError 32] partway through a whole-game run because ONE file was open
+        # in another process (an analysis reading the corpus). Dying midway is the worst outcome
+        # available: `_resolved` is left half-rebuilt and the manifest is never written at all, so
+        # the tree ends up in a state neither the old nor the new resolve describes - strictly
+        # worse than not having run. Skip the file, COUNT it, and finish; the summary names them.
         try:
+            if os.path.exists(dst):
+                os.remove(dst)
             if a.copy:
                 raise OSError('copy requested')
             os.link(src, dst)
             linked += 1
+        except PermissionError as ex:
+            blocked.append(f'{type_dir}/{fname}: {ex.strerror or ex}')
+            continue
         except OSError:
-            shutil.copy2(src, dst)
-            copied += 1
+            try:
+                shutil.copy2(src, dst)
+                copied += 1
+            except PermissionError as ex:
+                blocked.append(f'{type_dir}/{fname}: {ex.strerror or ex}')
+                continue
         # a converted asset's payload folder must follow its winning XML or the XML points at
         # nothing (ytd) - resolve it from the SAME slot, never from a mix
         # ⛔ CLEAR A STALE DESTINATION FOLDER EVEN WHEN THE WINNER HAS NONE (2026-08-03). The
@@ -1426,6 +1494,13 @@ def cmd_resolve(a):
     print(f'  overridden by a higher slot: {overridden:,}   (this is precedence doing its job)')
     print(f'  pixel sidecars carried: {sidecars:,}')
     print(f'  hardlinked {linked:,}, copied {copied:,}')
+    if blocked:
+        print(f'  ! {len(blocked):,} file(s) SKIPPED - locked by another process. _resolved is '
+              f'complete except for these; re-run when nothing else is reading the corpus:')
+        for b in blocked[:6]:
+            print(f'      {b}')
+        if len(blocked) > 6:
+            print(f'      ... and {len(blocked) - 6} more')
     if ambiguous:
         print(f'  ! within-slot name alternates SKIPPED: {ambiguous:,} - the un-suffixed copy won.'
               f' They remain in the precedence tree; see _RESOLVED.json')
@@ -1750,6 +1825,18 @@ def cmd_extract(a):
 
 REGRESS_BASELINE = '_regress_baseline.json'
 REGRESS_TYPES = ('ydr', 'ybn', 'ydd', 'yft', 'ytd')
+# ⛔⛔ THE META LANE WAS OUTSIDE THE GATE UNTIL 2026-08-04. `regress` measured everything through
+# to_interchange_xml, which has no ytyp/ymap/ymt branch at all - so the LARGEST emitter surface in
+# the tool (meta2xml.py, 2,251 lines, and the one that changes most often) was completely
+# unguarded while the gate printed "OK - every fixture produced byte-identical output. No churn."
+# That sentence was true and misleading at the same time, which is the exact failure the blind-type
+# declaration below already exists to prevent - committed one lane over. PRESENCE IS NOT COVERAGE.
+REGRESS_META_TYPES = ('ytyp', 'ymap', 'ymt')
+# ⚠ Not every .ymt is META (see cmd_meta): PSIN = PSO container, RBF0 = old binary-XML. Filtering
+# them at SAMPLE time, not at convert time, keeps the sample deterministic AND keeps a legitimate
+# non-META file out of the error list, where it would fail the gate on every run forever.
+_NON_META_YMT_MAGIC = (b'PSIN', b'RBF0')
+REGRESS_NAMES_KEY = 'meta:_names_table'
 
 
 def _regress_fixtures(root, per_type, seed):
@@ -1799,6 +1886,60 @@ def _regress_signature(path):
     }
 
 
+def _regress_meta_fixtures(root, per_type, seed):
+    """The same deterministic sample, for the META lane (ytyp/ymap/ymt binaries).
+
+    Kept separate from _regress_fixtures because the two lanes have different entry points
+    (to_interchange_xml vs meta2xml.convert) and different prerequisites (the meta lane needs the
+    joaat names table), NOT because meta deserves weaker guarding - it is sampled, hashed, keyed
+    and blessed exactly the same way.
+    """
+    import random
+    out = []
+    for t in REGRESS_META_TYPES:
+        found = []
+        for slot in precedence_slots(root):
+            d = os.path.join(root, slot, t)
+            if not os.path.isdir(d):
+                continue
+            for f in sorted(os.listdir(d)):
+                if not f.lower().endswith('.' + t):
+                    continue
+                p = os.path.join(d, f)
+                if t == 'ymt':
+                    try:
+                        with open(p, 'rb') as fh:
+                            if fh.read(4) in _NON_META_YMT_MAGIC:
+                                continue
+                    except OSError:
+                        continue
+                found.append(p)
+        if not found:
+            continue
+        rng = random.Random(f'{seed}:{t}')
+        out += sorted(rng.sample(found, min(per_type, len(found))))
+    return out
+
+
+def _regress_meta_signature(path, names):
+    """(kind, xml sha256) for one ytyp/ymap/ymt, through meta2xml.convert - the same call cmd_meta
+    makes, with the same names table, so the gate measures what `quarry meta` would actually write.
+
+    `kind` is part of the signature on purpose: it comes from the ROOT STRUCT, so a decoder change
+    that starts reading a CMapData as something else moves the hash AND says which way it moved.
+    """
+    import hashlib
+    import meta2xml
+    try:
+        xml, kind, _w = meta2xml.convert(path, names)
+    except meta2xml.UnsupportedRoot as ex:
+        # A recognised boundary, not a failure - and a real thing to guard: the day an emitter
+        # appears for that root, this entry moves and has to be blessed like any other change.
+        return {'converted': False, 'noEmitter': ex.root_name}
+    return {'converted': True, 'kind': kind,
+            'xml': hashlib.sha256(xml.encode('utf-8')).hexdigest(), 'bytes': len(xml)}
+
+
 def cmd_regress(a):
     """⛔⛔ THE CHURN GATE. Converter OUTPUT may not change unless someone says why.
 
@@ -1812,6 +1953,13 @@ def cmd_regress(a):
     real pipeline entry point and hashed. Any hash that moves FAILS the run and prints what
     moved. Accepting a change requires `--bless --reason "<why>"`, which records the reason and
     the date beside the new hash - so the next reader sees a justification, not a mystery.
+
+    TWO LANES, ONE BASELINE (meta added 2026-08-04):
+      binary lane  ydr/ybn/ydd/yft/ytd  ->  to_interchange_xml   keyed  <slot>/<type>/<file>
+      meta lane    ytyp/ymap/ymt        ->  meta2xml.convert     keyed  meta:<slot>/<type>/<file>
+    Same sample rule, same hash, same --bless/--reason contract, same file. The meta lane also
+    records the SIZE of the joaat names table it ran with, because that table is an input to the
+    emitted XML.
 
     ⛔ The baseline lives in the project folder and is NEVER committed: it is derived from the
     operator's own install (the same rule as every other artifact here).
@@ -1830,7 +1978,21 @@ def cmd_regress(a):
         except Exception as e:
             print(f'baseline unreadable ({e}) - treating as absent')
     fixtures = _regress_fixtures(root, a.per_type, a.seed)
-    if not fixtures:
+    # ⛔ THE META LANE MAY LIVE IN A DIFFERENT PROJECT, and saying so beats pretending otherwise.
+    # No single project on this machine holds binaries of all eight types: RUDE_Fixtures is the
+    # binary set for the five to_interchange_xml converters and has ZERO ytyp/ymap/ymt, while
+    # RUDE_Filebase_Full was extracted --xml and has almost no ydr/ytd binaries left. Rather than
+    # let --strict be un-passable (which gets it dropped from the command line, and then the gate
+    # is off), --meta-from names the project the META fixtures come from. Its own path is what
+    # gets keyed, so the two lanes cannot collide in the baseline.
+    meta_root = a.meta_from or root
+    meta_fixtures = []
+    if os.path.isdir(meta_root):
+        meta_fixtures = _regress_meta_fixtures(meta_root, a.per_type, a.seed)
+    elif a.meta_from:
+        print(f'STOP - --meta-from {a.meta_from} is not a directory')
+        return 2
+    if not fixtures and not meta_fixtures:
         print(f'STOP - no binary fixtures found under {root}. The gate needs real binaries; a '
               f'--xml extract leaves none for converted types. Extract at least one archive '
               f'WITHOUT --xml first (e.g. --types ydr,ytd --only x64a.rpf).')
@@ -1845,14 +2007,21 @@ def cmd_regress(a):
     for p in fixtures:
         by_type[os.path.splitext(p)[1].lstrip('.').lower()] = \
             by_type.get(os.path.splitext(p)[1].lstrip('.').lower(), 0) + 1
+    for p in meta_fixtures:
+        t = os.path.splitext(p)[1].lstrip('.').lower()
+        by_type[t] = by_type.get(t, 0) + 1
     covered = ', '.join(f'{t}={by_type[t]}' for t in sorted(by_type))
-    blind = [t for t in REGRESS_TYPES if t not in by_type]
-    print(f'fixtures  : {len(fixtures)} binaries (seed {a.seed}, {a.per_type}/type)  [{covered}]')
+    blind = [t for t in REGRESS_TYPES + REGRESS_META_TYPES if t not in by_type]
+    print(f'fixtures  : {len(fixtures) + len(meta_fixtures)} binaries (seed {a.seed}, '
+          f'{a.per_type}/type)  [{covered}]')
     if blind:
         print(f'⚠ BLIND to {"/".join(blind)} - this project holds no binaries of those types, so '
               f'their converters are NOT guarded by this run. A --xml extract leaves no binaries '
               f'behind; keep a small binary-only project (extract WITHOUT --xml) to cover them.'
               .replace('⚠', '!'))
+        if [t for t in REGRESS_META_TYPES if t in blind]:
+            print(f'  the meta lane (ytyp/ymap/ymt -> meta2xml) reads from {meta_root} - point '
+                  f'--meta-from at a project that still holds those binaries.')
         if a.strict:
             print('STOP - --strict was requested and the gate cannot see every converter.')
             return 2
@@ -1864,6 +2033,27 @@ def cmd_regress(a):
             sigs[key] = _regress_signature(p)
         except Exception as ex:
             errors[key] = f'{type(ex).__name__}: {ex}'
+
+    if meta_fixtures:
+        import meta2xml
+        # ⭐ THE NAMES TABLE IS AN INPUT TO THE OUTPUT, so it is part of what gets compared. A ytyp
+        # emits `<assetName>hash_F186ED33</assetName>` or the real name depending ONLY on whether
+        # some asset FILENAME in the project hashes to it, so adding or removing files from the
+        # meta project moves meta output with no code change at all. Recording the table SIZE as
+        # its own baseline entry turns that from "22 meta fixtures changed, why?" into one line
+        # naming the cause - and it is one entry, not a field on every fixture, so a corpus change
+        # cannot make every meta fixture cry wolf at once.
+        names = meta2xml.load_names(*[os.path.join(meta_root, s)
+                                      for s in precedence_slots(meta_root)])
+        print(f'names     : {len(names):,} joaat names available to the meta lane (from '
+              f'{meta_root})')
+        sigs[REGRESS_NAMES_KEY] = {'names': len(names)}
+        for p in meta_fixtures:
+            key = 'meta:' + os.path.relpath(p, meta_root).replace(os.sep, '/')
+            try:
+                sigs[key] = _regress_meta_signature(p, names)
+            except Exception as ex:
+                errors[key] = f'{type(ex).__name__}: {ex}'
 
     if a.bless:
         if not a.reason:
@@ -1917,9 +2107,23 @@ def cmd_regress(a):
                             f'{len(now.get("sidecars") or [])}')
             if was.get('converted') != now.get('converted'):
                 bits.append(f'converted {was.get("converted")} -> {now.get("converted")}')
+            if was.get('kind') != now.get('kind'):
+                bits.append(f'root struct {was.get("kind")} -> {now.get("kind")}')
+            if was.get('noEmitter') != now.get('noEmitter'):
+                bits.append(f'noEmitter {was.get("noEmitter")} -> {now.get("noEmitter")}')
+            if was.get('names') != now.get('names'):
+                bits.append('joaat names table %s -> %s' % (was.get('names'), now.get('names')))
             print(f'    {k}: ' + ', '.join(bits or ['content differs']))
         if len(changed) > 12:
             print(f'    ... and {len(changed) - 12} more')
+        if REGRESS_NAMES_KEY in changed:
+            # Name the cause before the reader starts bisecting meta2xml.py: the meta emitter is
+            # a function of the names table as much as of its own code, and a changed table means
+            # the PROJECT changed, not the converter.
+            print('\n  ⚠ the joaat names table moved, so meta output can change with no code '
+                  'change at all - files were added to or removed from the meta project. Confirm '
+                  'that first; a meta-only diff with this entry in it is a CORPUS change.'
+                  .replace('⚠', '!'))
         print('\n  If this change is INTENDED, say why and record it:\n'
               f'    quarry.py regress --out "{root}" --bless --reason "<what defect this fixes>"')
     if missing:
@@ -1928,6 +2132,18 @@ def cmd_regress(a):
     if new:
         print(f'! {len(new)} fixture(s) have no baseline entry yet: ' + ', '.join(new[:4])
               + (' ...' if len(new) > 4 else ''))
+    # ⛔ AN UNBASELINED FIXTURE IS NOT COVERAGE EITHER (2026-08-04). A fixture with no baseline
+    # entry is compared against nothing, so it can never fail - it is a green line that guards
+    # zero. Harmless as a note, fatal as a claim; and adding the meta lane created 75 of them at
+    # once, which is exactly the moment someone reads "OK - no churn" as "meta is guarded".
+    # --strict therefore refuses until they are recorded. Same law as BLIND, one step later.
+    if new and a.strict and not (changed or errors):
+        print(f'\nSTOP - --strict was requested and {len(new)} fixture(s) are compared against '
+              f'nothing. Record them first:\n'
+              f'    quarry.py regress --out "{root}"'
+              + (f' --meta-from "{a.meta_from}"' if a.meta_from else '')
+              + ' --bless --reason "record baseline for <what these cover>"')
+        return 2
     if changed or errors:
         return 1
     print('\nOK - every fixture produced byte-identical output. No churn.')
@@ -2012,6 +2228,9 @@ def main():
     pr = sub.add_parser('regress', help='THE CHURN GATE: converter output may not change '
                                         'unless someone records why')
     pr.add_argument('--out', required=True, help='project folder holding real BINARY fixtures')
+    pr.add_argument('--meta-from', dest='meta_from',
+                    help='project folder the ytyp/ymap/ymt fixtures come from, when the --out '
+                         'project holds no meta binaries (default: --out)')
     pr.add_argument('--per-type', type=int, default=25, dest='per_type',
                     help='fixtures sampled per type (default 25)')
     pr.add_argument('--seed', default='rude', help='sample seed - changing it changes the sample')
