@@ -34,10 +34,14 @@ faithful to the reference exports (ybn oracle: 183/183 name-matched pairs, 0 sam
 diffs, 87 files byte-identical, all residuals proven different-float32-bits build drift).
 NO SILENT DEFAULTS: any unmeasured bound/polygon type code, set-but-unnamed flag bit, or
 non-zero byte in a lane only ever measured zero REFUSES the file loudly (BoundsError).
-⚠ CONSUMER NOTE: ExportYtyp marks an archetype collidable only when Bounds/Children >= 1;
-220 of 1,012 base-game bound-bearing ydrs have a NON-Composite root (Box 160 / Sphere 53 /
-Cylinder 7) which this emitter reproduces faithfully - those need the consumer-side rule
-extended (or a wrap-in-Composite option) to be flagged collidable.
+✅ CONSUMER NOTE - RESOLVED 2026-07-31, KEPT AS A WARNING. 220 of 1,012 base-game bound-bearing
+ydr have a NON-Composite root (Box 160 / Sphere 53 / Cylinder 7; re-measured over all 3,479 base
+ydr on 2026-08-02) which this emitter reproduces faithfully. ExportYtyp used to read collidability
+off Bounds/Children, which only a Composite root has, so a fifth of all collidable props exported
+with the bit clear. It now treats any known non-Composite root as collision
+(RudeToolset.cpp:3925-3938, read 2026-08-03). ⛔ DO NOT "fix" this emitter-side by wrapping
+primitives in a Composite: it would defeat the now-correct consumer rule AND fabricate
+CompositeFlags the source never carried, i.e. invented filter bits in exported collision.
 
 Usage:
     python ydr2xml.py <in.ydr> [more.ydr ...] --out <dir>
@@ -173,11 +177,23 @@ class Res:
         return struct.unpack_from("<I", self.sys, off)[0]
 
     def cstr(self, tagged, limit=160):
+        """⛔ TWO SILENT FAILURES USED TO LOOK LIKE A SHORT NAME (counted 2026-08-03). A pointer
+        that does not resolve returned "", and a string with no NUL inside `limit` was TRUNCATED
+        to 160 bytes and returned as if it were the name - so a shader texture binding, a bone or
+        a fragment could be renamed by a decode failure and nothing anywhere would say so.
+        Measured 0 of both over 9,342 strings (8,042 bone names + 800 fragment names + 500 ydr
+        drawable names, drawlane/silentsites.py). A plain NULL pointer is NOT counted: it fires on
+        100% of fragments (the +0xA8 drawable name) and a counter nobody can ever see at zero is
+        worse than none."""
+        if tagged == 0:
+            return ""
         buf, o = self.deref(tagged, 1)
         if buf is None:
+            _refuse("cstr_pointer_unresolved", "0x%08x in %s" % (tagged, self.name or "?"))
             return ""
         end = buf.find(b"\x00", o)
         if end < 0 or end - o > limit:
+            _refuse("cstr_truncated_no_NUL_within_%d" % limit, self.name or "?")
             end = min(o + limit, len(buf))
         return buf[o:end].decode("latin-1")
 
@@ -502,10 +518,19 @@ def _joaat(s):
 
 
 def sampler_name(hash32):
+    """⛔ THE ONLY ONE OF THE THREE HASH RESOLVERS THAT DID NOT COUNT ITS MISSES (2026-08-03).
+    preset_name and value_param_name both _refuse on an unresolved hash; this one returned
+    hash_%08X in silence, so an unnamed sampler - a texture bound to a slot RUDE cannot map to a
+    material input - was invisible in exactly the lane where texture coverage is being measured.
+    Same string out, so no emitted byte moves; what changes is that the number exists."""
     global _SAMPLERS
     if _SAMPLERS is None:
         _SAMPLERS = {_joaat(n.lower()): n for n in SAMPLER_NAMES}
-    return _SAMPLERS.get(hash32) or "hash_%08X" % hash32
+    nm = _SAMPLERS.get(hash32)
+    if nm:
+        return nm
+    _refuse("sampler_name_unresolved", "0x%08X" % hash32)
+    return "hash_%08X" % hash32
 
 
 def embedded_textures(res, base=0, what=None):
@@ -770,11 +795,26 @@ def read_geometries(res, base=0):
                 continue
             indices = list(struct.unpack_from("<%dH" % idx_count, ibuf, io))
             # shaderMap: u16 per geometry -> shader index (often non-identity in real files)
+            # ⛔ THE FALLBACK IS A GUESS THAT LOOKS LIKE DATA (counted 2026-08-03). When the map
+            # does not resolve, `shader_idx = gi` assumes geometry i uses shader i - and the
+            # measurement says that assumption is wrong for a large minority: 355 of 2,142 ydr
+            # geometries (16.6%) and 1,147 of 2,823 yft geometries (40.6%) have a NON-identity
+            # map (drawlane/silentsites.py, 500 ydr + 800 yft). So if this ever fired, roughly
+            # one geometry in four would render on someone else's material, with every count and
+            # every gate still green - the exact silent-wrong shape this triage keeps finding.
+            # It has never fired: pointer NULL 0, unresolvable 0, across those same 4,965
+            # geometries. Counted rather than refused because a shaderMap-less model may be a
+            # legal shape nobody has met yet, and a refusal would then throw away a whole mesh
+            # over an index we may still be able to bound.
             shader_idx = gi
             smap_p = res.u32(m + 0x20)
             sbuf, so = res.deref(smap_p, ngeo * 2)
             if sbuf is not None:
                 shader_idx = struct.unpack_from("<H", sbuf, so + gi * 2)[0]
+            else:
+                _refuse("shadermap_absent_shader_index_assumed_identity"
+                        if smap_p == 0 else "shadermap_unresolved_shader_index_assumed_identity",
+                        "model %d geometry %d" % (mi, gi))
             geos.append({
                 "shader": shader_idx,
                 "layout": [f[1] for f in fields],
@@ -801,9 +841,35 @@ def read_bounds(res, base=0):
 
 # phBound TYPE codes, all MEASURED (LOG "ydr EMBEDDED phBOUND - DECODED" + the 2026-07-28
 # bounds derivation: codes 1/12 named via 571/214 unambiguous yft binary<->reference joins).
-# Codes 2/5/6/7/9/11/>13 have never been measured -> BoundsError, never a guess.
+# ⭐ 15 = Cloth, MEASURED 2026-08-03 - and the reason it was missing is the recurring lesson.
+# The table's own note said codes 2/5/6/7/9/11/>13 "have never been measured", which is a
+# statement about the ydr/ybn SAMPLE, not about the format: the reference oracle prints
+# type="Cloth" on fragment cloth bounds (19 files in a 3,000-file yft oracle sample), a type this
+# table had no code for at all. Unreachable today - a cloth bound hangs off the fragment's
+# <Cloth><Controller><VerletCloth1>, not off drawable+0xC8 - so nothing refused and nothing
+# noticed. Wiring fragment collision would have refused every cloth-bearing yft wholesale, and the
+# refusal would have read as a corrupt file, which is exactly what the missing bit-31 name cost
+# (15% of ybn on x64p) one level up.
+# HOW THE CODE WAS OBTAINED, since the oracle prints the NAME and never the number: the oracle
+# also prints that bound's header, so its BoxCenter triple is an anchor into the inflated system
+# segment. Searching for it found EXACTLY ONE header per file whose other 10 printed fields also
+# agree, and the byte at +0x10 there reads 15 in 19/19 files. Two independent cross-checks, both
+# 6/6: the PARENT bound found by back-tracking the pointer that points at the cloth bound reads 10
+# (which is what the oracle calls it, so +0x10 really is the type lane in this context), and the
+# +0x00 vtable slot separates the classes (Composite 0x4062b5d8, Cloth 0x4062fe48). Emitting is
+# also verified rather than assumed: _bound_lines run on those 19 bounds agrees with the oracle on
+# 494/494 header field values with 0 mismatches and 0 _BOUND_HEADER_ZERO_BYTES violations, and
+# emits no element the oracle does not have. Scripts: scratchpad drawlane/cloth_code.py,
+# cloth_parent.py, cloth_verify.py.
+# With Cloth in, the 3,000-file yft oracle sample names NO bound type this table lacks (Geometry
+# 3,170 / Composite 2,962 / None 2,740 / Box 1,760 / Disc 633 / Capsule 246 / Cylinder 101 /
+# Cloth 19 / Sphere 18 / GeometryBVH 10), and neither does the ybn oracle (all 13,482 exports:
+# Composite + GeometryBVH only). That is a LOWER BOUND on the format, not a closure.
+# Codes 2/5/6/7/9/11/14 have never been measured -> BoundsError, never a guess. ⛔ Read that as
+# "no instrument here has seen one", NOT as "the format has none" - Cloth is what that distinction
+# costs when it is forgotten.
 BOUND_TYPE_NAMES = {0: "Sphere", 1: "Capsule", 3: "Box", 4: "Geometry", 8: "GeometryBVH",
-                    10: "Composite", 12: "Disc", 13: "Cylinder"}
+                    10: "Composite", 12: "Disc", 13: "Cylinder", 15: "Cloth"}
 _BOUND_GEOMETRY_TYPES = (4, 8)
 
 # CompositeFlags1/2 share ONE enum; 26 bits named from measured (value, name-list) pairs with
@@ -827,7 +893,11 @@ BOUND_COMPOSITE_FLAG_BITS = {
 }
 
 # material Flags = bits 24-39 of the 8-byte material record (8,813 measured pairs, zero
-# conflicts). Window bit 11 was never observed set.
+# conflicts). Bit 11 has never been seen set - over the 8,813 pairs here and over all 13,482 ybn
+# reference exports (2026-08-02 vocabulary scan, 16 distinct flag names, every one already in this
+# table). ⛔ Read that as "no instrument has met one", not "the format has none": bit 31 of the
+# COMPOSITE table read exactly this way for 1,080 files and then cost a 15% conversion failure on
+# x64p. The unnamed-bit refusal in _bound_flags_text is what makes that survivable.
 BOUND_MATERIAL_FLAG_BITS = {
     0: "FLAG_STAIRS", 1: "FLAG_NOT_CLIMBABLE", 2: "FLAG_SEE_THROUGH", 3: "FLAG_SHOOT_THROUGH",
     4: "FLAG_NOT_COVER", 5: "FLAG_WALKABLE_PATH", 6: "FLAG_NO_CAM_COLLISION",
@@ -838,6 +908,10 @@ BOUND_MATERIAL_FLAG_BITS = {
 
 # header bytes with no bound XML field: only zero ever measured (the four still-unbound
 # always-0 XML fields live somewhere here, so a non-zero byte would make an emitted 0 wrong).
+# ⚠ SCOPE OF "ever measured", so nobody quotes it as game-wide: 1,012 ydr embedded bounds, 183
+# local ybn (all dt1_*/fwy_*/hi@* - one map area, 1.4% of the game's 13,482 ybn), and 19 fragment
+# CLOTH bounds (2026-08-03) - 0 non-zero bytes in any of them. The oracle cannot widen this: it
+# only prints fields, and these lanes have none.
 _BOUND_HEADER_ZERO_BYTES = (0x11, 0x12, 0x13, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
                             0x4D, 0x4E, 0x5D, 0x5E, 0x5F)
 
@@ -1045,7 +1119,9 @@ def _bound_lines(res, off, ind, tag, ctx, extra=None, depth=0):
             L += _bound_lines(res, ch, inner + " ", "Item", f"{ctx} child {i}",
                               extra=extra_i, depth=depth + 1)
         L.append("%s</Children>" % inner)
-    # primitives (Sphere/Capsule/Box/Disc/Cylinder): header only - measured
+    # primitives (Sphere/Capsule/Box/Disc/Cylinder) and Cloth: header only - measured. Cloth was
+    # checked the same way the primitives were, against the reference export of the same bound:
+    # 19 cloth bounds, 494/494 header fields agree, 0 elements the oracle does not also carry.
     L.append("%s</%s>" % (ind, tag))
     return L
 
@@ -1059,7 +1135,12 @@ def bounds_lines(res, base=0, name="?"):
         # 3,479/3,479). Fragment-embedded drawables carry other data in this slot - their
         # collision lives in the fragment's own phys structures, not the drawable tail - so a
         # non-zero high dword means "not a ydr-style bound here", never a bound to refuse.
-        # On real ydr this branch is unreachable by measurement.
+        # On real ydr this branch is unreachable by measurement. On FRAGMENTS it is the ONLY
+        # path: 800 of 800 random base-game yft main drawables have a non-zero high dword
+        # (drawlane/silentsites.py), so no .yft.xml has ever carried a <Bounds> element. That is
+        # also why BOUND_TYPE_NAMES' new Cloth entry changes no output today - fragment collision
+        # is not routed through here at all. Left UNCOUNTED on purpose: a counter that fires on
+        # 100% of one file type reports the file type, not a problem.
         return []
     if tagged == 0:
         return []

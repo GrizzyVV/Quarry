@@ -29,7 +29,7 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ydr2xml import Res, drawable_lines, esc
+from ydr2xml import Res, drawable_lines, esc, _refuse, report_refusals
 
 YDD_VERSION = 165       # measured: same RSC7 version as standalone ydr - 165 is the DRAWABLE
                         # FAMILY version, and the header at sys+0 (dictionary vs drawable) is what
@@ -72,8 +72,24 @@ def probe(path):
 
 
 def entry_offsets(res):
-    """-> [(joaat, sys_offset)] for every dictionary entry."""
-    cnt = res.u32(0x28) & 0xFFFF
+    """-> [(joaat, sys_offset)] for every dictionary entry.
+
+    ⛔ THE COUNT PAIR IS TWO NUMBERS AND ONLY ONE IS READ (counted 2026-08-03). The field map above
+    calls +0x28 "(count<<16)|count" - one number written twice - but this line silently takes the
+    LOW half, so if the halves ever disagree the difference is the number of drawables that vanish
+    from the dictionary with no message. `probe` prints AGREE/DISAGREE for exactly this reason and
+    nothing in the conversion path ever asked.
+    ⚠ WHICH HALF IS THE COUNT IS ITSELF UNSETTLED, and that is the honest state: under the atArray
+    reading (T* data; u16 count; u16 capacity) the low half is the count and taking it is right
+    even for an over-allocated dictionary - but every file measured has lo == hi (500/500 here,
+    drawlane/silentsites.py; 2,000/2,000 in the 1c audit), so no observation can distinguish the
+    two readings. Refusing would therefore be a guess in the other direction. Counting is what a
+    disagreement is worth today: the first file that has one is the file that settles it."""
+    pair = res.u32(0x28)
+    cnt = pair & 0xFFFF
+    if cnt != (pair >> 16) & 0xFFFF:
+        _refuse("ydd_count_pair_disagrees_low_half_used",
+                "%s: lo=%d hi=%d" % (res.name or "?", cnt, (pair >> 16) & 0xFFFF))
     hbuf, ho = res.deref(res.u32(0x20), 4 * cnt)
     pbuf, po = res.deref(res.u32(0x30), 8 * cnt)
     if hbuf is None or pbuf is None:
@@ -155,6 +171,10 @@ def main():
             print(f"OK   {os.path.basename(p)} ({n} drawables)")
         ok += 1
     print(f"\n{ok} converted, {fail} failed")
+    # The shared emitter counters were reachable from ydr2xml's and yft2xml's CLI but not this
+    # one, so a standalone ydd run could decline to emit a texture dictionary, a shader name or a
+    # whole entry's worth of data and print only "N converted". Same one-line wiring as the others.
+    report_refusals()
     return 1 if fail else 0
 
 

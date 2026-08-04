@@ -187,8 +187,21 @@ SCHEMA_NAMES = (
     # enum members - measured from the corpus census, so the symbolic strings are reproducible
     "ASSET_TYPE_UNINITIALIZED", "ASSET_TYPE_FRAGMENT", "ASSET_TYPE_DRAWABLE",
     "ASSET_TYPE_DRAWABLEDICTIONARY", "ASSET_TYPE_ASSETLESS",
+    # Listed in the enum's own VALUE order, which is NOT alphabetical: SLOD4 was appended after
+    # ORPHANHD, so a later reader "tidying" it up next to SLOD3 would be teaching the wrong tier.
+    # THE LADDER WAS MISSING ITS LAST RUNG (2026-08-03). SLOD4 was absent from this table, so
+    # 77 entities across 71 ymap emitted `<lodLevel>hash_6F5D45B3</lodLevel>` - an unusable value
+    # in the one field that decides which LOD tier an entity belongs to, and invisible to every
+    # counter because a hash_ enum member is not a decode failure. MEASURED two independent ways
+    # that agree: joaat_case("LODTYPES_DEPTH_SLOD4") == 0x6F5D45B3 (exact preimage, case-sensitive
+    # like every schema name here), and the game's OWN per-file enum table 0x4B5ACC2F lists that
+    # hash as member value 6 - HD 0, LOD 1, SLOD1 2, SLOD2 3, SLOD3 4, ORPHANHD 5, then this.
+    # POPULATION, counted off the emitted .ymap.xml sitting beside all 19,157 ymap binaries and
+    # re-decoded from the 71 binaries themselves: 71 files / 77 entities, every occurrence inside
+    # <lodLevel>, and every file an h4_* - the mpheist4 (Cayo Perico) DLC, which is the release
+    # that introduced the tier and therefore why it is the enum's last-added member.
     "LODTYPES_DEPTH_HD", "LODTYPES_DEPTH_LOD", "LODTYPES_DEPTH_SLOD1", "LODTYPES_DEPTH_SLOD2",
-    "LODTYPES_DEPTH_SLOD3", "LODTYPES_DEPTH_ORPHANHD",
+    "LODTYPES_DEPTH_SLOD3", "LODTYPES_DEPTH_ORPHANHD", "LODTYPES_DEPTH_SLOD4",
     "PRI_REQUIRED", "PRI_OPTIONAL_HIGH", "PRI_OPTIONAL_MEDIUM", "PRI_OPTIONAL_LOW",
     # roots we RECOGNISE but have no emitter for, so a refusal can name itself instead of
     # printing hash_%08X: streaming request lists (*_srl.ymt - cutscene prefetch data,
@@ -1036,16 +1049,29 @@ def entity_xml(e, ind="  "):
 # even when the binary held 11 of them and the Walker had decoded all 11: "the binary has none",
 # "we dropped it" and "we never decoded it" all rendered as the same self-closing element, and not
 # one counter fired.
-# MEASURED over ALL 7,563 ymap binaries in B:/RUDE_Filebase_Full (00_base + 10_update + 20_dlc,
-# 2026-08-03, 0 decode errors, counts taken from the decoded root through container_records):
+# MEASURED over ALL 7,563 ymap binaries in B:/RUDE_Filebase_Full (2026-08-03, 0 decode errors,
+# counts taken from the decoded root through container_records):
 #   physicsDictionaries 4,715 files /  33,266   instancedData         386 /  66,481
 #   carGenerators         700 files /  18,295   timeCycleModifiers    390 /   4,733
 #   boxOccluders          146 files /  15,120   occludeModels         173 /   1,535
-#   LODLightsSOA          320 files / 154,914   DistantLODLightsSOA   320 / 154,914
+#   LODLightsSOA          320 files / 154,914   DistantLODLightsSOA   304 / 153,582
 #   containerLods           0 files (never populated anywhere in this corpus)
-# = 449,258 records across 5,929 of 7,563 files (78%). 1,215 ymap hold ZERO entities and 1,203 of
+# = 447,926 records across 5,929 of 7,563 files (78%). 1,215 ymap hold ZERO entities and 1,203 of
 # those carry content in a dropped container - i.e. one ymap in six converted to a syntactically
 # valid, COMPLETELY CONTENTLESS file and was counted as a successful conversion.
+#
+# TWO CORRECTIONS TO THE ROW ABOVE (2026-08-04), because a census is only worth what its scope is:
+#  * DistantLODLightsSOA was recorded as "320 / 154,914", a duplicate of the LODLightsSOA row
+#    beside it. RE-MEASURED over every lodlights-named ymap in the same 7,563 (624 files - the only
+#    files that can hold either container): 320 files/154,914 for LODLightsSOA, which reproduces
+#    exactly, and 304 files/153,582 for DistantLODLightsSOA, which does not. The two containers are
+#    also DISJOINT - 0 of the 624 carry both - so equal counts were never expected. Total corrected
+#    449,258 -> 447,926. The other seven rows are NOT re-measured here and are carried forward.
+#  * The scope line read "00_base + 10_update + 20_dlc". It is 00_base (4,588) + 10_update (2,975)
+#    ONLY; 20_dlc's 513 ymap were never censused. That matters more than it looks - the DLC is
+#    where the map's newest data lives (all 71 LODTYPES_DEPTH_SLOD4 ymap are in 20_dlc/mpheist4,
+#    and 20_dlc/053_mpheist4/island_lodlights.ymap alone adds 793 LODLightsSOA records on top of
+#    the figures above), so every number here is a LOWER BOUND on the real corpus.
 #
 # THE RULE NOW: empty in the binary -> the measured empty element (honest). Content in the binary
 # -> OMIT the element and leave a marker, because `FindChildNode` is direct-children-only and
@@ -1820,7 +1846,14 @@ def roundtrip(kind, limit):
             print("    %6dx  %s" % (n, k))
     else:
         print("  every field byte-identical")
-    return 0 if not contract_bad and not count_bad else 1
+    # A DIFFERENCE THIS GATE PRINTED BUT DID NOT ACT ON (2026-08-03). `field_bad` was excluded from
+    # the verdict, so an emitter regression outside the six CONTRACT tags - a dropped extension
+    # field, a mis-spelled float, a reordered MLO room - printed its own diff and still exited 0,
+    # and the printed line is the only thing that would have caught it. It is now fatal, which is
+    # only safe because it was MEASURED first: across the whole 1,707-file / 159,034-item ytyp
+    # oracle field_bad is 0, so this makes the gate stricter without making it red today. (ymap has
+    # no reference tree on this machine, so its round-trip refuses on the glob guard regardless.)
+    return 0 if not contract_bad and not count_bad and not field_bad else 1
 
 
 def census(kind, limit):
@@ -1931,9 +1964,15 @@ def verify_binary(kind, bin_dir, limit, names, strict=False):
     degraded_ref = collections.Counter()  # the ORACLE's value unresolved and ours resolved
     pair_degraded = collections.Counter()
     decode_fail = collections.Counter()
+    # A BINARY WITH NO ORACLE WAS SKIPPED WITH NO COUNTER (2026-08-03), so "119 files paired" left
+    # the reader to work out that 1 of the 120 asked for was never compared - and in the ymap lane,
+    # where the oracle directory does not exist at all, EVERY file took this branch and the run
+    # still printed a clean banner. Counted, so the size of what went unscored is on the report.
+    no_oracle = 0
     for f in files:
         ref = os.path.join(CORPUS, kind, os.path.basename(f) + ".xml")
         if not os.path.exists(ref):
+            no_oracle += 1
             continue
         try:
             xml, got_kind, w = convert(f, names)
@@ -2073,7 +2112,33 @@ def verify_binary(kind, bin_dir, limit, names, strict=False):
         print("  top mismatches:")
         for k, n in bad.most_common(8):
             print("    %5dx %s" % (n, k))
-    return 0
+    field_bad = sum(v for k, v in bad.items() if not k.startswith("PAIRING:"))
+    pairing_bad = sum(v for k, v in bad.items() if k.startswith("PAIRING:"))
+    if bad:
+        print("    ^ of those %d: %d item-PAIRING (corpus build drift, NOT scored as our defect), "
+              "%d field disagreement(s)" % (pairing_bad + field_bad, pairing_bad, field_bad))
+    print("  binaries with no reference export: %d (read, never scored)" % no_oracle)
+
+    # THE VERDICT. This function ended in a bare `return 0`: the harness its own docstring calls
+    # "the real test, and the one that can catch a decode error the round-trip cannot" passed
+    # whatever it found. Measured 2026-08-03: a ytyp run printing "6,331 mismatched = 95.062%"
+    # exited 0, and so did a --kind ymap run that paired ZERO files, which is the state the ymap
+    # lane has actually been in on this machine (no ymap/ oracle directory exists here).
+    #
+    # WHAT MAY FAIL IT is only what is provably OURS. Measured over the ytyp lane at --limit 400
+    # (763,319 comparisons): every scored field was 0-bad, and all 6 entries in `bad` were item
+    # PAIRING - two builds disagreeing about which archetype sits at an index, e.g. 'cs1_13_houses'
+    # against 'sc1_props_combo0804_77_lod'. Failing on that would leave a healthy decoder
+    # permanently red, and a gate that cries wolf is switched off by whoever hits it - which is how
+    # the real regression later walks through. So pairing drift is reported and NOT fatal, while a
+    # decode exception, a field that disagrees, a float spelled wrong for identical bits, and zero
+    # evidence all are.
+    if nfile == 0:
+        print("  STOP - REFUSING: %d binary/binaries were read, but NOT ONE paired with a "
+              "reference export under %s/%s. A verification that compared nothing cannot pass."
+              % (len(files), CORPUS, kind))
+        return 1
+    return 1 if (decode_fail or field_bad or fmt_wrong) else 0
 
 
 def main():

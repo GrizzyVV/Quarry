@@ -1835,7 +1835,27 @@ def cmd_regress(a):
               f'--xml extract leaves none for converted types. Extract at least one archive '
               f'WITHOUT --xml first (e.g. --types ydr,ytd --only x64a.rpf).')
         return 2
-    print(f'fixtures  : {len(fixtures)} binaries (seed {a.seed}, {a.per_type}/type)')
+    # ⛔⛔ A GATE MUST DECLARE WHAT IT CANNOT SEE (2026-08-04). The first version of this gate
+    # silently covered whatever binaries happened to exist: pointed at RUDE_Filebase_Test2 it saw
+    # ydr and ybn ONLY, so five agents ran it, all got a green "no churn", and yft/ydd/ytd went
+    # completely unguarded. That is the same defect this gate exists to catch, committed by the
+    # gate itself - and worse than no gate, because a green result was being read as coverage.
+    # PRESENCE IS NOT COVERAGE, the same law `--prune` already follows.
+    by_type = {}
+    for p in fixtures:
+        by_type[os.path.splitext(p)[1].lstrip('.').lower()] = \
+            by_type.get(os.path.splitext(p)[1].lstrip('.').lower(), 0) + 1
+    covered = ', '.join(f'{t}={by_type[t]}' for t in sorted(by_type))
+    blind = [t for t in REGRESS_TYPES if t not in by_type]
+    print(f'fixtures  : {len(fixtures)} binaries (seed {a.seed}, {a.per_type}/type)  [{covered}]')
+    if blind:
+        print(f'⚠ BLIND to {"/".join(blind)} - this project holds no binaries of those types, so '
+              f'their converters are NOT guarded by this run. A --xml extract leaves no binaries '
+              f'behind; keep a small binary-only project (extract WITHOUT --xml) to cover them.'
+              .replace('⚠', '!'))
+        if a.strict:
+            print('STOP - --strict was requested and the gate cannot see every converter.')
+            return 2
 
     sigs, errors = {}, {}
     for p in fixtures:
@@ -1999,6 +2019,9 @@ def main():
                     help='accept the current output as the new baseline (requires --reason)')
     pr.add_argument('--reason', help='WHY the output changed - recorded beside the new hash')
     pr.add_argument('--date', help='override the recorded date (tests)')
+    pr.add_argument('--strict', action='store_true',
+                    help='FAIL if the project holds no binaries for some converter, instead of '
+                         'reporting a green pass that only covered the types it could see')
     pr.set_defaults(fn=cmd_regress)
 
     a = ap.parse_args()

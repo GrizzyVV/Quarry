@@ -73,9 +73,19 @@ FIELD MAP FOR THE EXTRAS - all MEASURED 2026-07-28 against the reference _proces
     FRAGMENT's ShaderGroup in, or every wheel would import on the default material.
 
 KNOWN V1 GAPS (documented, not silent):
-    * embedded ShaderGroup TextureDictionary pixels are not exported yet - fragments whose
-      textures live INSIDE the yft import untextured until that lands (same class as the
-      per-area texture pass gap).
+    * ✅ CLOSED 2026-07-31 - embedded ShaderGroup TextureDictionary pixels ARE exported. This line
+      used to say they were not, which was true when it was written and had outlived the fix:
+      quarry's yft branch rebases the ydr embedded-texture pass onto the fragment's main drawable
+      and writes <stem>__embedded.ytd.xml beside the XML. Re-verified by RUNNING the pipeline
+      entry point on 120 random fragments (2026-08-03): 34 emit <TextureDictionary> in the XML and
+      the same 34 emit the sidecar - no file gets one without the other. Over a wider 400-fragment
+      draw, 119 carry a dictionary at ShaderGroup+0x08 and 118 decode; ⚠ ONE REFUSES
+      (futo2_hoodk.yft, ytd2xml "texture 0 pointer is out of bounds"), which is a real live loss
+      in the ytd reader that only became visible when the swallowed exception there was given a
+      counter - not a fragment-lane gap.
+    * ⛔ fragment collision is NOT emitted at all, and it is worth stating positively because the
+      code makes it look conditional: bounds_lines drops out on the drawable+0xCC guard for 800 of
+      800 sampled fragments, so no .yft.xml has ever carried a <Bounds>.
     * damaged drawables, cloth, the Med/Low/VLow LOD groups, the fragment <BoneTransforms>
       array, <Joints>, <VehicleGlassWindows> and the full per-group physics record: not read.
       The reference corpus retains them for the day they are in scope. (The root
@@ -142,17 +152,26 @@ def _f(buf, off, n):
 
 
 def read_skeleton(res, dbase):
-    """-> [bone dicts] in skeleton order, [] when the drawable carries no skeleton.
-    No skeleton is ordinary (most map props). A NON-NULL skeleton pointer that does not
-    resolve is not ordinary and refuses."""
+    """-> [bone dicts] in skeleton order, [] when the drawable carries no skeleton. A NON-NULL
+    skeleton pointer that does not resolve is not ordinary and refuses.
+
+    ⚠ THIS DOCSTRING USED TO SAY "No skeleton is ordinary (most map props)" - CONTRADICTED BY
+    MEASUREMENT (2026-08-03). Over 800 random base-game fragments every single one carries a
+    non-NULL skeleton pointer with a non-zero bone count (drawlane/silentsites.py; the 1c audit
+    got the same answer over 3,900). The empty return is therefore a path nobody has ever taken,
+    which matters because that sentence was the reason to believe it was exercised. It is kept
+    (a null pointer is a legal encoding) but both empty exits are now COUNTED, so "it never
+    happens" stays a measurement rather than becoming folklore."""
     sp = res.u32(dbase + SKEL_SLOT)
     if sp == 0:
+        _refuse("skeleton_pointer_NULL", res.name or "fragment")
         return []
     sbuf, s = res.deref(sp, SKEL_BONES + 4)
     if sbuf is None:
         raise FragmentError("skeleton pointer 0x%08x does not resolve" % sp)
     n = res.u16(s + SKEL_COUNT)
     if n == 0:
+        _refuse("skeleton_present_but_bone_count_zero", res.name or "fragment")
         return []
     if n > 4096:                       # 354 (a ped) is the largest ever measured
         raise FragmentError("implausible bone count %d" % n)
@@ -187,17 +206,41 @@ def read_skeleton(res, dbase):
 
 
 def read_physics(res):
-    """-> (group_names, [(group_index, child_drawable_base or None)]), or (None, None) when
-    the fragment has no physics LOD group at all (a legitimate shape - some props)."""
+    """-> (group_names, [(group_index, child_drawable_base or None)]), or (None, None) when the
+    fragment carries no physics LOD group.
+
+    ⛔ FOUR SITUATIONS USED TO SHARE ONE SILENT (None, None) (split 2026-08-03). The docstring
+    described only the first - "a legitimate shape, some props" - so a fragment whose physics
+    pointer was SET but unreachable produced no groups, no children and no wheels while reporting
+    complete success, and read the same as a prop that genuinely has none. read_skeleton has always
+    REFUSED on exactly that shape (a non-NULL pointer that does not resolve); this did the
+    opposite, which is the asymmetry being closed. Censused over 2,500 random base-game fragments
+    (scratchpad drawlane/physcensus.py, seed 'phys-2026-08-03'):
+        physics pointer NULL ................ 86    legitimate, stays silent
+        physics pointer set, unresolvable ...  0    was silent -> now refuses
+        LOD1 pointer NULL ...................  0    was silent -> now counted, not refused
+        LOD1 pointer set, unresolvable ......  0    was silent -> now refuses
+        resolves ............................ 2,414
+    So today this changes no output at all; what it buys is that the first fragment that DOES take
+    one of the middle three paths says which one. The two refusals raise FragmentError on purpose -
+    that is the exception quarry's yft branch already downgrades and COUNTS (yft_extras_refused),
+    so the fragment keeps its visual drawable and the loss lands in a counter instead of vanishing.
+    ⚠ A NULL LOD1 pointer is COUNTED rather than refused: a null is an "absent" encoding, and with
+    0 observations there is no measurement saying it is a failure. If that counter ever moves, what
+    it means is still open."""
     pp = res.u32(PHYS_SLOT)
     if pp == 0:
         return None, None
     pbuf, ph = res.deref(pp, LOD1_SLOT + 4)
     if pbuf is None:
+        raise FragmentError("physics LOD group pointer 0x%08x does not resolve" % pp)
+    lp = res.u32(ph + LOD1_SLOT)
+    if lp == 0:
+        _refuse("physics_LOD1_pointer_NULL", res.name or "fragment")
         return None, None
-    lbuf, l1 = res.deref(res.u32(ph + LOD1_SLOT), CHILD_COUNT + 2)
+    lbuf, l1 = res.deref(lp, CHILD_COUNT + 2)
     if lbuf is None:
-        return None, None
+        raise FragmentError("physics LOD1 pointer 0x%08x does not resolve" % lp)
     ng, nc = res.sys[l1 + GROUP_COUNT], res.u16(l1 + CHILD_COUNT)
     groups = []
     gbuf, go = res.deref(res.u32(l1 + GROUP_ARR), ng * 8) if ng else (None, 0)
@@ -208,7 +251,21 @@ def read_physics(res):
         if ebuf is None:
             raise FragmentError("physics group %d does not resolve" % gi)
         end = ebuf.find(b"\x00", eo)          # the name is an INLINE char[] at group+0x00
-        groups.append(ebuf[eo:end].decode("latin-1") if 0 <= end - eo <= 63 else "")
+        if 0 <= end - eo <= 63:
+            groups.append(ebuf[eo:end].decode("latin-1"))
+        else:
+            # A blanked group name is not cosmetic: it is the JOIN KEY. _tag_of resolves BoneTag
+            # through it and convert() derives the child sidecar's filename from it, so a silent ""
+            # would emit BoneTag -1 and refuse the sidecar for a reason that names no cause.
+            # 0 of 2,372 group names over 800 random fragments needed this (drawlane/
+            # silentsites.py) - the guard is right, the silence was not.
+            _refuse("physics_group_name_unterminated_or_over_63B", "group %d" % gi)
+            groups.append("")
+    if ng and not nc:
+        # <Groups> is populated but there are no children to hang it on, and convert()'s
+        # `if children:` then drops the whole <Physics> element. 0 of 2,414 fragments with a
+        # resolvable LOD1 (drawlane/physcensus.py) - counted so that stays a measurement.
+        _refuse("physics_groups_present_but_zero_children", "%d groups" % ng)
     children = []
     cbuf, co = res.deref(res.u32(l1 + CHILD_ARR), nc * 8) if nc else (None, 0)
     for ci in range(nc):
@@ -219,6 +276,14 @@ def read_physics(res):
         if xbuf is None:
             raise FragmentError("physics child %d does not resolve" % ci)
         gi = struct.unpack_from("<H", res.sys, ch + CHILD_GROUP_INDEX)[0]
+        if not (0 <= gi < len(groups)):
+            # Both consumers of this index (physics_lines' <BoneTag> lookup and convert()'s
+            # sidecar filename) silently substitute "" for an out-of-range GroupIndex, which
+            # downstream reads as "this child names no group" rather than "we could not read the
+            # index". Counted once here so it cannot be double-counted by the two call sites.
+            # 0 of 3,002 children over 800 random fragments (drawlane/silentsites.py).
+            _refuse("child_GroupIndex_out_of_range", "child %d -> group %d of %d"
+                    % (ci, gi, len(groups)))
         dp = res.u32(ch + CHILD_DRAWABLE)
         dbase = None
         if dp:
@@ -352,11 +417,24 @@ def convert(res, stem, extras=None):
     if extras is None:
         extras = EMIT_EXTRAS
     res.require_version(YFT_VERSION, "Legacy fragment")
-    frag_name = res.cstr(res.u32(NAME_SLOT)) or ("pack:/" + stem)
+    frag_name = res.cstr(res.u32(NAME_SLOT))
+    if not frag_name:
+        # A fabricated <Name> is indistinguishable from a read one once it is in the XML, so the
+        # substitution is counted. 800 of 800 random fragments carry a real "pack:/<stem>" here
+        # (drawlane/silentsites.py), i.e. this has never yet been the source of a name.
+        _refuse("fragment_name_absent_stem_substituted", stem)
+        frag_name = "pack:/" + stem
     dp = res.u32(DRAWABLE_SLOT)
     buf, base = res.deref(dp, 0xD0)
     if buf is None:
         raise ValueError("main drawable pointer (+0x30) does not resolve")
+    # ⚠ NOT A RARE FALLBACK - IT IS THE ONLY PATH (measured 2026-08-03). The `or "skel"` reads like
+    # a guard for an odd file; in fact the fragment drawable's name pointer at +0xA8 is NULL in
+    # 800 of 800 random base-game fragments, so every fragment we have ever emitted took it. The
+    # literal is right rather than merely harmless: the reference export prints
+    # <Drawable><Name>skel</Name> in 400 of 400 sampled yft. Left uncounted deliberately - a
+    # counter that fires on 100% of files is noise, and this one would hide the counters that mean
+    # something. Scripts: drawlane/silentsites.py, and the oracle check in the same folder.
     inner = res.cstr(res.ptr(base + 0xA8)) or "skel"
     try:
         body = drawable_lines(res, inner, base=base)
