@@ -358,6 +358,19 @@ T_HASH, T_ENUM, T_FLAGS, T_PTR = 0x4A, 0x62, 0x65, 0x07
 # NUMBER (its dictionary reverses none of the 22 member-name hashes), so that is the measured
 # rendering; the file-carried member table exists but a symbolic form is UNOBSERVED.
 T_ENUM_U8 = 0x60
+# 0x59 = RAW BYTE-BUFFER POINTER. Eight bytes in the record: {u32 metaPOINTER, u32 zero}. The
+# descriptor carries NO count, and none is needed - the payload fills its target block exactly, so
+# the LENGTH COMES FROM THE BLOCK TABLE and nothing is inferred.
+# MEASURED over every ytyp/ymap/ymt binary in B:/RUDE_Filebase_Full (9,270 files, 2026-08-04):
+# type 0x59 is declared in exactly ONE place in the whole corpus - OccludeModel.verts, in 183 ymap
+# - and across all 1,702 records: block length == the sibling `dataSize` 1,702/1,702, the target
+# block's own struct hash is 0x00000011 (= the u8 primitive) 1,702/1,702, the metaPOINTER's byte
+# offset is 0 and the second u32 is 0 in every one. The same shape was reached independently by
+# meta_write.py (`T_DATAPTR`, same 0x59, same 8-byte {ptr, 0} descriptor, length from the block).
+# What the PAYLOAD holds is measured at the OccludeModel commentary below; the Walker deliberately
+# returns the bytes UNINTERPRETED, because splitting them needs sibling fields that value() cannot
+# see and inventing a split at this layer would be a guess wearing a decoder's clothes.
+T_DATAPTR = 0x59
 PRIM = {
     0x01: (1, "?"), 0x10: (1, "b"), 0x11: (1, "B"), 0x12: (2, "h"), 0x13: (2, "H"),
     0x14: (4, "i"), 0x15: (4, "I"), 0x21: (4, "f"), 0x33: (12, "3f"), 0x34: (16, "4f"),
@@ -437,6 +450,8 @@ class Walker:
                         for i in range(e["refKey"])]
             if t == T_STRUCT:
                 return self.struct(e["refKey"], buf, o)
+            if t == T_DATAPTR:
+                return self.dataptr(buf, o)
             if t == T_STRING:
                 return self.string(buf, o)
             if t == T_HASH:
@@ -504,6 +519,33 @@ class Walker:
     def elem(self, s, e):
         i = e["refTypeIdx"]
         return s["entries"][i] if 0 <= i < len(s["entries"]) else None
+
+    def dataptr(self, buf, o):
+        """T_DATAPTR (0x59) -> the target block's bytes, RAW and uninterpreted.
+
+        Length is the block's own declared length minus the pointer's byte offset - the payload
+        fills its block, which is why the descriptor needs no count (see T_DATAPTR above).
+        Returns b"" for a null pointer, which is an honest "no payload" and NOT the same value as
+        the None this used to return: None meant "this decoder does not know what this is".
+
+        Every deviation from the measured shape is COUNTED rather than absorbed, so a file that
+        does not look like the 1,702 measured records says so instead of quietly handing back a
+        differently-shaped buffer.
+        """
+        pv, hi = struct.unpack_from("<II", buf, o)
+        if hi:
+            self.warn["data pointer second u32 not zero"] += 1
+        if not pv:
+            return b""
+        bi, bo = self.metaptr(pv)
+        b = self.block(bi)
+        if b is None:
+            self.warn["data pointer targets a missing block"] += 1
+            return b""
+        if bo > len(b["data"]):
+            self.warn["data pointer offset overruns its block"] += 1
+            return b""
+        return b["data"][bo:]
 
     def string(self, buf, o):
         pv = struct.unpack_from("<I", buf, o)[0]
@@ -1501,16 +1543,46 @@ def instanceddata_xml(v, ind=" "):
 # container -> renderer. A container ABSENT here is one this emitter still cannot write
 # faithfully, and ymap_xml leaves its omission marker instead.
 #
-# occludeModels IS DELIBERATELY ABSENT AND MUST STAY ABSENT UNTIL A verts ORACLE EXISTS.
-# Its shape is otherwise fully known - bmin, bmax, dataSize, verts, numVertsInBytes, numTris,
-# flags, all seven names hash-proven - but `verts` is entry type 0x59, which the Walker does not
-# decode: it returns None and counts `unhandled type 0x59` for all 1,702 items in the corpus. The
-# census says the reference spells verts as element TEXT classified 'string' (so NOT a
-# whitespace-separated number list) and its value inventory overflowed, so the census cannot show
-# what the encoding is, and no reference ymap XML survives on this machine to read one from.
-# Emitting the container with a hollow `<verts />` would be the exact defect this whole section
-# exists to prevent, one level down: six fields that look right wrapped around the one field that
-# carries the geometry, with nothing to tell the consumer it is missing.
+# occludeModels IS STILL DELIBERATELY ABSENT, AND THE REASON HAS NARROWED TO EXACTLY ONE THING
+# (2026-08-04). The old note here said `verts` is "entry type 0x59, which the Walker does not
+# decode". THAT HALF IS NOW FIXED - see T_DATAPTR and Walker.dataptr: 0x59 is a raw byte-buffer
+# pointer, the Walker returns the bytes, and `unhandled type 0x59` no longer fires. What the bytes
+# MEAN is measured too, over all 1,702 records in 183 ymap of B:/RUDE_Filebase_Full, 0 exceptions:
+#
+#   payload := numVertsInBytes bytes of VERTICES, then 3*(numTris & 0x7FFF) bytes of INDICES
+#   * len(payload) == dataSize                                      1,702/1,702
+#   * dataSize == numVertsInBytes + 3*(numTris & 0x7FFF)            1,702/1,702  (u8 indices)
+#   * numVertsInBytes % 12 == 0, i.e. numVerts = numVertsInBytes/12 1,702/1,702  (float32 x,y,z)
+#   * every index < numVerts                                        1,702/1,702
+#   * numTris always has bit 15 set; the count is the low 15 bits   1,702/1,702
+#   * THE FREE ORACLE, and the one that proves the floats really are world-space vertices:
+#     min/max of the decoded triplets reproduces the record's OWN bmin/bmax to 1e-4 on all three
+#     axes                                                          1,702/1,702
+#   (largest numVerts observed is 231, which is why one byte per index is enough; a corpus with a
+#   >255-vertex occluder would need this re-measured, and the latch in ymap_dropped_from says so.)
+#
+# WHAT IS STILL MISSING IS NOT THE FORMAT - IT IS THE REFERENCE'S TEXT SPELLING OF ONE ELEMENT.
+# The census (`reports/snapshots/ymap.json`, 11,052 reference ymap) records
+# `CMapData/occludeModels/Item/verts` as element TEXT classified 'string' with NO sample values,
+# and that is everything it knows. Read for all it is worth:
+#   * 'string' means the payload is NOT numeric text - the same miner classifies ydr's
+#     VertexBuffer/Data and IndexBuffer/Data as 'numlist', so a number list was possible and this
+#     field is not one. `verts` is the ONLY opaque text payload in the entire reference ymap
+#     census, so there is no house style to appeal to either.
+#   * the miner banks any 'string' payload of <=60 chars as a sample and banked NONE, so every one
+#     of the 1,994 reference payloads exceeds 60 characters. The smallest record in our corpus is
+#     dataSize 39 (cs2_occl_03, cs5_occl_02 x2, po1_occl_03 - 3 verts, 1 triangle), and 39 bytes
+#     of base64 is 52 characters, which WOULD have been sampled. So base64 is excluded - PROVIDED
+#     the reference corpus (2,003 records / 224 files, a superset in size of our 1,702 / 183)
+#     covered one of those three base-game files. That last step is an INFERENCE, not a
+#     measurement, and it is the whole strength of the argument: it eliminates one candidate and
+#     positively identifies none.
+# Hex would fit what survives. So would several other opaque encodings. No reference ymap XML
+# exists on this machine to read one from, and no public spec found says which. Writing the
+# geometry under a guessed encoding would put 1,702 correct-looking, wrongly-encoded occluder
+# meshes into the corpus with nothing to mark them - the exact defect this section exists to
+# prevent, one level down. The omission marker stays until a reference `<verts>` payload can be
+# read; when it can, everything needed to write it is already decoded and measured above.
 # containerLods is absent for the opposite reason - 0 records in all 8,076 ymap, so its empty form
 # is never wrong and it can never reach a renderer.
 CONTAINER_EMITTERS = {
@@ -1560,6 +1632,37 @@ def ymap_containers_from(root):
     return {cname: root.get(cname) for cname, _lines in EMPTY_CONTAINERS}
 
 
+def check_occlude_models(items, w):
+    """Re-assert the measured OccludeModel payload law on every file this tool ever reads.
+
+    The law is written out at CONTAINER_EMITTERS and held on all 1,702 records of
+    B:/RUDE_Filebase_Full with 0 exceptions. That makes it a MEASUREMENT, and a measurement taken
+    once over one corpus is exactly the kind of claim that rots silently: the user's install is not
+    this corpus, and a DLC that ever ships a >255-vertex occluder (u8 indices could not address it)
+    or a 16-bit index form would satisfy every other check in this file and be noticed by nobody.
+    So it is CHECKED rather than remembered, and a violation is COUNTED - it changes no output,
+    because occludeModels is dropped either way, but it converts "we measured this in August" into
+    "this file agrees with what we measured".
+    """
+    for it in _inline_items(items):
+        raw = it.get("verts")
+        ds = pick(it, "dataSize", 0)
+        nvib = pick(it, "numVertsInBytes", 0)
+        ntris = pick(it, "numTris", 0) & 0x7FFF
+        if not isinstance(raw, bytes):
+            w.warn["OccludeModel verts did not decode to bytes"] += 1
+            continue
+        if len(raw) != ds:
+            w.warn["OccludeModel payload length != dataSize"] += 1
+        if ds != nvib + 3 * ntris:
+            w.warn["OccludeModel dataSize != numVertsInBytes + 3*numTris"] += 1
+        if nvib % 12:
+            w.warn["OccludeModel numVertsInBytes is not a multiple of 12"] += 1
+        elif nvib // 12 > 255:
+            # u8 indices cannot address it, so the index width would have to be re-measured
+            w.warn["OccludeModel has more than 255 vertices"] += 1
+
+
 def ymap_dropped_from(root, w=None):
     """container -> record count, for the CMapData containers this emitter STILL drops.
 
@@ -1578,6 +1681,8 @@ def ymap_dropped_from(root, w=None):
             out[cname] = n
             if w is not None:
                 w.warn["DROPPED ymap container %s (emitter does not serialise it)" % cname] += n
+    if w is not None and out.get("occludeModels"):
+        check_occlude_models(root.get("occludeModels"), w)
     # the one sub-container with a renderer above it but no oracle of its own
     props = (root.get("instancedData") or {}).get("PropInstanceList") or []
     if props and w is not None:
