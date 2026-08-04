@@ -1698,10 +1698,22 @@ def cmd_extract(a):
                             written = file_into(a.out, slot, xml_name, xml_bytes, stats,
                                                 getattr(a, 'resume', False))
                             if written is None:
-                                # ⛔ do NOT count a resumed skip as an extracted file: `total` is
-                                # read as "files this run produced", and counting skips made a
-                                # resumed run report work it never did.
-                                continue
+                                # ⛔⛔ A RESUMED XML MUST NOT SKIP ITS SIDECARS (2026-08-04).
+                                # This `continue` jumped past the ENTIRE sidecar loop, so a second
+                                # pass adding PIXELS to a manifests-only corpus wrote NOTHING and
+                                # printed "nothing new to do - every target was already present".
+                                # PROVEN by running it on x64s.rpf: pass 1 `--textures none` -> 435
+                                # XML / 0 PNG; pass 2 `--textures png --resume` -> 0 PNG, reported
+                                # as success; a fresh no-resume control -> 6,493 PNG. The XML was
+                                # present so the file "existed", while the pixels it names never
+                                # did - the manifest advertised files that were not there.
+                                # ⇒ resume skips the XML WRITE, not the asset's other artifacts.
+                                # Sidecars are re-derived and written below; `file_into` skips any
+                                # that are genuinely already present, so this stays idempotent.
+                                if not extras:
+                                    continue
+                                written = xml_name
+                                stats['resumed_sidecars'] = stats.get('resumed_sidecars', 0) + 1
                             written_path = os.path.join(a.out, slot, type_of(name), written)
                             # The pixel folder must follow the XML that was ACTUALLY written: on
                             # a basename collision the XML becomes foo~1.ytd.xml, and a sidecar
