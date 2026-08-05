@@ -1147,11 +1147,10 @@ def entity_xml(e, ind="  "):
 # The measured EMPTY spelling of the nine non-entity CMapData containers, in reference child
 # order - keyed by container so ymap_xml can tell an honest empty apart from a drop.
 #
-# ** SEVEN OF THE NINE ARE NOW SERIALISED FOR REAL (2026-08-04) - see CONTAINER_EMITTERS below.
-# This tuple is no longer "containers we cannot write"; it is the empty form each one takes when
-# the binary genuinely holds none of it. The two still unwritten are occludeModels (blocked, and
-# the reason is recorded at OccludeModel.verts) and containerLods (0 records in the whole corpus,
-# so its empty form is never wrong).
+# ** EIGHT OF THE NINE ARE NOW SERIALISED FOR REAL (seven on 2026-08-04, occludeModels on
+# 2026-08-05) - see CONTAINER_EMITTERS below. This tuple is no longer "containers we cannot write";
+# it is the empty form each one takes when the binary genuinely holds none of it. The one still
+# unwritten is containerLods (0 records in the whole corpus, so its empty form is never wrong).
 #
 # HARD - A FORGED EMPTY IS DATA LOSS THE CONSUMER CANNOT SEE (2026-08-03). This tuple used to be
 # appended VERBATIM to every emitted ymap, so `<carGenerators itemType="CCarGen" />` was written
@@ -1335,6 +1334,9 @@ def container_records(v):
 #     missing are ALL occludeModels/* - the container deliberately left dropped. ZERO paths are
 #     emitted that the reference never had, and ZERO attribute-set disagreements across all 82
 #     shared paths (value= vs x,y,z vs w vs itemType vs bare text).
+#     RE-MEASURED 2026-08-05 with occludeModels serialised: 9 census paths exist under
+#     CMapData/occludeModels (the container + Item + its 7 children) and all 9 are now emitted,
+#     with 0 emitted that the census never had - so this reads 90/90.
 #  3. NO COLLATERAL. ytyp and ymt output is BYTE-IDENTICAL across this change - 600 ytyp + 124
 #     ymt re-emitted and sha256-compared before/after - which matters because adding names to
 #     SCHEMA_NAMES changes schema_name() globally and could have renamed a tag in another lane.
@@ -1444,6 +1446,102 @@ def boxoccluders_xml(v, ind=" "):
     return _container("boxOccluders", _inline_items(v), "BoxOccluder", ind, boxoccluder_item_xml)
 
 
+# ---------------------------------------------------------------- occludeModels
+# THE ENCODING THAT BLOCKED THIS CONTAINER IS NOW MEASURED, NOT GUESSED (2026-08-05).
+# Everything about the PAYLOAD was already decoded and proven (see check_occlude_models and the
+# CONTAINER_EMITTERS commentary); the single missing fact was how the reference spells `<verts>`
+# as text, and the file above this one refused to guess it. Matt supplied five reference ymap
+# exports that carry the container -
+#   B:/ClaudeCode_Projects/_UEFiveMTool/warning_this_is_everything/_processed/ymap/
+#     apa_ss1_occl_00 (10 items), apa_ss1_occl_03 (10), bh1_occl_00 (10),
+#     bkr_id1_occl_02 (6), hei_bh1_occl_00 (10)
+# - and the spelling is READ OFF ALL 46 ITEMS, not off one:
+#   * child order bmin, bmax, dataSize, verts, numVertsInBytes, numTris, flags  46/46
+#     (= the binary struct-descriptor order, so it also obeys the measured CHILD ORDER rule)
+#   * `dataSize` == the RAW BYTE COUNT of the verts text, exactly                46/46
+#     (dataSize ranges 873..3930 across the five files; it is NOT a character count and NOT a
+#     vertex count - numVertsInBytes is the vertex half of the same blob)
+#   * every token is exactly two UPPERCASE hex digits, single-space separated    46/46
+#     (156,915 tokens; zero lowercase, zero 0x prefixes, zero separators but the single space)
+#   * exactly 32 BYTES PER LINE, the final line holding the remainder            46/46
+#     (last-line lengths observed 1,2,3,4,5,7,8,9,10,12,14,15,16,17,19,20,22,24,26,27,29,30,31,32
+#     - i.e. the whole residue range, so the 32 is a hard wrap, not a coincidence of these files;
+#     a ds%32==0 record ends on a FULL 32-byte line with no trailing blank line, seen 4 times)
+#   * the byte lines sit at 4 spaces, one deeper than `<verts>` at 3             46/46
+#     which is the same one-space-per-level ladder every other element here uses
+# So this is hex - the candidate the old note said "would fit what survives" - and the guess it
+# refused to make is now a reading. NOTHING ELSE about the container changed; the bytes written
+# are the Walker's T_DATAPTR payload verbatim, uninterpreted.
+OCCLUDE_HEX_PER_LINE = 32
+
+
+def _hexdump_lines(raw, ind, per_line=OCCLUDE_HEX_PER_LINE):
+    """Opaque byte payload -> the measured text form: space-separated uppercase two-digit hex,
+    `per_line` bytes per line, each line at `ind`. No padding on the last line."""
+    return ["%s%s" % (ind, " ".join("%02X" % b for b in raw[i:i + per_line]))
+            for i in range(0, len(raw), per_line)]
+
+
+def occlude_model_item_xml(d, ind):
+    """One OccludeModel <Item>. The <verts> payload is the raw block the T_DATAPTR field points
+    at, re-spelled as hex - never re-derived from the decoded vertices/indices, so a wrong reading
+    of the vertex split cannot leak into the bytes this writes."""
+    f = ind + " "
+    raw = d.get("verts")
+    L = ["%s<Item>" % ind]
+    L.append(_vec("bmin", d.get("bmin"), f))
+    L.append(_vec("bmax", d.get("bmax"), f))
+    # the binary's OWN dataSize field, not len(raw): the two are only ever written together when
+    # they already agree (occlude_models_unserialisable refuses the container otherwise), so
+    # substituting the measured length here could only ever hide a decode fault.
+    L.append(_val("dataSize", pick(d, "dataSize", 0), f))
+    L.append("%s<verts>" % f)
+    L += _hexdump_lines(raw, f + " ")
+    L.append("%s</verts>" % f)
+    L.append(_val("numVertsInBytes", pick(d, "numVertsInBytes", 0), f))
+    L.append(_val("numTris", pick(d, "numTris", 0), f))
+    L.append(_val("flags", pick(d, "flags", 0), f))
+    L.append("%s</Item>" % ind)
+    return L
+
+
+def occludemodels_xml(v, ind=" "):
+    return _container("occludeModels", _inline_items(v), "OccludeModel", ind,
+                      occlude_model_item_xml)
+
+
+def occlude_models_unserialisable(items):
+    """Reason this decoded occludeModels container may NOT be written, or None.
+
+    A PRECONDITION, not a validator: the three cases below are ones where writing the container
+    would need an invention, so the container is DROPPED with its marker instead and the reason is
+    counted. Anything else wrong with the payload (index width, the numTris high bit, the
+    bmin/bmax agreement) is caught by check_occlude_models and does NOT block writing, because
+    this emitter copies the bytes verbatim and never re-encodes them - a misread of the vertex
+    split cannot change one byte of the output.
+
+    * not bytes           - nothing to spell; the T_DATAPTR decode failed.
+    * len != dataSize     - the two are written as separate elements and a consumer reads
+                            dataSize to size the parse, so emitting them in disagreement would
+                            produce a file that is internally inconsistent and still well-formed.
+                            MEASURED equal on 3,019/3,019 records over the whole unfiltered
+                            F:/RUDE_Filebase_v2 ymap set, so this never fires today.
+    * empty payload       - the reference's spelling of an EMPTY <verts> is UNOBSERVED: all 1,994
+                            records in the 11,052-file census carry one, min numVertsInBytes 36,
+                            and none of the 46 read items is empty. `<verts />` would be the house
+                            style and it would still be a guess.
+    """
+    for it in _inline_items(items):
+        raw = it.get("verts")
+        if not isinstance(raw, bytes):
+            return "verts did not decode to bytes"
+        if len(raw) != pick(it, "dataSize", 0):
+            return "verts payload length != dataSize"
+        if not raw:
+            return "verts payload is empty and the empty spelling is unobserved"
+    return None
+
+
 def lodlights_soa_xml(v, ind=" "):
     """CLODLight: eight PARALLEL arrays, so the record count is the longest member (see
     container_records), and any member may be shorter than the others - each renders its own
@@ -1543,10 +1641,13 @@ def instanceddata_xml(v, ind=" "):
 # container -> renderer. A container ABSENT here is one this emitter still cannot write
 # faithfully, and ymap_xml leaves its omission marker instead.
 #
-# occludeModels IS STILL DELIBERATELY ABSENT, AND THE REASON HAS NARROWED TO EXACTLY ONE THING
-# (2026-08-04). The old note here said `verts` is "entry type 0x59, which the Walker does not
-# decode". THAT HALF IS NOW FIXED - see T_DATAPTR and Walker.dataptr: 0x59 is a raw byte-buffer
-# pointer, the Walker returns the bytes, and `unhandled type 0x59` no longer fires. What the bytes
+# occludeModels IS NOW WRITTEN FOR REAL (2026-08-05) - see occlude_model_item_xml for the read of
+# Matt's reference exports that closed it. THE BLOCKING FACT WAS NEVER THE FORMAT, IT WAS THE
+# REFERENCE'S TEXT SPELLING OF <verts>, and the history below is kept verbatim because the shape of
+# the block - "decoded, proven, and still not written, because one encoding was unknown" - is the
+# thing to repeat, not to be embarrassed by. What was already true when it was still dropped:
+# 0x59 is a raw byte-buffer pointer, the Walker returns the bytes, and `unhandled type 0x59` no
+# longer fires. What the bytes
 # MEAN is measured too, over all 1,702 records in 183 ymap of B:/RUDE_Filebase_Full, 0 exceptions:
 #
 #   payload := numVertsInBytes bytes of VERTICES, then 3*(numTris & 0x7FFF) bytes of INDICES
@@ -1561,6 +1662,24 @@ def instanceddata_xml(v, ind=" "):
 #   (largest numVerts observed is 231, which is why one byte per index is enough; a corpus with a
 #   >255-vertex occluder would need this re-measured, and the latch in ymap_dropped_from says so.)
 #
+# ** RE-MEASURED ON THE LIVE CORPUS, AND ONE NUMBER MOVED TO THE EDGE (2026-08-05). Every ymap in
+# F:/RUDE_Filebase_v2 00_base+10_update+20_dlc - 19,385 binaries, NO name filter, 2 pre-existing
+# decode failures - yields 337 files / 3,019 occludeModels records. Every invariant above still
+# holds 3,019/3,019 (0 non-bytes, 0 length disagreements, 0 zero-length payloads; dataSize spans
+# 39..4017; flags is 0 on 2,923 and 1 on 96, which is exactly the {0,1} the reference census
+# records). BUT THE LARGEST numVerts IS 255, NOT 231 - the u8 index width is not comfortably
+# sufficient, it is EXACTLY saturated, and the reference census agrees (max numVertsInBytes 3060 =
+# 255 verts). One more vertex in any future DLC breaks the u8 reading. That is what
+# check_occlude_models' >255 branch is for and why it must keep running now that the container
+# ships; do not read "0 exceptions" as headroom.
+#
+# [CLOSED 2026-08-05 - the paragraph below is the state of knowledge BEFORE Matt's reference export
+# arrived, kept because its last sentence is the rule that made the close possible: "the omission
+# marker stays until a reference `<verts>` payload can be read; when it can, everything needed to
+# write it is already decoded and measured above." That is exactly what happened - the decode never
+# had to be revisited, only the spelling read. Note also that the argument below EXCLUDED base64
+# and "positively identifies none", and the answer turned out to be the hex it called merely a
+# candidate: an elimination is not an identification, and it was right not to be treated as one.]
 # WHAT IS STILL MISSING IS NOT THE FORMAT - IT IS THE REFERENCE'S TEXT SPELLING OF ONE ELEMENT.
 # The census (`reports/snapshots/ymap.json`, 11,052 reference ymap) records
 # `CMapData/occludeModels/Item/verts` as element TEXT classified 'string' with NO sample values,
@@ -1583,10 +1702,15 @@ def instanceddata_xml(v, ind=" "):
 # meshes into the corpus with nothing to mark them - the exact defect this section exists to
 # prevent, one level down. The omission marker stays until a reference `<verts>` payload can be
 # read; when it can, everything needed to write it is already decoded and measured above.
-# containerLods is absent for the opposite reason - 0 records in all 8,076 ymap, so its empty form
-# is never wrong and it can never reach a renderer.
+# [end of the superseded paragraph]
+#
+# containerLods is the ONLY container still absent from the map below, and for the opposite reason
+# - 0 records in all 8,076 ymap, so its empty form is never wrong and it can never reach a
+# renderer. occludeModels can still be dropped at RUNTIME by occlude_models_unserialisable, which
+# is a different thing from having no emitter: the marker then names which precondition failed.
 CONTAINER_EMITTERS = {
     "boxOccluders": boxoccluders_xml,
+    "occludeModels": occludemodels_xml,
     "physicsDictionaries": physdict_xml,
     "instancedData": instanceddata_xml,
     "timeCycleModifiers": map_tcmods_xml,
@@ -1681,8 +1805,21 @@ def ymap_dropped_from(root, w=None):
             out[cname] = n
             if w is not None:
                 w.warn["DROPPED ymap container %s (emitter does not serialise it)" % cname] += n
-    if w is not None and out.get("occludeModels"):
-        check_occlude_models(root.get("occludeModels"), w)
+    # occludeModels has a renderer now, so the loop above SKIPS it and this block is what keeps
+    # its law asserted. It was previously gated on `out.get("occludeModels")` - i.e. on the
+    # container being dropped - which means registering the emitter would have silently switched
+    # check_occlude_models off on every file. A gate that stops running when the thing it guards
+    # starts shipping is the worst possible time for it to stop running.
+    occ = root.get("occludeModels")
+    if container_records(occ):
+        if w is not None:
+            check_occlude_models(occ, w)
+        reason = occlude_models_unserialisable(occ)
+        if reason:
+            n = container_records(occ)
+            out["occludeModels"] = n
+            if w is not None:
+                w.warn["DROPPED ymap container occludeModels (%s)" % reason] += n
     # the one sub-container with a renderer above it but no oracle of its own
     props = (root.get("instancedData") or {}).get("PropInstanceList") or []
     if props and w is not None:
