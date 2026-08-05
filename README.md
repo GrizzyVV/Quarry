@@ -48,7 +48,9 @@ different bug. Then:
     python quarry.py extract --game "<install>" --out "<project>" --xml --textures none --types ydr,ydd,yft,ytd,ybn,ytyp,ymap,ymt
     python quarry.py meta    --out "<project>"      # ytyp/ymap/ymt -> XML + resolve ydd entry names
     python quarry.py resolve --out "<project>"      # flatten -> point RUDE's CorpusRoot at _resolved
-    python quarry.py textures --out "<project>"     # report which pixels are referenced; --prune deletes the rest
+    python quarry.py textures --out "<project>"     # report which pixels are referenced
+    python quarry.py textures --out "<project>" --decode-referenced --scope "dt1_13_*"
+                                                    # DECODE only those, from your archives, no re-extract
 
 ## Commands
 
@@ -63,13 +65,56 @@ different bug. Then:
     quarry.py meta    --out "<project>"                        # ytyp/ymap/ymt -> XML + ydd names  (AFTER extract)
     quarry.py resolve --out "<project>" [--types ydr,ytd,ytyp,ymap] [--copy]
     quarry.py textures --out "<project>" [--prune]             # report REFERENCED pixels; --prune deletes the rest
+    quarry.py textures --out "<project>" --decode-referenced [--scope "dt1_13_*,prop_bench_*"]
+                       [--game "<install>"] [--candidates N] [--limit N] [--dds|--dds-only]
 
 ⭐ **`--textures none` at extract time is the recommended flow**: the manifests (~0.1 GB) are enough
 to know which dictionaries anything references; `quarry textures` then reports exactly which
 dictionaries are referenced (and `--prune` deletes unreferenced pixels after a with-pixels extract).
-◑ Decoding ONLY the referenced pixels from a manifests-only run is not implemented yet — today the
-choices are extract-with-pixels-then-prune, or a targeted re-extract. `--prune` refuses to run when
-it scanned no evidence, because "no references found" and "nothing looked" are different.
+`--prune` refuses to run when it scanned no evidence, because "no references found" and "nothing
+looked" are different.
+
+### ⭐⭐ `--decode-referenced` — selective, on-demand pixels (2026-08-05)
+
+**Decodes ONLY the pixels something references, straight from your archives, into the sidecar
+layout `ImportYtd` already reads — from a manifests-only (`--textures none`) corpus, with NO
+re-extract.** This closes the gap the previous paragraph used to declare: *"Decoding ONLY the
+referenced pixels from a manifests-only run is not implemented yet."*
+
+**Why this is the right shape** (Matt's call, 2026-08-05): *"if this is to create the MM then we'll
+do option 1. If its simply to create the MI for the use in engine, we'll do option 3 (C). RUDE
+should be able to build the Material Instances as needed on import and project build."* The proof
+is on disk — the **38 generated master materials exist right now while the corpus holds zero
+pixels**, because masters are generated from the shader `.fxc` sampler vocabulary, not from image
+data. Pixels are needed only to build the `Texture2D` assets an MI binds at import time. So the
+decode is **selective and on demand**, not a 136 GB whole-game pass you pay for once and again.
+
+| | |
+|---|---|
+| `--scope` | fnmatch patterns over the asset stem (`"dt1_13_*"`), or `@file`. **This is what makes it cheap forever** — you pay for the area you are authoring. A scope that matches nothing **refuses** (exit 2): "nothing looked" is not "nothing is referenced" |
+| `--candidates N` | a drawable names a **texture, not a dictionary**, and most names live in several. Default **0 = every candidate dictionary** (complete; RUDE's scoped lookup then picks, so no bind can be wrong). `N>0` keeps N per texture — far cheaper, and printed as the approximation it is |
+| `--limit N` | cap dictionaries per run. Safe: the run is resumable, so a capped run is partial, never wrong |
+| idempotence | re-running skips what is already there **by CONTENT** (sha256 in `_manifest/_DECODED.json`), never by byte length — that is the `af55e9f` defect class, where two distinct assets of equal size read as "already present" |
+| refusals | anything unresolvable — no source binary in the archives, a texture the source does not hold, an unmapped pixel format — is **counted by class and left absent. Never a placeholder pixel** |
+
+⛔ **It writes into the winning precedence SLOT and hardlinks forward into `_resolved`**, never into
+`_resolved` alone: `resolve` `rmtree`s `_resolved/<kind>/<stem>/` and re-materialises it from the
+slot, so a pixel that existed only in `_resolved` would be deleted by the next `resolve` — silently,
+long after the run that produced it.
+
+⭐ Two caches make the second run cheap, both in `_manifest/`: `_TXDNAMES.json` (which dictionary
+holds which texture name — 83,779 manifests, 23 s to build, keyed on a **content fingerprint** of
+every manifest's name/size/mtime so it cannot go stale under `--prune`) and `_srcindex/<slot>.json`
+(which archive holds which source binary, built incrementally and stopping as soon as the wanted
+names are found).
+
+**Measured 2026-08-05** on `F:\RUDE_Filebase_v2` (a corpus with **zero** PNGs):
+`--scope "dt1_13_build*" --candidates 1` → 3 drawables, 43 textures referenced, **43 decoded, 0
+refusals**, 43 of the 158 those 9 dictionaries contain (**27.2%**) and 0.19% of the 22,638 the full
+836-dictionary candidate set contains. 0 of 43 decoded pixels are unreferenced; 43 of 43 referenced
+textures got a copy. Second run: **0 decoded, 43 already present.** Control — one PNG poisoned to a
+**different content at identical byte length** → re-decoded, exactly 1 of 43, and restored to its
+original sha256.
 ⭐ **`--resume`** continues an interrupted extract: files already present are counted and skipped
 rather than treated as collisions (added after two whole-game runs were lost to restarts-from-zero).
 
@@ -239,7 +284,7 @@ instead of writing corrupt files.
 | ✅ **Embedded texture dictionaries exported** | 33.9% of drawables carry their own textures; each emits a sibling `X__embedded.ytd.xml` + pixels. In-engine effect: missingTextures 4,633 → 4 across downtown |
 | ✅ **Shader value params decoded + named** | 104,178 emitted, 100% named via `shader_param_names.json` — 5,058 hash→name entries harvested from the 321 `.fxc` files in the user's own `common.rpf` |
 | ✅ **`extract --resume`** | an interrupted whole-game run continues instead of restarting from zero; resumed files are counted |
-| ✅ **`textures` subcommand** (`--prune`) | report-what's-referenced + prune-what-isn't (the 86 GB problem); prune refuses to act on zero evidence. ◑ referenced-only decode still extract-bound |
+| ✅ **`textures` subcommand** (`--prune`) | report-what's-referenced + prune-what-isn't (the 86 GB problem); prune refuses to act on zero evidence. ✅ **referenced-only decode landed 2026-08-05** (`--decode-referenced`) — no longer extract-bound; see the section above |
 | ✅ **yft EXTRAS wired into `extract`** (2026-07-30) | skeleton + physics group/child join + one importable `<stem>/<group>.ydr.xml` sidecar per geometry-bearing child (the vehicle wheel lane) now come out of the pipeline, not just the standalone CLI. A refusal (unmeasured value) falls back to the visual drawable and is **counted**, never silent. Verified byte-identical to the standalone path on vehicle + prop fragments |
 | ✅ **`.ymt` in the `meta` pass** (2026-07-30) | scenario regions (`CScenarioPointRegion`) convert in the pipeline; PSO (`PSIN`) manifests are counted-skipped, not failed (see `pso_manifest.py`); `RBF0` binary-XML containers (bink_cnt_*) are likewise counted-skipped; unsupported META roots (e.g. `CStreamingRequestRecord`, the *_srl cutscene streaming lists) refuse with a typed, named error. Measured over update.rpf's 733 ymt: 62 converted, 634 PSIN, 35 RBF0, 2 CStreamingRequestRecord, 0 failed |
 | ✅ **ydd entry names resolved by `meta`** (2026-07-30) | `extract` writes `hash_%08X` (the reverse table doesn't exist yet at that point); `meta` now resolves them in place from the filename-derived table. Unresolved entries stay `hash_%08X` — the dictionary join is hash-to-hash, so nothing downstream depends on it |

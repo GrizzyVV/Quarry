@@ -23,7 +23,7 @@ Usage:
   quarry.py init    --game <install> --out <project>
   quarry.py extract --game <install> --out <project> --keys <dir> [--only x64a.rpf]
 """
-import argparse, glob, json, os, re, shutil, struct, sys, zlib
+import argparse, fnmatch, glob, hashlib, json, os, re, shutil, struct, sys, zlib
 from datetime import datetime
 
 import ngcrypto
@@ -1164,6 +1164,186 @@ def cmd_meta(a):
 # report "0 unused" while missing them entirely - or worse, prune what it cannot see the reference
 # for. Measured: 1,180 of 3,479 base drawables (33.9%) carry an embedded dictionary.
 TXD_BEARING_DIRS = ('ytd', 'ydr', 'ydd', 'yft')
+# The three lanes whose XML can NAME a texture. Kept apart from TXD_BEARING_DIRS because they
+# answer different questions: these are the askers, that is where the answers are stored.
+DRAWABLE_DIRS = ('ydr', 'ydd', 'yft')
+
+_TEX_REF_RE = re.compile(r'type="Texture">\s*<Name>([^<]+)</Name>', re.S)
+_XML_NAME_RE = re.compile(r'<Name>([^<]+)</Name>')
+
+
+def _scope_match(stem, fn, patterns):
+    """True when this drawable is inside the requested scope. Patterns are fnmatch, matched
+    case-insensitively against BOTH the asset stem (`dt1_13_build1`) and the full filename, so
+    `dt1_13_*` and `dt1_13_build1.ydr.xml` both work."""
+    import fnmatch
+    s, f = stem.lower(), fn.lower()
+    return any(fnmatch.fnmatchcase(s, p) or fnmatch.fnmatchcase(f, p) for p in patterns)
+
+
+def scan_drawable_references(ref_roots, scope=None):
+    """Every texture NAME the drawables ask for -> (wanted, drawables_scanned, kinds_seen).
+
+    ⭐ SHARED BY `--prune` AND `--decode-referenced` DELIBERATELY. They are the two halves of one
+    answer - prune deletes what is not referenced, decode writes what is - so two implementations
+    would eventually disagree and a decode would be followed by a prune that deletes exactly what
+    it had just written. One function is the only way that stays impossible.
+
+    `scope` = None for the whole corpus, or a list of fnmatch patterns (see _scope_match). A scope
+    is what makes a referenced-pixel decode cheap FOREVER: you pay for the area you are authoring,
+    not for the game. `kinds_seen` records which drawable lanes EXIST in the roots (directory
+    presence, not match count) - prune's coverage guard depends on that distinction.
+    """
+    wanted, drawables, kinds_seen, stems = set(), 0, set(), set()
+    for root in ref_roots:
+        for kind in DRAWABLE_DIRS:
+            d = os.path.join(root, kind)
+            if not os.path.isdir(d):
+                continue
+            kinds_seen.add(kind)
+            for fn in os.listdir(d):
+                if not fn.lower().endswith('.xml'):
+                    continue
+                # Sibling embedded-texture manifests share this folder now. They are not drawables,
+                # and counting them inflated "drawables scanned" to 12 for 6 files.
+                if fn.lower().endswith('.ytd.xml'):
+                    continue
+                stem = split_type_ext(fn)[0]
+                if scope and not _scope_match(stem, fn, scope):
+                    continue
+                try:
+                    with open(os.path.join(d, fn), encoding='utf-8', errors='replace') as fh:
+                        txt = fh.read()
+                except OSError:
+                    continue
+                drawables += 1
+                stems.add(stem.lower())
+                wanted.update(t.strip().lower() for t in _TEX_REF_RE.findall(txt))
+    return wanted, drawables, kinds_seen, stems
+
+
+TXD_NAME_INDEX = '_TXDNAMES.json'
+TXD_NAME_INDEX_VERSION = 1
+
+
+def _manifest_fingerprint(ref_roots):
+    """A cheap, HONEST identity for the set of emitted `.ytd.xml` manifests -> (sha256, count).
+
+    Every manifest's name, byte size and mtime, from ONE directory read per lane (os.scandir
+    carries the stat data on Windows, so this costs a listing, not 84,000 opens). Anything added,
+    removed, re-emitted or resized changes the digest.
+
+    ⛔ WHY A DIGEST AND NOT A TIMESTAMP: the cache it keys feeds `--prune`, which DELETES. A cache
+    keyed on "is it newer than the folder" would happily survive a re-`meta` that rewrote every
+    manifest in place, and prune would then delete pixels against a stale keep set. A mismatch here
+    forces a rebuild rather than printing a warning nobody reads.
+    """
+    h = hashlib.sha256()
+    n = 0
+    for root in ref_roots:
+        for sub in TXD_BEARING_DIRS:
+            d = os.path.join(root, sub)
+            if not os.path.isdir(d):
+                continue
+            rows = []
+            with os.scandir(d) as it:
+                for e in it:
+                    if not e.name.lower().endswith('.ytd.xml'):
+                        continue
+                    try:
+                        st = e.stat()
+                    except OSError:
+                        continue
+                    rows.append('%s|%d|%d' % (e.name.lower(), st.st_size, int(st.st_mtime)))
+            rows.sort()
+            n += len(rows)
+            # ⚠ NORMALISE THE ROOT. Caught 2026-08-05 by watching a 23-second index rebuild that
+            # should have been a cache hit: the same folder reached as "F:/x/_resolved" and
+            # "F:/x\\_resolved" hashed differently, so the cache missed on every run whose caller
+            # spelled the path with a different separator - a silent, permanent 23 s tax that
+            # looked like the cache simply not working.
+            h.update(('\n%s|%s\n' % (os.path.normcase(os.path.abspath(root)), sub))
+                     .encode('utf-8'))
+            h.update('\n'.join(rows).encode('utf-8'))
+    return h.hexdigest(), n
+
+
+def txd_name_index(ref_roots, out_root=None, verbose=True):
+    """{'<kind>/<stem>': [texture names, manifest order and casing]} for every emitted dictionary.
+
+    ⭐ CACHED, because this is the join that makes a SCOPED decode possible and it is the only
+    expensive part of it: answering "which dictionary holds texture T" means reading every
+    `.ytd.xml` in the corpus - 84,000 files on the current one - and a scoped run needs a handful.
+    Paying that once and keying the cache on `_manifest_fingerprint` is what makes the second and
+    every later scoped run cheap. `out_root=None` disables the cache entirely (always re-read).
+    """
+    fp, count = _manifest_fingerprint(ref_roots)
+    cache = os.path.join(out_root, '_manifest', TXD_NAME_INDEX) if out_root else None
+    if cache and os.path.isfile(cache):
+        try:
+            with open(cache, encoding='utf-8') as f:
+                doc = json.load(f)
+            if (doc.get('version') == TXD_NAME_INDEX_VERSION
+                    and doc.get('fingerprint') == fp):
+                if verbose:
+                    print(f'txd name index    : {count:,} manifests (cached, fingerprint match)')
+                return doc['dicts'], count
+        except Exception:
+            pass
+    if verbose:
+        print(f'txd name index    : reading {count:,} manifests (first run for this corpus '
+              f'state; cached afterwards) ...', flush=True)
+    dicts = {}
+    for root in ref_roots:
+        for sub in TXD_BEARING_DIRS:
+            d = os.path.join(root, sub)
+            if not os.path.isdir(d):
+                continue
+            for fn in os.listdir(d):
+                if not fn.lower().endswith('.ytd.xml'):
+                    continue
+                try:
+                    with open(os.path.join(d, fn), encoding='utf-8', errors='replace') as fh:
+                        txt = fh.read()
+                except OSError:
+                    continue
+                dicts['%s/%s' % (sub, fn[:-len('.ytd.xml')])] = \
+                    [n.strip() for n in _XML_NAME_RE.findall(txt)]
+    if cache:
+        try:
+            os.makedirs(os.path.dirname(cache), exist_ok=True)
+            tmp = cache + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump({'version': TXD_NAME_INDEX_VERSION, 'fingerprint': fp,
+                           'roots': list(ref_roots), 'dicts': dicts}, f)
+            os.replace(tmp, cache)
+        except OSError as e:
+            print(f'  ! could not cache the txd name index ({e}) - it will be rebuilt next run')
+    return dicts, count
+
+
+def scan_txd_manifests(ref_roots, wanted, out_root=None, verbose=True):
+    """Which dictionaries hold the wanted textures -> (holdings, manifests_scanned).
+
+    holdings maps "<kind>/<stem-lower>" -> {'kind','stem','total','needed'} where `needed` is the
+    SUBSET of that dictionary's texture names the drawables actually asked for, in manifest order
+    and with the manifest's own casing (the casing becomes a filename).
+
+    ⭐ The per-dictionary SUBSET is the whole point of the decode lane. `--prune` only ever needed
+    the yes/no ("is this dictionary referenced at all"), so it threw the subset away; decoding a
+    referenced dictionary in full would still decode textures nothing names - measured on the
+    current corpus that is most of them, because a ytd is a shared pool.
+    """
+    dicts, manifests = txd_name_index(ref_roots, out_root, verbose)
+    holdings = {}
+    for key, names in dicts.items():
+        need = [n for n in names if n.lower() in wanted]
+        if not need:
+            continue
+        sub, stem = key.split('/', 1)
+        holdings['%s/%s' % (sub, stem.lower())] = {
+            'kind': sub, 'stem': stem, 'total': len(names), 'needed': need}
+    return holdings, manifests
 
 
 def cmd_textures(a):
@@ -1199,55 +1379,15 @@ def cmd_textures(a):
     ref_roots = [resolved] if os.path.isdir(resolved) else list(slots)
     prune_roots = ([resolved] if os.path.isdir(resolved) else []) + slots
 
-    tex_re = re.compile(r'type="Texture">\s*<Name>([^<]+)</Name>', re.S)
-    name_re = re.compile(r'<Name>([^<]+)</Name>')
-
     # 1) every texture NAME the drawables ask for
-    wanted = set()
-    drawables = 0
-    kinds_seen = set()
-    for root in ref_roots:
-        for kind in ('ydr', 'ydd', 'yft'):
-            d = os.path.join(root, kind)
-            if not os.path.isdir(d):
-                continue
-            kinds_seen.add(kind)
-            for fn in os.listdir(d):
-                if not fn.lower().endswith('.xml'):
-                    continue
-                # Sibling embedded-texture manifests share this folder now. They are not drawables,
-                # and counting them inflated "drawables scanned" to 12 for 6 files.
-                if fn.lower().endswith('.ytd.xml'):
-                    continue
-                try:
-                    with open(os.path.join(d, fn), encoding='utf-8', errors='replace') as fh:
-                        txt = fh.read()
-                except OSError:
-                    continue
-                drawables += 1
-                wanted.update(t.strip().lower() for t in tex_re.findall(txt))
+    #    2) which dictionaries hold them
+    # Both are the shared scans - see scan_drawable_references for why they are not inlined here.
+    if getattr(a, 'decode_referenced', False):
+        return decode_referenced(a, out, resolved, ref_roots)
+    wanted, drawables, kinds_seen, _stems = scan_drawable_references(ref_roots)
     print(f'drawables scanned : {drawables:,}   distinct textures referenced: {len(wanted):,}')
-
-    # 2) which dictionaries hold them
-    needed = set()
-    manifests = 0
-    for root in ref_roots:
-      for sub in TXD_BEARING_DIRS:
-        d = os.path.join(root, sub)
-        if not os.path.isdir(d):
-            continue
-        for fn in os.listdir(d):
-            if not fn.lower().endswith('.ytd.xml'):
-                continue
-            manifests += 1
-            try:
-                with open(os.path.join(d, fn), encoding='utf-8', errors='replace') as fh:
-                    txt = fh.read()
-            except OSError:
-                continue
-            stem = fn[:-8].lower()
-            if any(n.strip().lower() in wanted for n in name_re.findall(txt)):
-                needed.add(stem)
+    holdings, manifests = scan_txd_manifests(ref_roots, wanted, out)
+    needed = {h['stem'].lower() for h in holdings.values()}
     print(f'ytd manifests     : {manifests:,}   referenced dictionaries: {len(needed):,}')
 
     # 3) measure, and prune when asked
@@ -1343,6 +1483,637 @@ def cmd_textures(a):
                 pass
     print(f'\npruned {removed:,} files, {drop_b / 1e9:.1f} GB freed '
           f'(slots AND _resolved - hardlinks mean both must go)')
+    return 0
+
+
+# ------------------------------------------------------------------ referenced-pixel decode
+# ⭐⭐ WHY THIS LANE EXISTS (Matt's decision, 2026-08-05, verbatim):
+#   "if this is to create the MM then we'll do option 1. If its simply to create the MI for the use
+#    in engine, we'll do option 3 (C). RUDE should be able to build the Material Instances as
+#    needed on import and project build."
+# The proof that C is the right answer is on disk today: the 38 generated master materials exist
+# RIGHT NOW while the corpus holds ZERO texture pixels. Masters are generated from the shader .fxc
+# vocabulary (sampler signatures), not from image data - so pixels are needed ONLY to build the
+# Texture2D assets an MI binds at import time. That makes the correct decode SELECTIVE and
+# ON-DEMAND, which is exactly what `quarry/README.md` said did not exist yet:
+#   "Decoding ONLY the referenced pixels from a manifests-only run is not implemented yet - today
+#    the choices are extract-with-pixels-then-prune, or a targeted re-extract."
+DECODE_LEDGER = '_DECODED.json'
+# Bump when ANYTHING that changes the bytes of a written pixel file changes (ytd2xml.decode_png,
+# dds_header, safe_name). Every ledger row carries it and a row whose contract differs is treated
+# as unverified: the texture is re-decoded and byte-compared instead of trusted.
+DECODE_CONTRACT = 1
+SRC_INDEX_DIR = '_srcindex'
+SRC_INDEX_VERSION = 1
+# The binaries a `.ytd.xml` manifest can have been decoded FROM. A standalone dictionary comes from
+# a .ytd; an `X__embedded.ytd.xml` comes from X's own drawable binary (ShaderGroup+0x08).
+SRC_EXTS = ('.ytd', '.ydr', '.ydd', '.yft')
+EMBEDDED_INFIX = '__embedded'
+
+
+def _sha256_bytes(b):
+    return hashlib.sha256(b).hexdigest()
+
+
+def _sha256_file(p):
+    h = hashlib.sha256()
+    try:
+        with open(p, 'rb') as f:
+            for chunk in iter(lambda: f.read(1 << 20), b''):
+                h.update(chunk)
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
+def manifest_source_name(kind, stem):
+    """The BINARY that a `<stem>.ytd.xml` sitting in `<kind>/` was decoded from, or None.
+
+    Returning None is a REFUSAL, not a fallback: guessing a source would decode some other asset's
+    pixels into this dictionary's folder, and both files are valid so nothing downstream could see
+    it. The caller counts the refusal by class.
+    """
+    if kind == 'ytd':
+        # A standalone dictionary. An `__embedded` manifest never lands here (extract files it in
+        # the DRAWABLE's folder precisely so it cannot collide with a real dictionary of the same
+        # name), so one in `ytd/` is a shape we cannot attribute to a source type.
+        return None if stem.lower().endswith(EMBEDDED_INFIX) else stem + '.ytd'
+    if kind in DRAWABLE_DIRS:
+        if not stem.lower().endswith(EMBEDDED_INFIX):
+            return None
+        return stem[:-len(EMBEDDED_INFIX)] + '.' + kind
+    return None
+
+
+def read_source_dictionary(kind, blob):
+    """The texture dicts behind one manifest, read from its source binary.
+
+    ⭐ Every branch here calls the SAME reader the extract path uses (ytd2xml.read_textures, via
+    ydr2xml.embedded_textures for the drawable lanes) at the SAME offsets, and the ydd merge
+    repeats embedded_texture_sidecars' de-duplication rule exactly - because the names it produces
+    become the FILENAMES the manifest already advertises. A second implementation that drifted by
+    one de-dup would write pixels under names nothing looks for.
+    """
+    import ytd2xml
+    if kind == 'ytd':
+        res = ytd2xml.Res.from_bytes(blob)
+        res.require_version(13, 'texture dictionary')
+        return ytd2xml.read_textures(res)
+    import ydr2xml
+    if kind == 'ydr':
+        return ydr2xml.embedded_textures(ydr2xml.Res.from_bytes(blob))
+    if kind == 'yft':
+        import yft2xml
+        res = yft2xml.Res.from_bytes(blob)
+        dbase = yft2xml.main_drawable_base(res)
+        if dbase is None:
+            raise ValueError('fragment main drawable pointer does not resolve')
+        return ydr2xml.embedded_textures(res, base=dbase)
+    if kind == 'ydd':
+        import ydd2xml
+        res = ydd2xml.Res.from_bytes(blob)
+        out, seen = [], set()
+        for _h, off in ydd2xml.entry_offsets(res):
+            for t in ydr2xml.embedded_textures(res, base=off):
+                k = t['name'].lower()
+                if k not in seen:
+                    seen.add(k)
+                    out.append(t)
+        return out
+    raise ValueError(f'no source reader for kind {kind!r}')
+
+
+def slot_archives(out_root, game_root):
+    """{slot: [archive paths]} - which archives each precedence slot was extracted FROM, in the
+    same order `extract` walked them.
+
+    ⭐ The DLC order comes from THIS PROJECT'S `_FILEBASE.json`, not from a fresh derivation. The
+    slot names on disk encode the order that ran; re-deriving it could disagree (that is exactly
+    the 175-directories-for-92-packs failure `precedence_slots` documents) and we would then open
+    the wrong pack's archive for a name.
+    """
+    base, upd, dlc_dirs = find_sources(game_root)
+    man = {}
+    try:
+        with open(os.path.join(out_root, '_FILEBASE.json')) as f:
+            man = json.load(f)
+    except Exception:
+        pass
+    m = {'00_base': [os.path.join(game_root, n) for n in base], '10_update': list(upd)}
+    by_name = {os.path.basename(d).lower(): d for d in dlc_dirs}
+    for p in (man.get('dlcPacks') or []):
+        if not isinstance(p, dict):
+            continue
+        d = by_name.get(str(p.get('name', '')).lower())
+        if not d:
+            continue
+        found = sorted((f for f in os.listdir(d)
+                        if f.lower().startswith('dlc') and f.lower().endswith('.rpf')
+                        and os.path.isfile(os.path.join(d, f))),
+                       key=lambda f: (len(f), f.lower()))
+        m[os.path.join('20_dlc', '%03d_%s' % (p['order'], p['name']))] = \
+            [os.path.join(d, f) for f in found]
+    return m
+
+
+def _index_one(r, oodle, entries, arch_key, depth=0, max_depth=2, path=''):
+    """Record name -> location for every FILE of interest, WITHOUT inflating the leaves.
+
+    ⛔ THE TRAVERSAL ORDER IS LOAD-BEARING and is walk_archive's, entry by entry, recursing inline.
+    `extract` files the FIRST copy of a colliding basename under the plain name and renames the
+    rest to `~N`, and `resolve` then keeps the un-suffixed one - so "first in this order" IS the
+    file that became `_resolved/<kind>/<stem>`. A different order (a LIFO stack, say) silently
+    indexes a DIFFERENT asset under the same name, and every byte it then decodes is wrong while
+    looking perfectly healthy. setdefault is what makes first win.
+    """
+    for e in r.entries:
+        if e['dir']:
+            continue
+        name = e['name']
+        low = name.lower()
+        if low.endswith('.rpf'):
+            if depth >= max_depth:
+                continue
+            try:
+                blob = r.payload(e, oodle)
+                sub = Rpf(f'{path}/{name}', r.keys, r.tables, data=blob, name=name,
+                          aes_key=getattr(r, 'aes_key', None))
+                sub.read_toc()
+                if not sub.sane():
+                    continue
+            except Exception:
+                continue        # AES packs and unreadable nests are reported by `extract`, and a
+                                # name we cannot index simply stays a counted decode refusal later
+            _index_one(sub, oodle, entries, arch_key, depth + 1, max_depth, f'{path}/{name}')
+            continue
+        if low.endswith(SRC_EXTS):
+            entries.setdefault(low, arch_key)
+
+
+def source_index(out_root, slot, archives, keys, tables, aes_key, oodle, wants, verbose=True):
+    """{lowercase source filename: archive path} for one slot, built lazily and CACHED.
+
+    ⭐ INCREMENTAL BY DESIGN. Indexing 00_base means reading 24 archives (~40 GB); a scoped decode
+    usually needs one of them. So archives are indexed in extract order and the walk STOPS as soon
+    as every wanted name is located, persisting what it learned. A later run needing a name that is
+    not in the cache resumes from the next un-indexed archive. First-wins is preserved because the
+    order is never revisited.
+    """
+    d = os.path.join(out_root, '_manifest', SRC_INDEX_DIR)
+    os.makedirs(d, exist_ok=True)
+    cache = os.path.join(d, slot.replace(os.sep, '_').replace('/', '_') + '.json')
+    doc = {'version': SRC_INDEX_VERSION, 'indexed': [], 'entries': {}}
+    try:
+        with open(cache) as f:
+            got = json.load(f)
+        if got.get('version') == SRC_INDEX_VERSION:
+            doc = got
+    except Exception:
+        pass
+    entries = doc['entries']
+    done = list(doc['indexed'])
+    remaining = [p for p in archives if p not in done]
+    outstanding = {w for w in wants if w not in entries}
+    for p in remaining:
+        if not outstanding:
+            break
+        if verbose:
+            print(f'  index {slot}: {os.path.basename(p)} ...', flush=True)
+        try:
+            r = Rpf(p, keys, tables, aes_key=aes_key)
+            r.read_toc()
+            if not r.sane():
+                raise ValueError('TOC did not decode')
+        except Exception as ex:
+            print(f'  ! index {slot}: {os.path.basename(p)} unreadable - '
+                  f'{type(ex).__name__}: {ex}')
+            done.append(p)
+            continue
+        _index_one(r, oodle, entries, p, 0, 2, os.path.basename(p))
+        del r
+        done.append(p)
+        outstanding = {w for w in wants if w not in entries}
+    doc['indexed'] = done
+    doc['entries'] = entries
+    tmp = cache + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(doc, f)
+    os.replace(tmp, cache)
+    return entries
+
+
+def fetch_from_archive(path, wants, keys, tables, aes_key, oodle):
+    """{lowercase name: blob} for the wanted leaf names in one archive.
+
+    Only nested .rpf entries and the wanted leaves are ever inflated - the whole point of a
+    targeted decode is not paying the extract's cost. Traversal order matches _index_one, so the
+    blob returned for a colliding basename is the one the corpus was built from.
+    """
+    got = {}
+
+    def walk(r, depth, p):
+        for e in r.entries:
+            if e['dir']:
+                continue
+            name = e['name']
+            low = name.lower()
+            if low.endswith('.rpf'):
+                if depth >= 2:
+                    continue
+                try:
+                    blob = r.payload(e, oodle)
+                    sub = Rpf(f'{p}/{name}', r.keys, r.tables, data=blob, name=name,
+                              aes_key=getattr(r, 'aes_key', None))
+                    sub.read_toc()
+                    if not sub.sane():
+                        continue
+                except Exception:
+                    continue
+                walk(sub, depth + 1, f'{p}/{name}')
+                continue
+            if low in wants and low not in got:
+                try:
+                    got[low] = r.payload(e, oodle)
+                except Exception as ex:
+                    got[low] = ex
+    r0 = Rpf(path, keys, tables, aes_key=aes_key)
+    r0.read_toc()
+    walk(r0, 0, os.path.basename(path))
+    return got
+
+
+def _link_or_copy(src, dst):
+    """Hardlink `src` into `dst` (same volume) or copy. -> 'link' | 'copy' | None."""
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    if os.path.exists(dst):
+        try:
+            os.remove(dst)
+        except OSError:
+            return None
+    try:
+        os.link(src, dst)
+        return 'link'
+    except OSError:
+        pass
+    try:
+        shutil.copy2(src, dst)
+        return 'copy'
+    except OSError:
+        return None
+
+
+def decode_referenced(a, out, resolved, ref_roots):
+    """Decode ONLY the texture pixels something references, from a MANIFESTS-ONLY corpus.
+
+    ⛔ WRITES INTO THE WINNING SLOT AND HARDLINKS FORWARD INTO `_resolved`, never into `_resolved`
+    alone. `cmd_resolve` rmtree's `_resolved/<kind>/<stem>/` and re-materialises it from the slot,
+    so a pixel that exists only in `_resolved` is deleted by the next `resolve` - silently, and
+    long after the run that produced it. The slot is where a with-pixels extract would have put it.
+
+    ⛔ NEVER EMITS A PLACEHOLDER PIXEL. Everything it cannot resolve - a manifest whose source
+    binary is not in the archives, a texture the decoded dictionary does not contain, an unmapped
+    pixel format - is COUNTED by class and left absent. A missing file is a hole every downstream
+    check can see; an invented one is a wrong answer with no counter.
+    """
+    import ytd2xml
+    game = getattr(a, 'game', None) or manifest_flag(out, 'gameRoot', None)
+    if not game or not os.path.isdir(game):
+        print('STOP - no game install. Pass --game "<install>", or run this against a project '
+              'whose _FILEBASE.json records a gameRoot that still exists.')
+        return 2
+    want_png = not getattr(a, 'dds_only', False)
+    want_dds = bool(getattr(a, 'dds', False)) or not want_png
+    if want_png and not ytd2xml.png_available():
+        # PNG is the file ImportYtd actually loads. Producing only .dds here would leave the lane
+        # connected on paper and broken in practice - the exact failure the ytd sidecars document.
+        print('STOP - texture2ddecoder/Pillow are NOT installed, and ImportYtd loads the .png. '
+              '`pip install texture2ddecoder Pillow`, or pass --dds-only for the lossless archive '
+              'form on its own.')
+        return 2
+
+    scope = None
+    raw = getattr(a, 'scope', None)
+    if raw:
+        if raw.startswith('@'):
+            with open(raw[1:], encoding='utf-8') as f:
+                scope = [ln.strip().lower() for ln in f if ln.strip()
+                         and not ln.lstrip().startswith('#')]
+        else:
+            scope = [s.strip().lower() for s in raw.split(',') if s.strip()]
+    print(f'game      : {game}')
+    print(f'scope     : {"whole corpus" if not scope else ", ".join(scope)}')
+
+    wanted, drawables, _kinds, stems = scan_drawable_references(ref_roots, scope)
+    print(f'drawables scanned : {drawables:,}   distinct textures referenced: {len(wanted):,}')
+    # ⛔ "I found no evidence" must never be promoted to "there is nothing to do" - the same law
+    # --prune already follows. A scope typo scans zero drawables and would otherwise exit 0 having
+    # decoded nothing, which is indistinguishable from a corpus that is already complete.
+    if not drawables:
+        print('STOP - the scope matched NO drawable XML. That is a broken question, not an answer '
+              'of "nothing is referenced". Check the pattern (fnmatch, e.g. "dt1_13_*").')
+        return 2
+    if not wanted:
+        print('STOP - the scoped drawables name ZERO textures. Refusing to report a no-op as a '
+              'complete decode.')
+        return 2
+
+    holdings, manifests = scan_txd_manifests(ref_roots, wanted, out)
+    held = set()
+    for h in holdings.values():
+        held.update(n.lower() for n in h['needed'])
+    print(f'ytd manifests     : {manifests:,}   dictionaries holding a referenced name: '
+          f'{len(holdings):,}')
+
+    refusals = {}
+    examples = {}
+
+    def refuse(cls, detail, n=1):
+        refusals[cls] = refusals.get(cls, 0) + n
+        examples.setdefault(cls, detail)
+
+    orphan = wanted - held
+    if orphan:
+        refuse('texture_named_but_no_manifest_holds_it', sorted(orphan)[0], len(orphan))
+
+    # ---- name ambiguity, stated rather than hidden -------------------------------------------
+    # ⛔ A DRAWABLE NAMES A TEXTURE, NOT A DICTIONARY. Measured on this corpus: 8,791 of 22,405
+    # distinct texture names live in more than one dictionary, so a name join answers "every
+    # dictionary that COULD satisfy this drawable", not "the one that does" - for `dt1_13_build*`
+    # that is 836 dictionaries for 43 textures. This is the same ambiguity RUDE's importer counts
+    # as `texturesTieBroken` after scoping the lookup to the archetype's own <textureDictionary>,
+    # and neither end can resolve it from a name alone.
+    # THE DEFAULT IS THE COMPLETE SET, deliberately: decoding every candidate cannot bind the wrong
+    # pixels (RUDE's scoped lookup then picks), while decoding one candidate CAN. `--candidates N`
+    # trades that away knowingly, and the count of what it dropped is printed either way.
+    holders = {}
+    for key, h in holdings.items():
+        for n in h['needed']:
+            holders.setdefault(n.lower(), []).append(key)
+    ambiguous = {n: v for n, v in holders.items() if len(v) > 1}
+    worst = max((len(v) for v in holders.values()), default=0)
+    print(f'name ambiguity    : {len(ambiguous):,} of {len(holders):,} referenced textures exist '
+          f'in more than one dictionary (most-shared name: {worst:,} holders)')
+
+    cand = int(getattr(a, 'candidates', 0) or 0)
+    if cand > 0 and ambiguous:
+        # Preference is DATA, not enumeration order: a dictionary belonging to one of the scoped
+        # drawables (its `__embedded`, its `+hidr`) is the drawable's own and outranks a stranger
+        # that merely shares the name; ties then break lexicographically so the choice is
+        # reproducible. This is an APPROXIMATION and is reported as one.
+        def rank(key):
+            stem = key.split('/', 1)[1].lower()
+            own = any(stem == s or stem.startswith(s) for s in stems)
+            return (0 if own else 1, key)
+        keep_pairs = set()
+        for n, v in holders.items():
+            for key in sorted(v, key=rank)[:cand]:
+                keep_pairs.add((key, n))
+        dropped_d = dropped_t = 0
+        for key in list(holdings):
+            need = [x for x in holdings[key]['needed'] if (key, x.lower()) in keep_pairs]
+            dropped_t += len(holdings[key]['needed']) - len(need)
+            if not need:
+                del holdings[key]
+                dropped_d += 1
+            else:
+                holdings[key]['needed'] = need
+        print(f'candidate cap     : --candidates {cand} -> dropped {dropped_d:,} dictionaries and '
+              f'{dropped_t:,} duplicate texture copies. ! APPROXIMATION: if RUDE binds a copy from '
+              f'a dictionary this dropped, it reports missingPixels - re-run without --candidates')
+
+    need_tex = sum(len(h['needed']) for h in holdings.values())
+    have_tex = sum(h['total'] for h in holdings.values())
+    print(f'to decode         : {need_tex:,} texture copies out of {have_tex:,} those '
+          f'{len(holdings):,} dictionaries contain '
+          f'({100.0 * need_tex / have_tex if have_tex else 0:.1f}% - the rest is never touched)')
+
+    # ---- what is already on disk, decided by CONTENT ----------------------------------------
+    # ⛔ NOT BY LENGTH. Commit af55e9f: `--resume` skipped a target whose SIZE matched, so two
+    # content-distinct assets of equal length read as "already present" and the loser was dropped
+    # with no counter. The rule is the same one stated there - a run may only skip a file whose
+    # bytes it would have written anyway - and here it is enforced with sha256: a ledger row is
+    # trusted only when the file on disk still hashes to what we recorded writing, under the same
+    # decode contract. Anything else is re-decoded and byte-compared.
+    ledger_path = os.path.join(out, '_manifest', DECODE_LEDGER)
+    ledger = {}
+    try:
+        with open(ledger_path) as f:
+            got = json.load(f)
+        if got.get('contract') == DECODE_CONTRACT:
+            ledger = got.get('files') or {}
+    except Exception:
+        pass
+
+    winners = {}
+    try:
+        with open(os.path.join(resolved, '_RESOLVED.json')) as f:
+            winners = json.load(f).get('winners') or {}
+    except Exception:
+        pass
+
+    def slot_of(kind, stem):
+        return winners.get('%s/%s.ytd.xml' % (kind, stem))
+
+    jobs, present, relinked = {}, 0, 0
+    skipped_dicts = 0
+    for key in sorted(holdings):
+        h = holdings[key]
+        kind, stem = h['kind'], h['stem']
+        slot = slot_of(kind, stem)
+        if slot is None:
+            refuse('manifest_has_no_winning_slot', '%s/%s' % (kind, stem))
+            continue
+        src = manifest_source_name(kind, stem)
+        if src is None:
+            refuse('manifest_shape_unattributable_to_a_source', '%s/%s.ytd.xml' % (kind, stem))
+            continue
+        todo = []
+        for name in h['needed']:
+            safe = ytd2xml.safe_name(name)
+            for ext, want in (('.png', want_png), ('.dds', want_dds)):
+                if not want:
+                    continue
+                rel = '%s/%s/%s/%s%s' % (slot.replace(os.sep, '/'), kind, stem, safe, ext)
+                dst = os.path.join(out, rel.replace('/', os.sep))
+                row = ledger.get(rel)
+                if row and os.path.isfile(dst) and _sha256_file(dst) == row.get('sha256'):
+                    present += 1
+                    # The forward link into _resolved is part of "already present". A slot pixel
+                    # RUDE cannot reach is not done.
+                    rdst = os.path.join(resolved, kind, stem, safe + ext)
+                    if os.path.isdir(resolved) and not os.path.exists(rdst):
+                        if _link_or_copy(dst, rdst):
+                            relinked += 1
+                    continue
+                todo.append((name, safe, ext, rel, dst))
+        if not todo:
+            skipped_dicts += 1
+            continue
+        jobs.setdefault((slot, src.lower()), {'slot': slot, 'src': src.lower(), 'kind': kind,
+                                              'stem': stem, 'todo': todo})
+    limit = int(getattr(a, 'limit', 0) or 0)
+    order = sorted(jobs)
+    capped = len(order) > limit > 0
+    if capped:
+        order = order[:limit]
+    print(f'dictionaries      : {len(holdings):,} referenced, {skipped_dicts:,} already complete, '
+          f'{len(jobs):,} to decode' + (f' (capped to {limit:,} by --limit)' if capped else ''))
+    print(f'pixel files       : {present:,} already present (content-verified)'
+          + (f', {relinked:,} re-linked into _resolved' if relinked else ''))
+    if not order:
+        print('\nnothing to decode - every referenced pixel in scope is already present.')
+        return _report_decode(0, 0, 0, present, False, refusals, examples)
+
+    # ---- keys, oodle, and the per-slot source index ------------------------------------------
+    keys = tables = aes_key = None
+    try:
+        import keyderive
+        raw_k, raw_t = keyderive.acquire(game, getattr(a, 'keys', None), getattr(a, 'magic', None))
+        keys, tables = ngcrypto.keys_from_bytes(raw_k), ngcrypto.tables_from_bytes(raw_t)
+    except Exception as e:
+        print(f'keys      : UNAVAILABLE - {e}')
+    try:
+        import keyderive
+        aes_key = keyderive.acquire_aes(game)
+    except Exception:
+        aes_key = None
+    dll = oodle_dll(game, getattr(a, 'oodle', None))
+    oodle = None
+    if dll:
+        import ctypes
+        lib = ctypes.CDLL(dll)
+        fn = lib.OodleLZ_Decompress
+        fn.restype = ctypes.c_int64
+
+        def oodle(src, outsz):
+            buf = ctypes.create_string_buffer(outsz)
+            n = fn(ctypes.c_char_p(src), ctypes.c_int64(len(src)), buf,
+                   ctypes.c_int64(outsz), 0, 0, 0, None, None, None, None, None, None, 3)
+            if n <= 0:
+                raise RuntimeError('oodle failed')
+            return buf.raw[:n]
+
+    smap = slot_archives(out, game)
+    by_slot = {}
+    for k in order:
+        by_slot.setdefault(jobs[k]['slot'], []).append(jobs[k])
+
+    decoded = rewritten = unchanged = 0
+    linked = copied = 0
+    written_bytes = 0
+    for slot, items in sorted(by_slot.items()):
+        archives = smap.get(slot)
+        if not archives:
+            refuse('slot_has_no_archive_on_this_install', slot, len(items))
+            continue
+        wants = {it['src'] for it in items}
+        idx = source_index(out, slot, archives, keys, tables, aes_key, oodle, wants)
+        per_archive = {}
+        for it in items:
+            arch = idx.get(it['src'])
+            if arch is None:
+                refuse('source_binary_not_found_in_archives', '%s (%s)' % (it['src'], slot))
+                continue
+            per_archive.setdefault(arch, []).append(it)
+        for arch, group in sorted(per_archive.items()):
+            print(f'  decode {slot}: {os.path.basename(arch)} '
+                  f'-> {len(group):,} dictionar{"y" if len(group) == 1 else "ies"}', flush=True)
+            blobs = fetch_from_archive(arch, {it['src'] for it in group},
+                                       keys, tables, aes_key, oodle)
+            for it in group:
+                blob = blobs.get(it['src'])
+                if blob is None:
+                    refuse('source_entry_vanished_between_index_and_fetch', it['src'])
+                    continue
+                if isinstance(blob, Exception):
+                    refuse('source_entry_would_not_decode', f'{it["src"]}: {blob}')
+                    continue
+                try:
+                    texs = read_source_dictionary(it['kind'], blob)
+                except Exception as ex:
+                    refuse('dictionary_would_not_read', f'{it["src"]}: '
+                                                       f'{type(ex).__name__}: {ex}')
+                    continue
+                by_name = {t['name'].lower(): t for t in texs}
+                for name, safe, ext, rel, dst in it['todo']:
+                    t = by_name.get(name.lower())
+                    if t is None:
+                        # The manifest advertises it and the binary does not hold it. That is a
+                        # real gap (an unmapped format refused inside read_textures is the known
+                        # cause) and it is counted, never papered over with a blank image.
+                        refuse('texture_in_manifest_absent_from_source', f'{it["src"]}:{name}')
+                        continue
+                    if ext == '.dds':
+                        data = t['dds']
+                    else:
+                        data, why = ytd2xml.decode_png(t)
+                        if data is None:
+                            refuse('png_decode_refused', f'{it["src"]}:{name}: {why}')
+                            continue
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    if os.path.isfile(dst):
+                        try:
+                            with open(dst, 'rb') as f:
+                                old = f.read()
+                        except OSError:
+                            old = None
+                        if old == data:
+                            unchanged += 1
+                        else:
+                            with open(dst, 'wb') as f:
+                                f.write(data)
+                            rewritten += 1
+                            written_bytes += len(data)
+                    else:
+                        with open(dst, 'wb') as f:
+                            f.write(data)
+                        decoded += 1
+                        written_bytes += len(data)
+                    ledger[rel] = {'sha256': _sha256_bytes(data), 'bytes': len(data),
+                                   'source': it['src'], 'slot': it['slot']}
+                    if os.path.isdir(resolved):
+                        how = _link_or_copy(dst, os.path.join(resolved, it['kind'], it['stem'],
+                                                              safe + ext))
+                        if how == 'link':
+                            linked += 1
+                        elif how == 'copy':
+                            copied += 1
+            del blobs
+
+    os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
+    tmp = ledger_path + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump({'contract': DECODE_CONTRACT, 'files': ledger}, f)
+    os.replace(tmp, ledger_path)
+
+    print(f'\ndecoded {decoded:,} new pixel files ({written_bytes / 1e6:.1f} MB), '
+          f'{rewritten:,} rewritten, {unchanged:,} byte-identical to what was already there')
+    print(f'hardlinked into _resolved: {linked:,}   copied: {copied:,}')
+    return _report_decode(decoded, rewritten, unchanged, present, True, refusals, examples)
+
+
+def _report_decode(decoded, rewritten, unchanged, present, attempted, refusals, examples):
+    """Print the refusal table and pick the exit code.
+
+    ⛔ A REFUSAL IS NOT A FAILURE OF THE RUN, but silence about it would be - so they are always
+    printed, by class, with an example. The EXIT CODE follows the zero-work law `extract` already
+    obeys: a run that was asked to decode and produced not one pixel is a FAILURE, not an empty
+    success (that is what a broken join, a wrong install or a bad key set looks like), while a run
+    that had nothing left to do is legitimately green.
+    """
+    if refusals:
+        print(f'\nREFUSED (counted, nothing invented): {sum(refusals.values()):,}')
+        for k in sorted(refusals, key=lambda k: -refusals[k]):
+            print(f'  {refusals[k]:>8,}  {k}   e.g. {examples.get(k, "")[:90]}')
+    else:
+        print('\nrefusals: 0')
+    if attempted and not (decoded or rewritten or unchanged):
+        print('STOP - this run had dictionaries to decode and produced ZERO pixel files. That is a '
+              'failure, not an empty success - read the refusal table above.')
+        return 1
+    if not (decoded or rewritten or unchanged or present):
+        print('STOP - the run decoded nothing and found nothing already present.')
+        return 1
     return 0
 
 
@@ -2226,12 +2997,43 @@ def main():
                     help='copy instead of hardlinking (use when the destination is another volume)')
     pr.set_defaults(fn=cmd_resolve)
 
-    pt = sub.add_parser('textures', help='report - and with --prune, delete - the texture pixels no '
-                                        'drawable references (run AFTER meta/resolve)')
+    pt = sub.add_parser('textures', help='the referenced-pixel lane: report what is referenced, '
+                                         '--decode-referenced to DECODE only that from the '
+                                         'archives, --prune to delete what is not '
+                                         '(run AFTER meta/resolve)')
     pt.add_argument('--out', required=True, help='the project folder built by init/extract')
     pt.add_argument('--prune', action='store_true',
                     help='actually delete the unreferenced png/dds sidecars. Safe: the source is '
                          'your own game install, so anything pruned is re-extractable')
+    pt.add_argument('--decode-referenced', action='store_true', dest='decode_referenced',
+                    help='decode ONLY the pixels the drawables reference, straight from your '
+                         'archives, into the sidecar layout ImportYtd already reads. Works from a '
+                         '`--textures none` (manifests-only) corpus with NO re-extract - that is '
+                         'the point. Idempotent: a re-run skips what is already there by CONTENT.')
+    pt.add_argument('--scope', help='limit to the drawables you are actually authoring: '
+                                    'comma-separated fnmatch patterns against the asset stem '
+                                    '(e.g. "dt1_13_*,prop_bench_*"), or @file with one per line. '
+                                    'This is what makes the decode cheap forever - you pay for an '
+                                    'area, not for the game. Omit = the whole corpus.')
+    pt.add_argument('--candidates', type=int, default=0,
+                    help='a drawable names a TEXTURE, not a dictionary, and most texture names '
+                         'exist in several. Default 0 = decode EVERY dictionary that holds a '
+                         'referenced name (complete: RUDE\'s scoped lookup then picks, and no '
+                         'bind can be wrong). N>0 keeps only N candidates per texture - much '
+                         'cheaper, but a bind RUDE resolves elsewhere becomes missingPixels')
+    pt.add_argument('--limit', type=int, default=0,
+                    help='decode at most N dictionaries this run (0 = no cap). Safe to use: the '
+                         'run is resumable, so a capped run is a partial, not a wrong, corpus')
+    pt.add_argument('--dds', action='store_true',
+                    help='also write the lossless .dds beside the .png (doubles the disk)')
+    pt.add_argument('--dds-only', action='store_true', dest='dds_only',
+                    help='write ONLY the .dds. ! ImportYtd loads the .png, so this produces an '
+                         'archive, not an importable folder')
+    pt.add_argument('--game', help='your game install (default: the gameRoot recorded in this '
+                                   "project's _FILEBASE.json)")
+    pt.add_argument('--keys')
+    pt.add_argument('--magic')
+    pt.add_argument('--oodle')
     pt.set_defaults(fn=cmd_textures)
 
     pm = sub.add_parser('meta', help='convert binary ytyp/ymap/ymt to interchange XML and resolve '
