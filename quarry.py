@@ -2759,27 +2759,31 @@ def _regress_pinned_fixtures(root):
 
 
 def _regress_witness_report(pinned):
-    """(covered, missing) for the ymap container topics, off the PINNED binaries only.
+    """(covered, missing, unreadable) for the ymap container topics, off the PINNED binaries only.
 
     Deliberately not computed over the sampled fixtures: a topic that happens to be represented
     by this seed's draw is not coverage, it is luck, and luck is what #32d was. The topic list
     comes from meta2xml so a new renderer extends this report automatically.
+
+    A pin that will not decode is returned SEPARATELY rather than folded into `covered` under some
+    made-up key. A witness that cannot testify is not a witness, and the first draft of this
+    function hid exactly that case in the covered dict where nothing would ever print it - the
+    silent-drop shape, committed inside the fix for a silent drop.
     """
     import meta2xml
-    covered = {}
+    covered, unreadable = {}, {}
     for p in pinned:
         if not p.lower().endswith('.ymap'):
             continue
         try:
             topics = meta2xml.ymap_witness_of(p)
         except Exception as ex:
-            covered.setdefault('!' + os.path.basename(p), []).append(
-                f'{type(ex).__name__}: {ex}')
+            unreadable[os.path.basename(p)] = f'{type(ex).__name__}: {ex}'
             continue
         for t in topics:
             covered.setdefault(t, []).append(os.path.basename(p))
     missing = [t for t in meta2xml.YMAP_WITNESS_TOPICS if t not in covered]
-    return covered, missing
+    return covered, missing, unreadable
 
 
 def _regress_meta_signature(path, names):
@@ -2888,13 +2892,15 @@ def cmd_regress(a):
     # ⛔⛔ THE COVERAGE LINE IS THE WHOLE POINT OF #32d - SILENCE ABOUT A CONTAINER IS THE DEFECT.
     # Printing "which topics have a witness" turns "the gate said green" into a claim a reader can
     # check, and printing "which have NONE" is what the previous gate could not do at all.
-    wit_covered, wit_missing = _regress_witness_report(pinned)
+    wit_covered, wit_missing, wit_unreadable = _regress_witness_report(pinned)
     if pinned:
         import meta2xml as _m2
         shown = ', '.join('%s(%d)' % (t, len(wit_covered[t]))
                           for t in _m2.YMAP_WITNESS_TOPICS if t in wit_covered)
         print(f'pinned    : {len(pinned)} always-included fixture(s); ymap topics covered: '
               f'{shown or "NONE"}')
+    for fn, why in sorted(wit_unreadable.items()):
+        print(f'  ! pinned witness {fn} did NOT decode ({why}) - it testifies to nothing.')
     unexplained = []
     if wit_missing:
         import meta2xml as _m2

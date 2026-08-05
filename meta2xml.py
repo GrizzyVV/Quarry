@@ -1909,13 +1909,114 @@ def ymap_witness_of(path):
     return ymap_witnessed(root) if root_name == "CMapData" else set()
 
 
-def ymap_xml(name, entities, meta=None, dropped=None, containers=None):
-    """`containers` = the decoded CMapData root's non-entity containers (ymap_containers_from);
-    `dropped` = {container: record count} from ymap_dropped_from() for the ones with no renderer.
+# ---------------------------------------------------------------- CMapData/block
+#
+# THE DEFECT THIS CLOSES (#32c, 2026-08-05): `block` was decoded and thrown away with NO SIGNAL
+# AT ALL - not the element, not an empty form, not a drop marker - because it is not a container,
+# so `ymap_dropped_from` never saw it and nothing counted it. That is strictly WORSE than the
+# occludeModels drop it was found beside: a marker tells a reader what is missing, silence does
+# not, and this file was otherwise matching the reference line for line.
+#
+# ⛔ THE "PROBABLY ALWAYS EMPTY" ASSUMPTION WAS WRONG - and it was wrong because it was read off
+# FIVE files. The register recorded "observed empty (all-zero/blank) in all 5 reference files"
+# and correctly flagged it as a LOWER BOUND. It is one: re-read across ALL 25 of Matt's reference
+# exports, FOUR carry real author strings (hw1_27 -> name "hw1_27", exportedBy "tim.fionda",
+# time "29 October 2014 09:43") and TWO carry non-zero numbers (hei_carrier_distantlights ->
+# version 1097112694, flags 255). CORPUS, all 11,084 ymap binaries in F:/RUDE_Filebase_v2/
+# _resolved decoded with NO filter of any kind: block present in 11,082 of the 11,082 that decode
+# (the 2 failures are the pre-existing "not an RSC7 container" id2_17 pair), ZERO unknown keys
+# inside it, and POPULATED in
+#     name 1,406 | exportedBy 1,406 | time 1,406 | version 912 | flags 928.
+# ⇒ this needed SERIALISING, not an empty form. Emitting the all-empty shape would have silently
+# stripped 1,406 files of their provenance while looking correct doing it.
+#
+# WHERE THE SHAPE COMES FROM (nothing invented):
+#   ELEMENT NAMES - exact case-sensitive joaat preimages of the stored nameHashes (SCHEMA_NAMES).
+#   CHILD ORDER   - version, flags, name, exportedBy, owner, time: identical in 25 of 25
+#                   reference exports, and the same order the binary descriptor stores.
+#   POSITION      - LAST child of CMapData, after DistantLODLightsSOA, in 25 of 25.
+#   attr vs TEXT  - version/flags are `value=` attributes; the four strings are element TEXT, and
+#                   an EMPTY one is spelled `<owner></owner>`, NOT `<owner />`.
+#                   ⚠ That is the OPPOSITE of the file-level `_txt` rule (`<parent />` when empty,
+#                   in the same reference file), which is why block gets its own text helper
+#                   rather than reusing one that would have been wrong in 25 of 25 files.
+#   TYPES         - version/flags int 11,082/11,082; the four strings str 11,082/11,082. No
+#                   escaping was needed anywhere in the corpus (0 files with <>&" or non-ASCII),
+#                   and esc() is applied anyway - a census proves existence, never absence.
+# Characters XML 1.0 does not permit in element text at all (C0 controls except tab/LF/CR).
+_XML_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
-    Omitting BOTH - which the round-trip harness does, since it feeds reference-PARSED dicts that
-    never carried these containers - keeps the old all-empty behaviour, so that gate still
-    measures exactly what it measured before."""
+
+def _block_txt(tag, v, ind):
+    """`<tag>text</tag>`, and `<tag></tag>` when empty - the MEASURED block spelling."""
+    return "%s<%s>%s</%s>" % (ind, tag, esc(v), tag)
+
+
+def block_xml(blk, ind=" "):
+    """`<block>` for one decoded CMapData. Refuses field-by-field rather than guessing.
+
+    THREE marker paths, all counted in the emitted text, because none of them may be silent:
+      * block is None   - the caller supplied none (the round-trip harness feeds parsed XML, not
+                          a decoded binary). Omitted with a marker, never forged.
+      * block is {}     - this binary carries no block struct. Never observed in 11,082 files,
+                          which is exactly why it gets a branch: a census is a lower bound.
+      * a bad TYPE      - that ONE field is omitted and named, with its decoded type. Coercing an
+                          int into <time> would produce a plausible-looking wrong file.
+      * an unknown key  - the six proven fields are still written (they are proven); the
+                          unrecognised keys are NAMED, so a future schema addition surfaces as a
+                          line in the file instead of vanishing the way this whole struct did.
+    """
+    if blk is None:
+        return ["%s<!-- QUARRY: no block was supplied to this emitter (the caller passed parsed "
+                "XML, not a decoded binary), so the element is omitted rather than forged "
+                "empty. -->" % ind]
+    if not blk:
+        return ["%s<!-- QUARRY: this binary carries no block struct, so the element is omitted "
+                "rather than forged empty. -->" % ind]
+    known = {f for f, _k in BLOCK_FIELDS}
+    unknown = sorted(k for k in blk if k not in known)
+    L = ["%s<block>" % ind]
+    bad = []
+    f = ind + " "
+    for tag, kind in BLOCK_FIELDS:
+        v = blk.get(tag)
+        if kind == "val":
+            if isinstance(v, int) and not isinstance(v, bool):
+                L.append(_val(tag, v, f))
+            else:
+                bad.append("%s (%s)" % (tag, type(v).__name__))
+        elif not isinstance(v, str):
+            bad.append("%s (%s)" % (tag, type(v).__name__))
+        elif _XML_ILLEGAL.search(v):
+            # esc() spells <>&" but cannot rescue a C0 control byte: XML 1.0 forbids those
+            # outright, so writing one produces a file no parser will read. 0 of 11,082 corpus
+            # blocks contain one - and 0 observed is a LOWER BOUND, which is the whole reason
+            # this branch exists rather than a comment saying it cannot happen.
+            bad.append("%s (control characters)" % tag)
+        else:
+            L.append(_block_txt(tag, v, f))
+    L.append("%s</block>" % ind)
+    if bad:
+        L.append("%s<!-- QUARRY DROPPED block field(s): %d not serialised because the decoded "
+                 "value is not one this emitter can spell faithfully (the reason is in "
+                 "brackets; every corpus file holds int, int, str, str, str, str): %s. Omitted, "
+                 "never coerced. -->" % (ind, len(bad), ", ".join(bad)))
+    if unknown:
+        L.append("%s<!-- QUARRY UNRESOLVED block field(s): %d key(s) this emitter has no proven "
+                 "element name for: %s. The proven fields above ARE written. -->"
+                 % (ind, len(unknown), ", ".join(unknown)))
+    return L
+
+
+def ymap_xml(name, entities, meta=None, dropped=None, containers=None, block=None):
+    """`containers` = the decoded CMapData root's non-entity containers (ymap_containers_from);
+    `dropped` = {container: record count} from ymap_dropped_from() for the ones with no renderer;
+    `block` = ymap_block_from(). None means the caller supplied none, which block_xml REPORTS in
+    the file instead of dropping silently - that silence was #32c.
+
+    Omitting containers and dropped - which the round-trip harness does, since it feeds
+    reference-PARSED dicts that never carried these containers - keeps the old all-empty
+    behaviour, so that gate still measures exactly what it measured before."""
     m = meta or {}
     c = containers or {}
     L = ['<?xml version="1.0" encoding="UTF-8"?>', "<CMapData>"]
@@ -1944,6 +2045,7 @@ def ymap_xml(name, entities, meta=None, dropped=None, containers=None):
             L += list(lines)                              # honestly empty (or nothing decoded)
             continue
         L += render(c.get(cname))
+    L += block_xml(block)                     # LAST child of CMapData in 25 of 25 references
     L.append("</CMapData>")
     return "\n".join(L) + "\n"
 
@@ -2289,7 +2391,8 @@ def convert_bytes(blob, stem, names=None):
                          ytyp_dropped_from(root, w)), "ytyp", w)
     if root_name == "CMapData":
         return (ymap_xml(root.get("name") or stem, entities_from(root), ymap_meta_from(root),
-                         ymap_dropped_from(root, w), ymap_containers_from(root)), "ymap", w)
+                         ymap_dropped_from(root, w), ymap_containers_from(root),
+                         ymap_block_from(root)), "ymap", w)
     if root_name == "CScenarioPointRegion":
         return scenario_xml(scenario_from(root)), "ymt", w
     raise UnsupportedRoot(root_name)
