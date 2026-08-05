@@ -665,8 +665,21 @@ def file_into(out_root, slot, name, blob, stats=None, skip_existing=False):
             # `collisions: 0`, because the collision path never ran. Resume may only skip a file
             # whose bytes we would have written anyway; anything else falls through to the
             # collision path and is kept as ~N and counted.
+            # ⛔ AND 'SAME LENGTH' IS NOT 'SAME BYTES' (fixed 2026-08-05). The rule three lines up is
+            # already correct - resume may only skip a file whose bytes we would have written anyway -
+            # but the test only compared os.path.getsize() to len(blob), so two genuinely different
+            # assets that happen to be the same size read as "already present" and the loser was
+            # dropped without ever reaching the collision path or the counter. MEASURED exposure on
+            # the ped lane: 128 of 1,060 ytd collision groups (177 files) hold content-distinct
+            # manifests sharing a byte length - e.g. accs_diff_000_b_uni, 20 files, 5 distinct sha256
+            # across only 2 distinct sizes. That is the silent-drop class, and a size check cannot
+            # see it. Compare the CONTENT; the size check stays only as the cheap reject that keeps
+            # the read off the common path.
             try:
                 same = os.path.getsize(target) == len(blob)
+                if same:
+                    with open(target, 'rb') as _f:
+                        same = _f.read() == blob
             except OSError:
                 same = False
             if same:
