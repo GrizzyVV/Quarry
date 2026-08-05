@@ -2633,6 +2633,8 @@ REGRESS_META_TYPES = ('ytyp', 'ymap', 'ymt')
 # non-META file out of the error list, where it would fail the gate on every run forever.
 _NON_META_YMT_MAGIC = (b'PSIN', b'RBF0')
 REGRESS_NAMES_KEY = 'meta:_names_table'
+# Pinned-witness directory, relative to the project root. See _regress_pinned_fixtures.
+REGRESS_PINNED = '_pinned'
 
 
 def _regress_fixtures(root, per_type, seed):
@@ -2717,6 +2719,69 @@ def _regress_meta_fixtures(root, per_type, seed):
     return out
 
 
+def _regress_pinned_fixtures(root):
+    """⛔⛔ FIXTURES THE SAMPLER CANNOT REACH, BECAUSE A SAMPLE CANNOT GUARANTEE COVERAGE.
+
+    THE DEFECT (#32d, 2026-08-05): the whole `occludeModels` emitter shipped under a green
+    "OK - no churn" the gate was structurally incapable of producing. Of the 67 ymap in
+    B:/RUDE_Fixtures exactly 2 carry an occluder, and the seeded 25-file sample drew NEITHER, so
+    the baseline could not move and nothing was blessed. The change had to be proven by hand
+    instead, by swapping the emitter out at runtime.
+
+    ⛔ RAISING --per-type IS NOT THE FIX. Past the population size the sample re-rolls, and a
+    previously-blessed fixture that falls out becomes a "no longer in the sample" NOTE that does
+    not fail the run - i.e. turning the dial up silently removes coverage.
+
+    THE FIX: a directory of hand-chosen carriers that is UNIONED with the sample and never
+    sampled from. `<project>/_pinned/<type>/*.<type>`.
+
+    ⭐ WHY `_pinned` SITS OUTSIDE THE SLOTS, which is the part that makes this safe: every other
+    reader here walks precedence_slots() - `_regress_fixtures`, `_regress_meta_fixtures` and
+    `load_names` all do - and NONE of them looks at a directory that is not 00_base / 10_update /
+    20_dlc/<manifest pack>. So adding a pinned witness cannot change which files the random
+    sample draws (random.sample re-rolls when its population changes) and cannot change the size
+    of the joaat names table (which is itself an input to every meta signature). Pinning is
+    therefore additive by construction: it can only ever ADD coverage, never disturb what is
+    already blessed. Dropping these files into 00_base instead would have re-rolled the sample
+    and demoted blessed fixtures - the exact trap above, self-inflicted.
+    """
+    out = []
+    base = os.path.join(root, REGRESS_PINNED)
+    if not os.path.isdir(base):
+        return out
+    for t in REGRESS_TYPES + REGRESS_META_TYPES:
+        d = os.path.join(base, t)
+        if not os.path.isdir(d):
+            continue
+        out += [os.path.join(d, f) for f in sorted(os.listdir(d))
+                if f.lower().endswith('.' + t)]
+    return out
+
+
+def _regress_witness_report(pinned):
+    """(covered, missing) for the ymap container topics, off the PINNED binaries only.
+
+    Deliberately not computed over the sampled fixtures: a topic that happens to be represented
+    by this seed's draw is not coverage, it is luck, and luck is what #32d was. The topic list
+    comes from meta2xml so a new renderer extends this report automatically.
+    """
+    import meta2xml
+    covered = {}
+    for p in pinned:
+        if not p.lower().endswith('.ymap'):
+            continue
+        try:
+            topics = meta2xml.ymap_witness_of(p)
+        except Exception as ex:
+            covered.setdefault('!' + os.path.basename(p), []).append(
+                f'{type(ex).__name__}: {ex}')
+            continue
+        for t in topics:
+            covered.setdefault(t, []).append(os.path.basename(p))
+    missing = [t for t in meta2xml.YMAP_WITNESS_TOPICS if t not in covered]
+    return covered, missing
+
+
 def _regress_meta_signature(path, names):
     """(kind, xml sha256) for one ytyp/ymap/ymt, through meta2xml.convert - the same call cmd_meta
     makes, with the same names table, so the gate measures what `quarry meta` would actually write.
@@ -2757,6 +2822,15 @@ def cmd_regress(a):
     records the SIZE of the joaat names table it ran with, because that table is an input to the
     emitted XML.
 
+    ⭐ PLUS A THIRD, UNSAMPLED SET: PINNED WITNESSES (`<project>/_pinned/<type>/`, keyed
+    `pinned:<type>/<file>`). A random sample proves nothing about a FEATURE that only ~2% of
+    files carry - see _regress_pinned_fixtures for the occludeModels case (#32d) where the gate
+    returned "No churn" over a change rewriting 227 files. Pinned fixtures are unioned with the
+    sample, can never be dropped from it, and the run PRINTS which ymap container topics have a
+    witness and which have none. Under --strict an unwitnessed topic (with no measured exemption
+    in meta2xml.YMAP_TOPICS_WITHOUT_CARRIER) and a vanished pin are both failures, because
+    silence about a container is the defect, not the report.
+
     ⛔ The baseline lives in the project folder and is NEVER committed: it is derived from the
     operator's own install (the same rule as every other artifact here).
     """
@@ -2788,7 +2862,8 @@ def cmd_regress(a):
     elif a.meta_from:
         print(f'STOP - --meta-from {a.meta_from} is not a directory')
         return 2
-    if not fixtures and not meta_fixtures:
+    pinned = _regress_pinned_fixtures(root)
+    if not fixtures and not meta_fixtures and not pinned:
         print(f'STOP - no binary fixtures found under {root}. The gate needs real binaries; a '
               f'--xml extract leaves none for converted types. Extract at least one archive '
               f'WITHOUT --xml first (e.g. --types ydr,ytd --only x64a.rpf).')
@@ -2803,13 +2878,40 @@ def cmd_regress(a):
     for p in fixtures:
         by_type[os.path.splitext(p)[1].lstrip('.').lower()] = \
             by_type.get(os.path.splitext(p)[1].lstrip('.').lower(), 0) + 1
-    for p in meta_fixtures:
+    for p in meta_fixtures + pinned:
         t = os.path.splitext(p)[1].lstrip('.').lower()
         by_type[t] = by_type.get(t, 0) + 1
     covered = ', '.join(f'{t}={by_type[t]}' for t in sorted(by_type))
     blind = [t for t in REGRESS_TYPES + REGRESS_META_TYPES if t not in by_type]
-    print(f'fixtures  : {len(fixtures) + len(meta_fixtures)} binaries (seed {a.seed}, '
-          f'{a.per_type}/type)  [{covered}]')
+    print(f'fixtures  : {len(fixtures) + len(meta_fixtures) + len(pinned)} binaries (seed '
+          f'{a.seed}, {a.per_type}/type + {len(pinned)} pinned)  [{covered}]')
+    # ⛔⛔ THE COVERAGE LINE IS THE WHOLE POINT OF #32d - SILENCE ABOUT A CONTAINER IS THE DEFECT.
+    # Printing "which topics have a witness" turns "the gate said green" into a claim a reader can
+    # check, and printing "which have NONE" is what the previous gate could not do at all.
+    wit_covered, wit_missing = _regress_witness_report(pinned)
+    if pinned:
+        import meta2xml as _m2
+        shown = ', '.join('%s(%d)' % (t, len(wit_covered[t]))
+                          for t in _m2.YMAP_WITNESS_TOPICS if t in wit_covered)
+        print(f'pinned    : {len(pinned)} always-included fixture(s); ymap topics covered: '
+              f'{shown or "NONE"}')
+    unexplained = []
+    if wit_missing:
+        import meta2xml as _m2
+        for t in wit_missing:
+            why = _m2.YMAP_TOPICS_WITHOUT_CARRIER.get(t)
+            if why:
+                print(f'  no witness for {t} - EXEMPT: {why}')
+            else:
+                print(f'  ! NO WITNESS for ymap topic {t} - nothing under gate carries it, so a '
+                      f'change to its emitter would pass unseen (this is defect #32d).')
+                unexplained.append(t)
+    if unexplained and a.strict:
+        print(f'STOP - --strict was requested and {len(unexplained)} ymap topic(s) have no '
+              f'pinned witness: {", ".join(unexplained)}. Pin a carrier under '
+              f'{os.path.join(root, REGRESS_PINNED, "ymap")} (or record a measured exemption in '
+              f'meta2xml.YMAP_TOPICS_WITHOUT_CARRIER).')
+        return 2
     if blind:
         print(f'⚠ BLIND to {"/".join(blind)} - this project holds no binaries of those types, so '
               f'their converters are NOT guarded by this run. A --xml extract leaves no binaries '
@@ -2830,7 +2932,7 @@ def cmd_regress(a):
         except Exception as ex:
             errors[key] = f'{type(ex).__name__}: {ex}'
 
-    if meta_fixtures:
+    if meta_fixtures or pinned:
         import meta2xml
         # ⭐ THE NAMES TABLE IS AN INPUT TO THE OUTPUT, so it is part of what gets compared. A ytyp
         # emits `<assetName>hash_F186ED33</assetName>` or the real name depending ONLY on whether
@@ -2848,6 +2950,19 @@ def cmd_regress(a):
             key = 'meta:' + os.path.relpath(p, meta_root).replace(os.sep, '/')
             try:
                 sigs[key] = _regress_meta_signature(p, names)
+            except Exception as ex:
+                errors[key] = f'{type(ex).__name__}: {ex}'
+        # PINNED fixtures get their own key namespace ('pinned:<type>/<file>') so they can never
+        # be confused with a sampled entry, and so a reader of the baseline can see at a glance
+        # which entries are guaranteed present. They run through the SAME signature functions -
+        # a pin that took a private code path would guard a code path nobody ships.
+        pin_base = os.path.join(root, REGRESS_PINNED)
+        for p in pinned:
+            key = 'pinned:' + os.path.relpath(p, pin_base).replace(os.sep, '/')
+            t = os.path.splitext(p)[1].lstrip('.').lower()
+            try:
+                sigs[key] = (_regress_meta_signature(p, names) if t in REGRESS_META_TYPES
+                             else _regress_signature(p))
             except Exception as ex:
                 errors[key] = f'{type(ex).__name__}: {ex}'
 
@@ -2925,6 +3040,17 @@ def cmd_regress(a):
     if missing:
         print(f'\n! {len(missing)} baseline fixture(s) are no longer in the sample (corpus '
               f'changed?): ' + ', '.join(missing[:4]) + (' ...' if len(missing) > 4 else ''))
+    # ⛔ A PIN THAT VANISHES IS NOT A NOTE. A sampled fixture can legitimately fall out of the
+    # draw, which is why `missing` above is only a warning - but a PINNED fixture is in the
+    # baseline precisely because something needs a permanent witness, so its disappearance is the
+    # silent-demotion trap #32d is about, one directory over. It fails.
+    lost_pins = sorted(k for k in missing if k.startswith('pinned:'))
+    if lost_pins:
+        print(f'\nSTOP - {len(lost_pins)} PINNED witness fixture(s) in the baseline are gone from '
+              f'{os.path.join(root, REGRESS_PINNED)}: ' + ', '.join(lost_pins[:6])
+              + (' ...' if len(lost_pins) > 6 else '')
+              + '\n  A pin is a permanent witness; losing one silently removes the coverage it '
+                'was added for. Restore the file, or drop its baseline entry on purpose.')
     if new:
         print(f'! {len(new)} fixture(s) have no baseline entry yet: ' + ', '.join(new[:4])
               + (' ...' if len(new) > 4 else ''))
@@ -2940,7 +3066,7 @@ def cmd_regress(a):
               + (f' --meta-from "{a.meta_from}"' if a.meta_from else '')
               + ' --bless --reason "record baseline for <what these cover>"')
         return 2
-    if changed or errors:
+    if changed or errors or lost_pins:
         return 1
     print('\nOK - every fixture produced byte-identical output. No churn.')
     return 0

@@ -213,6 +213,14 @@ SCHEMA_NAMES = (
     "archetypeName", "guid", "position", "rotation", "scaleXY", "scaleZ", "parentIndex",
     "childLodDist", "lodLevel", "numChildren", "priorityLevel",
     "ambientOcclusionMultiplier", "artificialAmbientOcclusion", "tintValue",
+    # CMapData/block - the export-provenance struct every CMapData ends with. Same proof standard
+    # as everything above: each name is an EXACT case-sensitive joaat preimage of the nameHash the
+    # binary descriptor stores - block E433D77D, version 68C27E33, exportedBy 76350055,
+    # owner 8C060170, time 0F678E23 (flags/name were already in this table). NOTHING guessed.
+    # BLAST RADIUS OF ADDING THEM, measured before the edit, because SCHEMA_NAMES renames tags
+    # GLOBALLY: all five hashes grepped across every emitted .ytyp.xml / .ymt.xml / .ymap.xml in
+    # F:/RUDE_Filebase_v2/_resolved -> 0 files each. No other lane spells these hashes.
+    "block", "version", "exportedBy", "owner", "time",
     # enum members - measured from the corpus census, so the symbolic strings are reproducible
     "ASSET_TYPE_UNINITIALIZED", "ASSET_TYPE_FRAGMENT", "ASSET_TYPE_DRAWABLE",
     "ASSET_TYPE_DRAWABLEDICTIONARY", "ASSET_TYPE_ASSETLESS",
@@ -1826,6 +1834,79 @@ def ymap_dropped_from(root, w=None):
         w.warn["DROPPED ymap container instancedData/PropInstanceList "
                "(emitter does not serialise it)"] += len(props)
     return out
+
+
+# ---------------------------------------------------------------- witness coverage (churn gate)
+#
+# ⛔⛔ WHY THIS LIVES HERE AND NOT IN THE GATE (#32d, 2026-08-05). The churn gate shipped the
+# ENTIRE occludeModels emitter under a green "No churn" it could not have produced: only 2 of the
+# 67 ymap in B:/RUDE_Fixtures carry an occluder and the 25-file random sample drew NEITHER, so the
+# baseline could not move. A random per-type sample cannot guarantee that any given CONTAINER is
+# represented, and raising --per-type does not fix it (past the population size the sample
+# re-rolls and silently demotes previously-blessed fixtures without failing).
+# The fix is PINNED WITNESSES, and the list of things needing a witness belongs to the module that
+# owns the containers: add a renderer to CONTAINER_EMITTERS and this tuple grows with it, so the
+# gate's coverage report can never quietly fall behind the emitter.
+#
+# `block` is a topic here even though it is not a container: it is a CMapData child the emitter is
+# responsible for, and it is the very next thing that was found being dropped (#32c).
+YMAP_WITNESS_TOPICS = tuple(c for c, _l in EMPTY_CONTAINERS) + ("block",)
+
+# Topics for which NO witness can exist, each with the measurement that says so. An entry here is
+# an exemption from "every topic needs a carrier under gate" and therefore has to carry its
+# receipt; anything NOT here and NOT witnessed is a gate FAILURE, not a note.
+YMAP_TOPICS_WITHOUT_CARRIER = {
+    "containerLods": "0 populated in all 11,084 _resolved ymap binaries (2026-08-05 census); "
+                     "the struct is never registered in any ymap schema table",
+}
+
+# The six proven CMapData/block fields, in the reference's child order (25 of 25 exports agree,
+# and it is also the binary descriptor order). Kinds: val = `value=` attribute, txt = element
+# text. The RENDERER is #32c; this tuple is here because the gate needs the field list to answer
+# "is this block populated" without knowing how to write one.
+BLOCK_FIELDS = (("version", "val"), ("flags", "val"), ("name", "txt"),
+                ("exportedBy", "txt"), ("owner", "txt"), ("time", "txt"))
+
+
+def ymap_block_from(root):
+    """The decoded `block` struct, or {} when the binary carries none.
+
+    {} and None mean DIFFERENT things downstream and the difference is the point: {} is "this
+    binary has no block struct" (never observed - 0 of 11,082 - but a census is a lower bound),
+    None is "the caller never supplied one"."""
+    b = root.get("block")
+    return b if isinstance(b, dict) else {}
+
+
+def block_populated(blk):
+    """Whether a block carries anything a reader could tell apart from the all-empty form.
+
+    ⛔ This is the predicate that proves the "always empty" claim FALSE. Measured over all 11,084
+    _resolved ymap binaries (2026-08-05): name 1,406 | exportedBy 1,406 | time 1,406 |
+    version 912 | flags 928 are non-empty. The register's "observed empty in all 5 reference
+    files" was a LOWER BOUND read off five files, and 4 of Matt's 25 references contradict it."""
+    if not isinstance(blk, dict):
+        return False
+    return any(blk.get(t) for t, _k in BLOCK_FIELDS)
+
+
+def ymap_witnessed(root):
+    """Which YMAP_WITNESS_TOPICS this decoded CMapData can actually TESTIFY about."""
+    out = set()
+    for cname, _l in EMPTY_CONTAINERS:
+        if container_has_content(cname, root.get(cname)):
+            out.add(cname)
+    if block_populated(ymap_block_from(root)):
+        out.add("block")
+    return out
+
+
+def ymap_witness_of(path):
+    """ymap_witnessed() for a file on disk; empty set for anything that is not a CMapData."""
+    with open(path, "rb") as fh:
+        w = Walker(MetaFile(fh.read()))
+    root_name, root = w.root()
+    return ymap_witnessed(root) if root_name == "CMapData" else set()
 
 
 def ymap_xml(name, entities, meta=None, dropped=None, containers=None):
