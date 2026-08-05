@@ -29,6 +29,7 @@ mis-authors a normal map as sRGB colour, which is worse than an honest UNKNOWN. 
 table by measuring against real files, never by assuming.
 """
 import argparse
+import collections
 import os
 import struct
 import sys
@@ -163,6 +164,24 @@ def dds_header(w, h, mips, fmt, blk, bpp):
 
 
 # ---------------------------------------------------------------- dictionary
+# Refused TEXTURES, counted so the gap is never silent. Same idiom as ydr2xml.REFUSALS: the key is
+# the CLASS of refusal (so a new unmapped format shows up as its own line with a count), the detail
+# names one example. A caller that wants to report them reads TEXTURE_REFUSALS.
+TEXTURE_REFUSALS = collections.Counter()
+TEXTURE_REFUSAL_EXAMPLE = {}
+
+
+def _refuse_texture(err):
+    msg = str(err)
+    key = ("unmapped_format" if "unmapped" in msg
+           else "pixel_pointer_out_of_bounds" if "pixel pointer" in msg
+           else "mip0_does_not_fit" if "not even mip 0" in msg
+           else "texture_pointer_out_of_bounds" if "pointer is out of bounds" in msg
+           else "other")
+    TEXTURE_REFUSALS[key] += 1
+    TEXTURE_REFUSAL_EXAMPLE.setdefault(key, msg)
+
+
 def read_textures(res, base=0):
     """pgDictionary<grcTexture> -> one dict per texture, pixels sliced out.
 
@@ -181,6 +200,26 @@ def read_textures(res, base=0):
 
     out = []
     for i in range(count):
+        # ONE BAD TEXTURE MUST NOT COST THE WHOLE DICTIONARY (fixed 2026-08-05). Every raise in this
+        # loop used to escape read_textures, so texture N's unmapped format also threw away textures
+        # 1..N-1 that had already decoded correctly. MEASURED cost of the shape: D3DFMT enum 25
+        # (A1R5G5B5) was a single unmapped value and it took `prop_muster_b1`'s ENTIRE dictionary with
+        # it - and by the catalogue-is-a-lower-bound law there will be more such values, because
+        # "never observed" describes our sample and not the format.
+        # ⛔ The refusal itself is KEPT, and deliberately: guessing a pixel format silently produces
+        # garbage, and a wrong texture is worse than an absent one. What changes is the BLAST RADIUS -
+        # refuse the texture, count it, keep the dictionary. Callers read `refused` to report it, so
+        # this is a counted gap and never a silent one.
+        try:
+            out.append(_read_one_texture(res, ptr_arr, i))
+        except ValueError as e:
+            _refuse_texture(e)
+    return out
+
+
+def _read_one_texture(res, ptr_arr, i):
+    """One grcTexture -> its dict. Raises ValueError; read_textures turns that into a counted skip."""
+    if True:
         buf2, tp = res.deref(res.u32(ptr_arr + i * 8), 0x90)
         if buf2 is None:
             raise ValueError(f"texture {i} pointer is out of bounds")
@@ -210,11 +249,10 @@ def read_textures(res, base=0):
                 raise ValueError(f"texture {name!r}: not even mip 0 fits the payload")
             need = keep
 
-        out.append(dict(name=name, width=w, height=h, mips=mips, fmt=fmt, xml_fmt=xml_fmt,
-                        usage=USAGE_BY_CODE.get(res.u32(tp + 0x40) & 0x1F, "UNKNOWN"),
-                        usage_code=res.u32(tp + 0x40) & 0x1F,
-                        dds=dds_header(w, h, mips, fmt, blk, bpp) + bytes(pbuf[po:po + need])))
-    return out
+        return dict(name=name, width=w, height=h, mips=mips, fmt=fmt, xml_fmt=xml_fmt,
+                    usage=USAGE_BY_CODE.get(res.u32(tp + 0x40) & 0x1F, "UNKNOWN"),
+                    usage_code=res.u32(tp + 0x40) & 0x1F,
+                    dds=dds_header(w, h, mips, fmt, blk, bpp) + bytes(pbuf[po:po + need]))
 
 
 def to_xml(textures):
