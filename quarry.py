@@ -615,6 +615,17 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
         import ydr2xml, ywr2xml
         return stem + '.ywr.xml', ywr2xml.ywr_to_xml(
             ydr2xml.Res.from_bytes(blob)).encode('utf-8'), ()
+    if blob[:4] == b'RBF0':
+        # RBF0 = RAGE's OLDER binary-XML container - unrelated to META/PSO and NOT an RSC7
+        # resource (magic sits at byte 0). Self-delimiting depth-first record stream: u16
+        # token = 0xFFFF END / 0xFFFD TEXT / else (type=tok>>12, nameIndex=tok&0x0FFF) with
+        # an IMPLICIT name table (first use of an index carries the name inline). Derived in
+        # rbf2xml; 71/71 game binaries parse to the exact final byte with a balanced stack.
+        # the reference exporter keeps a ".rbf" infix exactly as it keeps ".pso" for a PSIN container.
+        import rbf2xml
+        ext = type_of(name) or 'rbf'
+        return ('%s.%s.rbf.xml' % (stem, ext),
+                rbf2xml.convert(name, blob, names=names).encode('utf-8'), ())
     if t == 'fxc':
         # rage compiled shader effect ('rgxe'). the reference exporter does NOT inline the DXBC bytecode: each
         # shader becomes a "<stem>/<ShaderName>.cso" sidecar the XML points at via <File>.
@@ -652,9 +663,13 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
         return name, bytes(r.sys) + bytes(r.gfx or b''), ()
     if t == 'ymf' or (blob[:4] == b'PSIN'):
         # PSO ('PSIN') container -> reference-identical XML via the generic pso2xml
-        # (schema-driven from the file's own PSCH; 38/38 ymf byte-identical, 2026-08-06).
+        # (schema-driven from the file's own PSCH). MEASURED 2026-08-06 against the oracle
+        # set: 38/38 ymf + 2/2 pso + 3/3 PSIN-ymt byte-identical.
         # Name-carrying hash fields (imapName/itypName/Bounds) resolve via the same joaat
         # names dict export already holds; the reference exporter output filename keeps its .pso infix.
+        # The last 3 ymf (venice/cityhills_02/cityhills_03 _metadata) closed on ONE string
+        # the filename index cannot reverse - see pso2xml.token_names(); its hits are
+        # counted into stats, never silent.
         import pso2xml
         xml, warn = pso2xml.pso_to_xml(blob, names=names)
         for k, n in (warn or {}).items():
@@ -1136,8 +1151,14 @@ def cmd_meta(a):
                     # count them apart from real failures or the summary cries wolf on every
                     # run. Measured over update.rpf (733 ymt, 2026-07-31): 634 PSO ('PSIN',
                     # the sp_manifest class - see pso_manifest.py) and 35 RBF ('RBF0', the
-                    # old binary-XML container, all bink_cnt_* video metadata - no reader
-                    # here and nothing map-relevant inside).
+                    # old binary-XML container).
+                    # ⛔ CORRECTED 2026-08-06: this used to claim the RBF ymts were "all
+                    # bink_cnt_* video metadata - nothing map-relevant inside". WRONG on both
+                    # counts. Over 71 RBF0 binaries measured: 40 are CMapTypes composite-
+                    # entity-type manifests under levels/gta5/destruction (lodDist, bbMin/
+                    # bbMax, bsCentre, animations, particle effects = squarely map data), 31
+                    # are CMovieSubtitleContainer. They ARE readable now (rbf2xml); this pass
+                    # still counts-and-skips only because they are not META, like PSIN above.
                     with open(src, 'rb') as fh:
                         magic = fh.read(4)
                     if magic == b'PSIN':
@@ -2893,12 +2914,21 @@ def cmd_export(a):
                     kept_binary += 1
                     continue
                 if kind == 'ymt' and blob[:4] == b'RBF0':
-                    # RBF0 = old binary-XML container, a different format with no reader
-                    # here - kept binary, counted, never guessed.
+                    # an RBF0 .ymt is the old binary-XML container, not META - route it
+                    # through rbf2xml. the reference exporter names it <stem>.ymt.rbf.xml.
+                    conv = to_interchange_xml(name, blob,
+                                              getattr(a, 'textures', 'both'),
+                                              stats, names=names)
+                    if conv is not None:
+                        xml_name, xml_bytes, _extras = conv
+                        with open(os.path.join(out_dir, xml_name), 'wb') as fh:
+                            fh.write(xml_bytes)
+                        ok += 1
+                        print(f'  {entry} -> {xml_name}')
+                        continue
                     with open(os.path.join(out_dir, name), 'wb') as fh:
                         fh.write(blob)
                     kept_binary += 1
-                    print(f'  {name}: RBF0 container - kept binary (counted; not META)')
                     continue
                 stem = name[:-(len(kind) + 1)]
                 xml, got_kind, w = meta2xml.convert_bytes(blob, stem, names)
