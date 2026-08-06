@@ -405,6 +405,12 @@ def preset_name(hash32):
     global _SHADERS
     if _SHADERS is None:
         _SHADERS = _load_name_table("joaat_shaders.json", required=True)
+        # oracle-derived preset names (2026-08-06): presets the 216-name table lacks
+        # but the reference exports SPELL (clouds_animsoft etc.) - the oracle is the
+        # spec, so its own strings are first-class vocabulary
+        osn = _load_name_table("oracle_shader_names.json", required=False) or {}
+        for n in osn.get("names", []):
+            _SHADERS.setdefault("0x%08x" % _joaat(n.lower()), n)
     nm = _SHADERS.get("0x%08x" % hash32)
     if nm:
         return nm
@@ -432,6 +438,14 @@ def sps_filename(hash32, preset):
     if _SPS is None:
         tab = _load_name_table("joaat_shaders.json", required=True)
         _SPS = {joaat(n + ".sps"): n + ".sps" for n in tab.values()}
+        osn = _load_name_table("oracle_shader_names.json", required=False) or {}
+        for fn in osn.get("filenames", []):
+            _SPS.setdefault(joaat(fn), fn)
+        for n in osn.get("names", []):
+            _SPS.setdefault(joaat(n + ".sps"), n + ".sps")
+    if hash32 == 0:
+        # measured (farlods default shader): a zero sps hash spells <FileName />
+        return ""
     got = _SPS.get(hash32)
     if got is None:
         _refuse("sps_filename_unresolved", "%s: 0x%08X" % (preset, hash32))
@@ -525,6 +539,14 @@ def value_param_name(hash32):
         gen = _load_name_table("shader_param_names.json", required=False)
         for _h, _n in (gen or {}).items():
             _VALUE_PARAMS.setdefault(int(_h, 16), _n)
+        # ORACLE CASING OVERLAY (2026-08-06): joaat is case-insensitive but the emitted
+        # TEXT is not - the reference spells HardAlphaBlend/dirtColor where the
+        # fxc-derived table had drifted case. The 113 param spellings observed across
+        # the oracle set override any same-hash entry; the oracle IS the spec.
+        cased = _load_name_table("oracle_param_casing.json", required=False)
+        if isinstance(cased, list):
+            for _n in cased:
+                _VALUE_PARAMS[_joaat(_n.lower())] = _n
     nm = _VALUE_PARAMS.get(hash32)
     if nm:
         return nm
@@ -566,6 +588,11 @@ def sampler_name(hash32):
                 _SAMPLERS.setdefault(int(k, 16), n)
             except (TypeError, ValueError):
                 pass
+        # oracle casing overlay - see value_param_name; same rule, same source
+        cased = _load_name_table("oracle_param_casing.json", required=False)
+        if isinstance(cased, list):
+            for n in cased:
+                _SAMPLERS[_joaat(n.lower())] = n
     nm = _SAMPLERS.get(hash32)
     if nm:
         return nm
@@ -689,8 +716,10 @@ def read_shaders(res, base=0):
         npar, bucket = w10 & 0xFF, (w10 >> 8) & 0xFF
         dsize = res.u16(bo + 0x14)
         tbl_p = res.u32(bo + 0x00)
-        texs = []
-        vals = []
+        # ordered param list, BINARY ENTRY ORDER - the oracle interleaves texture and
+        # vector items exactly as the parameter table stores them (wheel2: dirtColor
+        # vector sits between samplers); split texs/vals lists destroyed that order
+        params = []
         # max npar measured in the lane is 32; clamp keeps a corrupt count from walking off.
         # A texture is any class-0 entry whose stub derefs, whose type word's low u16 is 1,
         # and whose +0x28 name is printable - unbound slots (NULL ptr) simply do not emit.
@@ -723,13 +752,17 @@ def read_shaders(res, base=0):
                                     "value_param_data_NULL",
                                     "%s: %s" % (preset, value_param_name(hashes[pi])))
                             continue
-                        vals.append((value_param_name(hashes[pi]),
-                                     [struct.unpack_from("<4f", vbuf, vo + k * 16)
-                                      for k in range(cls)]))
+                        params.append(("vec", value_param_name(hashes[pi]),
+                                       [struct.unpack_from("<4f", vbuf, vo + k * 16)
+                                        for k in range(cls)]))
                         continue
                     sp = struct.unpack_from("<I", tbuf, to + pi * 16 + 8)[0]
                     if sp == 0:
-                        continue                      # unbound sampler slot - the normal shape
+                        # unbound sampler slot: the oracle spells it as a SELF-CLOSING
+                        # texture Item (task_000_u TextureSamplerDiffPal) - skipping it
+                        # was a real omission, and order is the binary entry order
+                        params.append(("tex", sampler_name(hashes[pi]), None))
+                        continue
                     sbuf, so = res.deref(sp, 0x34)
                     if sbuf is None:
                         _refuse("texture_stub_unresolved", "%s: 0x%08x" % (preset, sp))
@@ -742,11 +775,11 @@ def read_shaders(res, base=0):
                     if not (nm and all(31 < ord(ch) < 127 for ch in nm)):
                         _refuse("texture_name_unusable", "%s: %r" % (preset, nm[:24]))
                         continue
-                    texs.append((sampler_name(hashes[pi]), nm))
+                    params.append(("tex", sampler_name(hashes[pi]), nm))
         elif npar:
             _refuse("shader_param_header_implausible",
                     "%s: npar=%d dsize=%d" % (preset, npar, dsize))
-        out.append((preset, spsfn, bucket, texs, vals))
+        out.append((preset, spsfn, bucket, params))
     return out
 
 
@@ -1372,30 +1405,36 @@ def drawable_lines(res, name, base=0, allow_empty=False):
         # the default material.
         if res.ptr(base + 0x10):
             _refuse("shader_group_yielded_nothing_default_substituted", name)
-        shaders = [("default", "default.sps", 0, [], [])]
+        # FileName "" -> <FileName /> : the only oracle-observed default-shader spelling
+        # (farlods.ydd) carries an EMPTY FileName, not "default.sps"
+        shaders = [("default", "", 0, [])]
     # Shader item shape measured against the 2026-08-05 oracle set: FileName after Name
     # (the +0x18 hash - NOT derivable from the name, see sps_filename); texture params
     # as a 3-line Item; single-float4 value params INLINE as attributes; multi-row
     # params as type="Array" with <Value> children. `count=` is never spelled (0
     # occurrences corpus-wide).
-    for preset, spsfn, bucket, texs, vals in shaders:
+    for preset, spsfn, bucket, params in shaders:
         L.append("   <Item>")
         L.append("    <Name>%s</Name>" % esc(preset))
-        L.append("    <FileName>%s</FileName>" % esc(spsfn))
+        L.append("    <FileName>%s</FileName>" % esc(spsfn) if spsfn
+                 else "    <FileName />")
         L.append('    <RenderBucket value="%d" />' % bucket)
         L.append("    <Parameters>")
-        for sampler, t in texs:
-            L.append('     <Item name="%s" type="Texture">' % sampler)
-            L.append("      <Name>%s</Name>" % esc(t))
-            L.append("     </Item>")
-        for pname, rows in vals:
-            if len(rows) == 1:
-                x, y, z, wv = rows[0]
+        for kind, pname, payload in params:
+            if kind == "tex":
+                if payload is None:      # unbound sampler slot - oracle self-closing form
+                    L.append('     <Item name="%s" type="Texture" />' % pname)
+                else:
+                    L.append('     <Item name="%s" type="Texture">' % pname)
+                    L.append("      <Name>%s</Name>" % esc(payload))
+                    L.append("     </Item>")
+            elif len(payload) == 1:
+                x, y, z, wv = payload[0]
                 L.append('     <Item name="%s" type="Vector" x="%s" y="%s" z="%s" w="%s" />'
                          % (pname, ff(x), ff(y), ff(z), ff(wv)))
             else:
                 L.append('     <Item name="%s" type="Array">' % pname)
-                for (x, y, z, wv) in rows:
+                for (x, y, z, wv) in payload:
                     L.append('      <Value x="%s" y="%s" z="%s" w="%s" />'
                              % (ff(x), ff(y), ff(z), ff(wv)))
                 L.append("     </Item>")

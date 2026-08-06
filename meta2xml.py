@@ -2554,8 +2554,12 @@ def load_names_from_stems(filenames):
                 for n in range(100):
                     _cand("%s_%d_lod" % (b, n))
                     _cand("%s_%02d_lod" % (b, n))
-        if "_" in s:
-            _cand(s.split("_", 1)[1])
+        # ⛔ the DLC-prefix-strip rule (s.split("_",1)[1]) was REMOVED 2026-08-06: its
+        # only 3 measured hits were nested-archive basenames already supplied by the
+        # archive-stems source, and at 3.6M-candidate scale it produced a confident
+        # WRONG resolution the oracle spells as a hash (hash_7E996CAC ->
+        # 'obankwindemovly008' in hei_heist_ornate_bank) - an over-resolution is a
+        # parity break exactly like an under-resolution.
         for c in "abcdefghij":
             _cand(s + "_s2" + c)
     if collisions:
