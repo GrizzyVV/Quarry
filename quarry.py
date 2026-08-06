@@ -323,10 +323,31 @@ class Rpf:
                 dec = self._ng(bytes(raw), e['name'], size)
                 span, how = _deflate_span(dec), 'ng'
                 if span is None or span[1] != want:
+                    # ⭐ 2026-08-06: the RESOURCE path used to raise HERE while blaming Oodle
+                    # in the message - and never actually tried Oodle. `oodle` was threaded in
+                    # and used only by the BINARY branch below, so an Oodle-packed RESOURCE
+                    # could never decode no matter what DLL the operator supplied. Try it now,
+                    # on both the plain and the NG-decrypted body; a page plan gives us an
+                    # exact expected length, so a wrong guess cannot pass silently.
+                    if oodle is not None:
+                        for cand, tag in ((bytes(raw), 'oodle'), (dec, 'oodle-ng')):
+                            try:
+                                out = oodle(cand, want)
+                            except Exception:
+                                continue
+                            if out is not None and len(out) == want:
+                                e['_how'] = tag
+                                sysf, gfxf = e['usize'], e['gfx']
+                                version = ((((sysf >> 28) & 0xF) << 4)
+                                           | ((gfxf >> 28) & 0xF))
+                                return (struct.pack('<4sIII', b'RSC7', version, sysf, gfxf)
+                                        + out)
                     raise ValueError(
                         f'resource body does not inflate to its RSC7 page plan ({want} B) '
-                        'either plain or NG-decrypted - refusing to write it (unknown '
-                        'compression, e.g. Oodle-packed resource, or a bad length)')
+                        'either plain, NG-decrypted, or via Oodle'
+                        + ('' if oodle is not None else
+                           ' (NO OODLE DLL BOUND - pass --oodle oo2core_*_win64.dll)')
+                        + ' - refusing to write it')
                 raw = memoryview(dec)
             body = bytes(raw[:span[0]])
             e['_how'] = how
