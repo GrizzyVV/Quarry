@@ -615,6 +615,28 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
         import ydr2xml, ywr2xml
         return stem + '.ywr.xml', ywr2xml.ywr_to_xml(
             ydr2xml.Res.from_bytes(blob)).encode('utf-8'), ()
+    if t == 'fxc':
+        # rage compiled shader effect ('rgxe'). the reference exporter does NOT inline the DXBC bytecode: each
+        # shader becomes a "<stem>/<ShaderName>.cso" sidecar the XML points at via <File>.
+        import fxc2xml
+        return (stem + '.fxc.xml', fxc2xml.convert(name, blob).encode('utf-8'),
+                fxc2xml.sidecars(name, blob))
+    if t == 'mrf':
+        # MoVE network (.mrf) -> reference-identical XML.
+        import mrf2xml
+        return stem + '.mrf.xml', mrf2xml.convert(name, blob, names=names).encode('utf-8'), ()
+    if t == 'rel':
+        # .rel audio config. RelError = an UNMEASURED family/type: a COUNTED refusal
+        # (None == "no converter yet"), never a guessed export.
+        import rel2xml
+        try:
+            return (stem + '.rel.xml',
+                    rel2xml.convert(name, blob, names=names, stats=stats).encode('utf-8'), ())
+        except rel2xml.RelError as ex:
+            if stats is not None:
+                stats['rel refused - unmeasured family/type'] = \
+                    stats.get('rel refused - unmeasured family/type', 0) + 1
+            return None
     if t == 'ybd':
         # A .ybd is a pgDictionary of phBound - and the reference exporter has NO XML export for it,
         # so its "export" is a RAW dump of the DECOMPRESSED resource, not the stored file.

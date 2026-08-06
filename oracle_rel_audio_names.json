@@ -1,0 +1,23 @@
+{
+"_provenance": "audio names the reference exporter .rel (dat149) oracle resolves - vehicle audio settings, scanner params and weapon/sound names. NOT asset filenames and NOT present in GTA5.exe or in any .rel name table (all four probes grepped 2026-08-06), so the manifest-derived joaat registry cannot reverse them; each string is spelled by the oracle itself and joaat-verified, same rule as oracle_ped_audio_names.json",
+"names": [
+"bifta",
+"bifta_engine",
+"bifta_granular_engine",
+"bifta_scanner_params",
+"kalahari",
+"kalahari_engine",
+"kalahari_granular_engine",
+"kalahari_scanner_params",
+"null_sound",
+"paradise",
+"paradise_engine",
+"paradise_scanner_params",
+"ptl_sns_npc_master",
+"ptl_sns_player_hi_l",
+"ptl_sns_player_master",
+"silence",
+"w_ptl_sns_npc",
+"w_ptl_sns_player"
+]
+}

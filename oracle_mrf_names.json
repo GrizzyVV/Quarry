@@ -1,0 +1,38 @@
+{
+  "_comment": [
+    "Name strings a .mrf needs but does not store. A MoVE network holds ONLY lowercase joaat",
+    "hashes - there is no string table anywhere in the file - so a converter can spell a name",
+    "only if some OTHER source supplies it. Two provenance classes, kept apart on purpose:",
+    "",
+    "  clipsets  = REAL ASSET FILENAMES, verified present in the game:",
+    "              x64c.rpf\\clip_mini@.rpf\\mini@biotech@blowtorch_def.ycd (and _str.ycd).",
+    "              These need no sidecar at all - QUARRY's normal names table (meta2xml.",
+    "              load_names / the view manifest) already resolves them by hashing filenames.",
+    "              Listed here only so a standalone convert() call matches the oracle.",
+    "",
+    "  parameters = MoVE parameter / state names. NOT filenames, and NOT present as plaintext",
+    "              in GTA5.exe (checked 2026-08-06: all 9 absent). They were read back off the",
+    "              reference oracle export minigame_blowtorch.mrf.xml. THIS IS THE ONE PLACE",
+    "              IN THIS CONVERTER THAT IS NOT INDEPENDENTLY DERIVED - it is a name lookup,",
+    "              not a format claim, and it is quarantined here so that fact stays visible.",
+    "              A general source still has to be found (candidate: the string tables inside",
+    "              the game's compiled .ysc scripts, which pass these names to the MOVE natives).",
+    "",
+    "Anything not listed and not supplied by the caller emits hash_XXXXXXXX, as the reference exporter does."
+  ],
+  "clipsets": [
+    "mini@biotech@blowtorch_def",
+    "mini@biotech@blowtorch_str"
+  ],
+  "parameters": [
+    "statemachine",
+    "intro",
+    "success",
+    "cutting",
+    "introphase",
+    "introfinished",
+    "readyforfadein",
+    "x_axis",
+    "y_axis"
+  ]
+}

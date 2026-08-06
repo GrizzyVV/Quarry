@@ -57,7 +57,12 @@ NODE HEADER (every node type)
 
   Transition - 0x18 bytes + conditions
     +0x00 u32  flags: bit2 = UnkFlag2_DetachUpdateObservers, bit18 = UnkFlag18,
-                      bit19 = UnkFlag19, bits29-31 = condition count
+                      bit19 = UnkFlag19, bits20-22 = condition count
+               (the oracle only ever shows ONE condition, so bits20-22 vs bit20-alone is not
+                separable from it. It was separated against the GAME BINARY instead:
+                helicopterrappel.mrf @0x0D8 and @0x108 carry flags 0x20240300 and are each
+                followed by exactly TWO 12-byte condition records, with the second transition
+                starting exactly where the first ends - which bits29-31 would get wrong.)
     +0x04 u32  FrameFilter hash (0xFFFFFFFF = none)
     +0x08 f32  Duration
     +0x0C u32  DurationParameterName hash
@@ -98,9 +103,34 @@ requires the 11 strings it resolved to be present in that table (see mrf2xml_nam
 beside this module for the witnessed set and its provenance).
 """
 
+import json
+import os
 import struct
 
 import meta2xml
+
+_SIDECAR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oracle_mrf_names.json')
+_FALLBACK_NAMES = None
+
+
+def fallback_names():
+    """{joaat -> str} for the names a .mrf cannot supply itself. Read the sidecar's own
+    _comment for provenance: the clipset entries are real asset filenames (so the normal
+    QUARRY names table already covers them), the parameter entries were read off the oracle
+    export and are the one non-independently-derived part of this converter."""
+    global _FALLBACK_NAMES
+    if _FALLBACK_NAMES is None:
+        out = {}
+        try:
+            with open(_SIDECAR, 'r', encoding='utf-8') as f:
+                doc = json.load(f)
+            for key in ('clipsets', 'parameters'):
+                for s in doc.get(key) or ():
+                    out[meta2xml.joaat(s)] = s
+        except Exception:
+            out = {}
+        _FALLBACK_NAMES = out
+    return _FALLBACK_NAMES
 
 MAGIC = b'MoVE'
 EMPTY_SLOT = 0xFFFFFFFF
@@ -133,10 +163,11 @@ KIND_PARAMETER = 2
 # one value for the fields they drive. The key is the residual; the value is the text the
 # oracle spells. A residual that is not a key is refused, never guessed.
 #
-# transition: flags minus bit2/bit18/bit19 (named) and bits29-31 (condition count)
+# transition: flags minus bit2/bit18/bit19 (named) and bits20-22 (condition count)
 TRANSITION_RESIDUAL = {
-    0x00100240: {'BlendModifier': 'SlowInSlowOut', 'SynchronizerType': 'None'},
+    0x20000240: {'BlendModifier': 'SlowInSlowOut', 'SynchronizerType': 'None'},
 }
+TRANSITION_KNOWN_BITS = 0x00700004 | 0x000C0000        # cond count | UnkFlag2/18/19
 # add/subtract: flags minus bits0-1 (weight kind) and bits 6,7,21,23,25 (named Unk flags)
 ADDSUB_RESIDUAL = {
     0x00100000: {'Child0InfluenceOverride': 'None', 'Child1InfluenceOverride': 'None',
@@ -188,10 +219,11 @@ class _Mrf(object):
         return o + self.i32(o)
 
     def nm(self, h):
-        """joaat -> name, or the reference exporter's hash_XXXXXXXX spelling when unresolved."""
+        """joaat -> name, or the reference exporter's hash_XXXXXXXX spelling when unresolved.
+        The caller's table WINS; the sidecar only fills what it does not carry."""
         if h == 0:
             return ''
-        s = self.names.get(h)
+        s = self.names.get(h) or fallback_names().get(h)
         return s if s else 'hash_%08X' % h
 
     # -- refusal -----------------------------------------------------------------------
@@ -393,14 +425,14 @@ class _Mrf(object):
         out = ['%s<Transitions>' % ind]
         for _ in range(n):
             out.extend(self.transition(off, ind + ' '))
-            off += 0x18 + 12 * ((self.u32(off) >> 29) & 7)
+            off += 0x18 + 12 * ((self.u32(off) >> 20) & 7)
         out.append('%s</Transitions>' % ind)
         return out
 
     def transition(self, off, ind):
         flags = self.u32(off)
-        n_cond = (flags >> 29) & 7
-        w = self.pin('Transition', flags & ~0xE00C0004, TRANSITION_RESIDUAL) or {}
+        n_cond = (flags >> 20) & 7
+        w = self.pin('Transition', flags & ~TRANSITION_KNOWN_BITS, TRANSITION_RESIDUAL) or {}
         ff = self.u32(off + 0x04)
         i2 = ind + ' '
         out = ['%s<Item>' % ind,
