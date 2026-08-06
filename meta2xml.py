@@ -250,6 +250,44 @@ SCHEMA_NAMES = (
     # printing hash_%08X: streaming request lists (*_srl.ymt - cutscene prefetch data,
     # measured: gtao_intro_male_srl/mic_1_mcs_1_srl in update.rpf, 2026-07-31)
     "CStreamingRequestRecord",
+    # ---- CStreamingRequestRecord emitter vocabulary (*_srl.ymt) ---------------------------
+    # struct + field + enum-member names for the two roots wired 2026-08-06. EVERY name below
+    # is an EXACT case-sensitive joaat preimage of a nameHash the binary descriptor stores
+    # (proven by scratchpad/ymt_verify.py over hc_driver.ymt + hs3f_mul_rp2_srl.ymt); the
+    # candidate strings are the ORACLE's own element/attr text - nothing guessed. Six hashes
+    # stay UNRESOLVED on purpose (declared in the emitter): the clothData struct-TYPE 0x85559CF3
+    # and propInfo struct-TYPE 0xAA681042 (their FIELD names resolve; the type names never appear
+    # in the XML), and anchor-enum member 0x27ACDE7D (never used in any oracle sample).
+    "CStreamingRequestFrame", "CStreamingRequestCommonSet",
+    "Frames", "CommonSets", "NewStyle",
+    "AddList", "RemoveList", "PromoteToHDList", "CamPos", "CamDir",
+    "CommonAddSets", "Requests",
+    # ---- CPedVariationInfo emitter vocabulary (ped .ymt, root hash_16760659) ---------------
+    "CPedVariationInfo",
+    "bHasTexVariations", "bHasDrawblVariations", "bHasLowLODs", "bIsSuperLOD",
+    "availComp", "aComponentData3", "aSelectionSets", "compInfos", "propInfo", "dlcName",
+    "CPVComponentData", "CPedSelectionSet", "CComponentInfo",
+    "numAvailTex", "aDrawblData3",
+    "CPVDrawblData", "propMask", "numAlternatives", "aTexData", "clothData",
+    "CPVTextureData", "texId", "distribution", "ownsCloth",
+    "pedXml_audioID", "pedXml_audioID2", "pedXml_expressionMods",
+    "inclusions", "exclusions", "pedXml_vfxComps", "pedXml_flags",
+    "pedXml_compIdx", "pedXml_drawblIdx",
+    "numAvailProps", "aPropMetaData", "aAnchors",
+    "CPedPropMetaData", "audioId", "expressionMods", "texData", "renderFlags",
+    "propFlags", "anchorId", "propId", "stickyness",
+    "CPedPropTexData", "inclusionId", "exclusionId",
+    "CAnchorProps", "props", "anchor",
+    # pedXml_vfxComps enum (0x34B4A664) members - the file-carried table reversed and verified
+    "PV_COMP_INVALID", "PV_COMP_HEAD", "PV_COMP_BERD", "PV_COMP_HAIR", "PV_COMP_UPPR",
+    "PV_COMP_LOWR", "PV_COMP_HAND", "PV_COMP_FEET", "PV_COMP_TEEF", "PV_COMP_ACCS",
+    "PV_COMP_TASK", "PV_COMP_DECL", "PV_COMP_JBIB", "PV_COMP_MAX",
+    # renderFlags bitset (0xFB1CEDD7) members
+    "PRF_ALPHA", "PRF_DECAL", "PRF_CUTOUT",
+    # anchor enum (0xA8F3C93D) members (member 0x27ACDE7D, value 13, stays hash_ - never used)
+    "ANCHOR_HEAD", "ANCHOR_EYES", "ANCHOR_EARS", "ANCHOR_MOUTH", "ANCHOR_LEFT_HAND",
+    "ANCHOR_RIGHT_HAND", "ANCHOR_LEFT_WRIST", "ANCHOR_RIGHT_WRIST", "ANCHOR_HIP",
+    "ANCHOR_LEFT_FOOT", "ANCHOR_RIGHT_FOOT", "ANCHOR_PH_L_HAND", "ANCHOR_PH_R_HAND",
 )
 SCHEMA_BY_HASH = {joaat_case(n): n for n in SCHEMA_NAMES}
 
@@ -391,6 +429,17 @@ T_DATAPTR = 0x59
 # 0/136/200) - it was the source of every `unhandled type 0x40` warning (9 per sweep),
 # i.e. three real strings silently returning None on every composite record.
 T_CHARARRAY = 0x40
+# 0x64 = 16-bit ENUM, rendered SYMBOLICALLY as a single member name (like T_ENUM but a u16
+# slot). 0x63 = 32-bit BITSET, rendered like T_FLAGS (member VALUE = bit index; stored 0 ->
+# empty string, else the set-bit member names). BOTH MEASURED 2026-08-06 on the ped-variation
+# .ymt (root CPedVariationInfo, hash_16760659): pedXml_vfxComps is 0x64 in a 2-byte struct slot
+# whose enum (0x34B4A664) reverses stored 0 -> PV_COMP_HEAD, matching the oracle; renderFlags is
+# 0x63 in a 4-byte slot whose enum (0xFB1CEDD7) reverses stored 1 -> PRF_ALPHA (member value 0 =
+# bit 0), matching the oracle's <renderFlags>PRF_ALPHA</renderFlags> vs <renderFlags /> for 0.
+# Both were previously the source of `unhandled type 0x63/0x64` warns (the fields decoded to
+# None) and appear in NO other lane's binaries - adding them cannot regress ytyp/ymap/ymt.
+T_ENUM_U16 = 0x64
+T_FLAGS_U32B = 0x63
 PRIM = {
     0x01: (1, "?"), 0x10: (1, "b"), 0x11: (1, "B"), 0x12: (2, "h"), 0x13: (2, "H"),
     0x14: (4, "i"), 0x15: (4, "I"), 0x21: (4, "f"), 0x33: (12, "3f"), 0x34: (16, "4f"),
@@ -481,6 +530,10 @@ class Walker:
                 return self.asset_name(struct.unpack_from("<I", buf, o)[0])
             if t in (T_ENUM, T_FLAGS):
                 return self.enum(e, struct.unpack_from("<I", buf, o)[0], t)
+            if t == T_ENUM_U16:                    # 16-bit enum -> single symbolic member
+                return self.enum(e, struct.unpack_from("<H", buf, o)[0], T_ENUM)
+            if t == T_FLAGS_U32B:                  # 32-bit bitset -> T_FLAGS rendering
+                return self.enum(e, struct.unpack_from("<I", buf, o)[0], T_FLAGS)
             if t == T_ENUM_U8:
                 # measured rendering is the raw stored byte (see T_ENUM_U8 above); the enum
                 # table is still consulted so an out-of-table value surfaces as a warn
@@ -2269,6 +2322,192 @@ def scenario_xml(r):
     return "\n".join(L) + "\n"
 
 
+# ---------------------------------------------------------------- ped variation .ymt
+# Two roots the meta lane used to REJECT (UnsupportedRoot) are wired below, 2026-08-06. The
+# Walker already decodes both generically; these emitters render its dict to the oracle's exact
+# XML shape (field order = the binary struct-descriptor order the Walker preserves; indent =
+# one space per depth; helpers reused from the ytyp/ymap/ymt lanes). All element names are the
+# verified SCHEMA_NAMES preimages added above.
+def _inline_ints(tag, vals, indent):
+    """A FIXED-length uint array on ONE line regardless of count. availComp is 12 bytes and
+    scalar_list would wrap it at >10; the reference keeps all 12 inline."""
+    return "%s<%s>%s</%s>" % (indent, tag, " ".join(str(int(x)) for x in (vals or ())), tag)
+
+
+def _content_num(tag, v, indent):
+    """A field the reference writes as element TEXT holding a bare number - inclusions /
+    exclusions, a flags field with no symbolic table (T_FLAGS refKey 0 -> the raw int)."""
+    return "%s<%s>%s</%s>" % (indent, tag, fmt_num(v), tag)
+
+
+def _hash_items(tag, vals, indent):
+    """A hash/string array with NO itemType attribute and <Item> children (AddList, RemoveList,
+    PromoteToHDList, Requests) - the same measured shape as scenario LookUps; empty -> self-close."""
+    if not vals:
+        return ["%s<%s />" % (indent, tag)]
+    out = ["%s<%s>" % (indent, tag)]
+    for s in vals:
+        out.append(_txt("Item", s, indent + " "))
+    out.append("%s</%s>" % (indent, tag))
+    return out
+
+
+def _pv_selset_item(d, ind):
+    # aSelectionSets (itemType CPedSelectionSet) is EMPTY in every measured ped .ymt, so its
+    # populated item shape is UNPINNED. _container never calls this for an empty list; if a
+    # populated set ever appears, refuse loudly rather than forge a shape.
+    raise ValueError("CPedSelectionSet item shape UNPINNED - no populated sample in evidence")
+
+
+def _pv_texdata_item(d, ind):
+    f = ind + " "
+    return ["%s<Item>" % ind,
+            _val("texId", require(d, "texId", "CPVTextureData"), f),
+            _val("distribution", require(d, "distribution", "CPVTextureData"), f),
+            "%s</Item>" % ind]
+
+
+def _pv_drawbl_item(d, ind):
+    f = ind + " "
+    L = ["%s<Item>" % ind,
+         _val("propMask", require(d, "propMask", "CPVDrawblData"), f),
+         _val("numAlternatives", require(d, "numAlternatives", "CPVDrawblData"), f)]
+    L += _container("aTexData", _inline_items(d.get("aTexData")), "CPVTextureData", f,
+                    _pv_texdata_item)
+    cloth = d.get("clothData") or {}
+    L.append("%s<clothData>" % f)
+    L.append(_val("ownsCloth", require(cloth, "ownsCloth", "clothData"), f + " "))
+    L.append("%s</clothData>" % f)
+    L.append("%s</Item>" % ind)
+    return L
+
+
+def _pv_compdata_item(d, ind):
+    f = ind + " "
+    L = ["%s<Item>" % ind,
+         _val("numAvailTex", require(d, "numAvailTex", "CPVComponentData"), f)]
+    L += _container("aDrawblData3", _inline_items(d.get("aDrawblData3")), "CPVDrawblData", f,
+                    _pv_drawbl_item)
+    L.append("%s</Item>" % ind)
+    return L
+
+
+def _pv_compinfo_item(d, ind):
+    f = ind + " "
+    L = ["%s<Item>" % ind,
+         _txt("pedXml_audioID", d.get("pedXml_audioID"), f),
+         _txt("pedXml_audioID2", d.get("pedXml_audioID2"), f)]
+    L += num_list("pedXml_expressionMods", d.get("pedXml_expressionMods") or [], f)
+    L.append(_val("flags", require(d, "flags", "CComponentInfo"), f))
+    L.append(_content_num("inclusions", require(d, "inclusions", "CComponentInfo"), f))
+    L.append(_content_num("exclusions", require(d, "exclusions", "CComponentInfo"), f))
+    L.append(_txt("pedXml_vfxComps", d.get("pedXml_vfxComps"), f))
+    L.append(_val("pedXml_flags", require(d, "pedXml_flags", "CComponentInfo"), f))
+    L.append(_val("pedXml_compIdx", require(d, "pedXml_compIdx", "CComponentInfo"), f))
+    L.append(_val("pedXml_drawblIdx", require(d, "pedXml_drawblIdx", "CComponentInfo"), f))
+    L.append("%s</Item>" % ind)
+    return L
+
+
+def _pp_texdata_item(d, ind):
+    f = ind + " "
+    return ["%s<Item>" % ind,
+            _content_num("inclusions", require(d, "inclusions", "CPedPropTexData"), f),
+            _content_num("exclusions", require(d, "exclusions", "CPedPropTexData"), f),
+            _val("texId", require(d, "texId", "CPedPropTexData"), f),
+            _val("inclusionId", require(d, "inclusionId", "CPedPropTexData"), f),
+            _val("exclusionId", require(d, "exclusionId", "CPedPropTexData"), f),
+            _val("distribution", require(d, "distribution", "CPedPropTexData"), f),
+            "%s</Item>" % ind]
+
+
+def _pp_meta_item(d, ind):
+    f = ind + " "
+    L = ["%s<Item>" % ind, _txt("audioId", d.get("audioId"), f)]
+    L += num_list("expressionMods", d.get("expressionMods") or [], f)
+    L += _container("texData", _inline_items(d.get("texData")), "CPedPropTexData", f,
+                    _pp_texdata_item)
+    L.append(_txt("renderFlags", d.get("renderFlags"), f))   # "" -> self-close, else PRF_*
+    L.append(_val("propFlags", require(d, "propFlags", "CPedPropMetaData"), f))
+    L.append(_val("flags", require(d, "flags", "CPedPropMetaData"), f))
+    L.append(_val("anchorId", require(d, "anchorId", "CPedPropMetaData"), f))
+    L.append(_val("propId", require(d, "propId", "CPedPropMetaData"), f))
+    L.append(_val("stickyness", require(d, "stickyness", "CPedPropMetaData"), f))
+    L.append("%s</Item>" % ind)
+    return L
+
+
+def _pp_anchor_item(d, ind):
+    f = ind + " "
+    L = ["%s<Item>" % ind]
+    L += scalar_list("props", d.get("props") or [], f)
+    L.append(_txt("anchor", d.get("anchor"), f))
+    L.append("%s</Item>" % ind)
+    return L
+
+
+def ped_variation_xml(root):
+    """A whole CPedVariationInfo document (ped .ymt) from the decoded root dict."""
+    ctx = "CPedVariationInfo"
+    L = ['<?xml version="1.0" encoding="UTF-8"?>', "<CPedVariationInfo>"]
+    for tag in ("bHasTexVariations", "bHasDrawblVariations", "bHasLowLODs", "bIsSuperLOD"):
+        L.append(_val(tag, require(root, tag, ctx), " "))
+    L.append(_inline_ints("availComp", root.get("availComp") or [], " "))
+    L += _container("aComponentData3", _inline_items(root.get("aComponentData3")),
+                    "CPVComponentData", " ", _pv_compdata_item)
+    L += _container("aSelectionSets", _inline_items(root.get("aSelectionSets")),
+                    "CPedSelectionSet", " ", _pv_selset_item)
+    L += _container("compInfos", _inline_items(root.get("compInfos")),
+                    "CComponentInfo", " ", _pv_compinfo_item)
+    pi = root.get("propInfo") or {}
+    L.append(" <propInfo>")
+    L.append(_val("numAvailProps", require(pi, "numAvailProps", "propInfo"), "  "))
+    L += _container("aPropMetaData", _inline_items(pi.get("aPropMetaData")),
+                    "CPedPropMetaData", "  ", _pp_meta_item)
+    L += _container("aAnchors", _inline_items(pi.get("aAnchors")),
+                    "CAnchorProps", "  ", _pp_anchor_item)
+    L.append(" </propInfo>")
+    L.append(_txt("dlcName", root.get("dlcName"), " "))
+    L.append("</CPedVariationInfo>")
+    return "\n".join(L) + "\n"
+
+
+# ---------------------------------------------------------------- streaming request .ymt
+def _srr_frame_item(d, ind):
+    f = ind + " "
+    L = ["%s<Item>" % ind]
+    L += _hash_items("AddList", d.get("AddList") or [], f)
+    L += _hash_items("RemoveList", d.get("RemoveList") or [], f)
+    L += _hash_items("PromoteToHDList", d.get("PromoteToHDList") or [], f)
+    L.append(_vec("CamPos", require(d, "CamPos", "CStreamingRequestFrame"), f))
+    L.append(_vec("CamDir", require(d, "CamDir", "CStreamingRequestFrame"), f))
+    L += scalar_list("CommonAddSets", d.get("CommonAddSets") or [], f)
+    L.append(_val("Flags", require(d, "Flags", "CStreamingRequestFrame"), f))
+    L.append("%s</Item>" % ind)
+    return L
+
+
+def _srr_commonset_item(d, ind):
+    f = ind + " "
+    L = ["%s<Item>" % ind]
+    L += _hash_items("Requests", d.get("Requests") or [], f)
+    L.append("%s</Item>" % ind)
+    return L
+
+
+def streaming_request_xml(root):
+    """A whole CStreamingRequestRecord document (*_srl.ymt) from the decoded root dict."""
+    ctx = "CStreamingRequestRecord"
+    L = ['<?xml version="1.0" encoding="UTF-8"?>', "<CStreamingRequestRecord>"]
+    L += _container("Frames", _inline_items(root.get("Frames")),
+                    "CStreamingRequestFrame", " ", _srr_frame_item)
+    L += _container("CommonSets", _inline_items(root.get("CommonSets")),
+                    "CStreamingRequestCommonSet", " ", _srr_commonset_item)
+    L.append(_val("NewStyle", require(root, "NewStyle", ctx), " "))
+    L.append("</CStreamingRequestRecord>")
+    return "\n".join(L) + "\n"
+
+
 # ================================================================ binary -> emitter dicts
 def _xyz(v):
     """VECTOR3 and VECTOR4 both appear; the XML only ever writes x/y/z for a position/bound."""
@@ -2456,6 +2695,10 @@ def convert_bytes(blob, stem, names=None):
                          ymap_block_from(root)), "ymap", w)
     if root_name == "CScenarioPointRegion":
         return scenario_xml(scenario_from(root)), "ymt", w
+    if root_name == "CPedVariationInfo":
+        return ped_variation_xml(root), "ymt", w
+    if root_name == "CStreamingRequestRecord":
+        return streaming_request_xml(root), "ymt", w
     raise UnsupportedRoot(root_name)
 
 
