@@ -333,8 +333,16 @@ def decode_vertices(res, vdata_tagged, count, stride, fields):
                 # would silently snap a vertex to the world origin and stretch a triangle across
                 # the map, readable downstream as a placement or importer bug rather than as
                 # corrupt source data. Nothing measured is lost by refusing it.
+                # Token COUNT follows the declaration's component count, not the CHANNELS
+                # default. nibble 0xA (signed-byte4) carries 4 components and the reference exporter emits all 4:
+                # the yft-cloth GTAV2 oracle spells its byte4 Normal as "1 0 0 0" (4 tokens),
+                # not "1 0 0" (2026-08-06, plg_01_* fragments). The old drop-the-w behaviour was
+                # tuned to a since-deleted reference; it is unwitnessed by any current oracle
+                # (all 264 ydr/ydd oracle layouts are GTAV1 = float3 normals, nibble 6 - none use
+                # nibble 0xA), so widening 0xA to 4 tokens cannot touch a passing ydr/ydd file.
+                emit_n = 4 if nb == 0xA else tokens
                 clean = []
-                for x in raw[:tokens]:
+                for x in raw[:emit_n]:
                     if x != x or abs(x) == float("inf"):
                         if _name == "Position":
                             raise ValueError("NaN/inf in the Position channel (vertex %d)" % v)
@@ -794,6 +802,21 @@ class GeometryList(list):
     declared = 0
 
 
+def _layout_type(fields):
+    """the reference exporter's <Layout type="GTAVn"> classifies the vertex declaration. Every one of the 264
+    ydr/ydd oracle layouts is GTAV1 (full-float channels: Normal = float3, nibble 6). The fragment
+    cloth mesh is the only witnessed GTAV2: its Normal is a signed-byte4 (nibble 0xA), TexCoord0 a
+    half2 (nibble 1) and Tangent a half4 (nibble 3) - the compressed variant. Discriminator used:
+    a byte4-packed Normal (bit 3, nibble 0xA) => GTAV2, else GTAV1. This separates the whole
+    current corpus with zero GTAV1 reclassification. ⚠ UNPINNED: the full GTAV1..GTAV5 taxonomy -
+    only GTAV1 and this one GTAV2 form are witnessed; a third form would surface as a visible diff,
+    never a silent mislabel."""
+    for bit, _name, _tokens, _off, _size, nb in fields:
+        if bit == 3 and nb == 0xA:
+            return "GTAV2"
+    return "GTAV1"
+
+
 def read_geometries(res, base=0, group_off=0x50):
     """One DrawableModels LOD group -> its geometries. group_off selects the LOD:
     +0x50 High, +0x58 Medium, +0x60 Low, +0x68 VeryLow (derived 2026-08-06, WAL §skel).
@@ -923,6 +946,7 @@ def read_geometries(res, base=0, group_off=0x50):
             geos.append({
                 "shader": shader_idx,
                 "layout": [f[1] for f in fields],
+                "ltype": _layout_type(fields),
                 "verts": vlines,
                 "indices": indices,
                 "model": mi,
@@ -1051,7 +1075,7 @@ def _model_group_lines(ff, tag, geos):
                 L.append("     <BoneIDs>%s</BoneIDs>"
                          % ", ".join(str(x) for x in g["boneids"]))
             L += ["     <VertexBuffer>", '      <Flags value="0" />',
-                  '      <Layout type="GTAV1">']
+                  '      <Layout type="%s">' % g.get("ltype", "GTAV1")]
             for nm in g["layout"]:
                 L.append("       <%s />" % nm)
             L += ["      </Layout>", "      <Data>"]

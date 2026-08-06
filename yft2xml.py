@@ -106,7 +106,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # _refuse is shared deliberately: ONE counter table for the whole interchange-XML lane, so
 # quarry's single ydr2xml.report_refusals(stats) call reports fragment declines too. A second
 # private table here would be a second thing to remember to surface.
-from ydr2xml import Res, drawable_lines, esc, fmt_float, read_geometries, _refuse
+from ydr2xml import Res, drawable_lines, esc, fmt_float, read_geometries, _refuse, _bound_lines
+# The 2026-08-06 byte-identical build reuses the float-text law + the yld cloth helpers.
+from meta2xml import fmt_num as _F, num_list, scalar_list
+from yld2xml import _vec4_block
 
 YFT_VERSION = 162       # measured 300/300 (yft_probe.py)
 DRAWABLE_SLOT = 0x30    # measured 300/300
@@ -411,95 +414,384 @@ def main_drawable_base(res):
     return None if buf is None else base
 
 
-def convert(res, stem, extras=None):
-    """-> (xml text, [(sidecar relpath, bytes)]). THE entry point; to_xml() is the text-only
-    wrapper the existing callers already use."""
-    if extras is None:
-        extras = EMIT_EXTRAS
-    res.require_version(YFT_VERSION, "Legacy fragment")
-    frag_name = res.cstr(res.u32(NAME_SLOT))
-    if not frag_name:
-        # A fabricated <Name> is indistinguishable from a read one once it is in the XML, so the
-        # substitution is counted. 800 of 800 random fragments carry a real "pack:/<stem>" here
-        # (drawlane/silentsites.py), i.e. this has never yet been the source of a name.
-        _refuse("fragment_name_absent_stem_substituted", stem)
-        frag_name = "pack:/" + stem
-    dp = res.u32(DRAWABLE_SLOT)
-    buf, base = res.deref(dp, 0xD0)
-    if buf is None:
-        raise ValueError("main drawable pointer (+0x30) does not resolve")
-    # ⚠ NOT A RARE FALLBACK - IT IS THE ONLY PATH (measured 2026-08-03). The `or "skel"` reads like
-    # a guard for an odd file; in fact the fragment drawable's name pointer at +0xA8 is NULL in
-    # 800 of 800 random base-game fragments, so every fragment we have ever emitted took it. The
-    # literal is right rather than merely harmless: the reference export prints
-    # <Drawable><Name>skel</Name> in 400 of 400 sampled yft. Left uncounted deliberately - a
-    # counter that fires on 100% of files is noise, and this one would hide the counters that mean
-    # something. Scripts: drawlane/silentsites.py, and the oracle check in the same folder.
-    inner = res.cstr(res.ptr(base + 0xA8)) or "skel"
+# =====================================================================================
+# BYTE-IDENTICAL FRAGMENT BUILD (2026-08-06) - oracle-derived, token+byte validated against
+# the 10 _Oracles/yft pairs (10/10). Non-cloth map: WAL §6m + scratchpad validate_physics.py /
+# validate_fraghdr.py (fragment header 10/10, BoneTransforms/Physics/GlassWindows OK on all 7
+# non-cloth). Cloth map: derived 2026-08-06 (array @frag+0x60, controller offsets == yld's, with
+# a MorphController the yld lacks and a BBMin @verlet+0x30); the VerletCloth1/BridgeSimGfx/
+# Constraints decoders are lifted from yld2xml.
+# ⛔ The pre-oracle "extras" path (read_skeleton/read_physics/_tag_of/skeleton_lines/physics_lines,
+# above) is SUPERSEDED - it emitted geometry-bearing child <Drawable> sidecars and DERIVED BoneTag
+# via a name join, both of which the reference exporter oracle disproves (child drawables are header-only
+# stubs; BoneTag is STORED @child+0x12). Kept above, unwired, for the measurements they carry.
+# =====================================================================================
+
+def _yU(r, o): return struct.unpack_from("<I", r.sys, o)[0]
+def _yM(v): return v & 0x0FFFFFFF
+def _yf(r, o): return struct.unpack_from("<f", r.sys, o)[0]
+def _yv3(r, o): return struct.unpack_from("<3f", r.sys, o)
+def _yv4(r, o): return struct.unpack_from("<4f", r.sys, o)
+
+_PHYS_LOD_SLOT, _LOD1_SLOT, _CLOTH_ARR = 0xF0, 0x10, 0x60
+
+
+def _lod1_base(r):
+    """Physics LOD1 = deref(deref(fragroot+0xF0)+0x10). Named UNPINNED offsets carry WAL §6m tags."""
+    _, ph = r.deref(_yU(r, _PHYS_LOD_SLOT), _LOD1_SLOT + 4)
+    _, l1 = r.deref(_yU(r, ph + _LOD1_SLOT), 0x200)
+    return l1
+
+
+def _frag_header(r):
+    """Fragment-root scalars @ system offset 0 (validate_fraghdr, 10/10 text-exact)."""
+    cx, cy, cz = _yv3(r, 0x20)
+    L = [' <BoundingSphereCenter x="%s" y="%s" z="%s" />' % (_F(cx), _F(cy), _F(cz)),
+         ' <BoundingSphereRadius value="%s" />' % _F(_yf(r, 0x2C))]
+    for tag, o in (("UnknownB0", 0xB0), ("UnknownB8", 0xB8), ("UnknownBC", 0xBC),
+                   ("UnknownC0", 0xC0), ("UnknownC4", 0xC4), ("UnknownCC", 0xCC)):
+        L.append(' <%s value="%s" />' % (tag, _F(_yU(r, o))))
+    L.append(' <GravityFactor value="%s" />' % _F(_yf(r, 0xD0)))
+    L.append(' <BuoyancyFactor value="%s" />' % _F(_yf(r, 0xD4)))
+    return L
+
+
+def _bone_count(r, base):
+    """Bone count from the drawable's crSkeletonData (drawable+0x18 -> +0x5E u16), 0 when none."""
+    sk = _yU(r, base + 0x18)
+    if (sk >> 28) != 5:
+        return 0
+    _, so = r.deref(sk, 0x60)
+    return 0 if so is None else struct.unpack_from("<H", r.sys, so + 0x5E)[0]
+
+
+def _bone_transforms(r, nb):
+    """<BoneTransforms unk="0"> @ fragroot+0xA8: count == bone count, +0x20 stride 0x30, 3x4 rows."""
+    if not nb:
+        return []
+    p = _yU(r, 0xA8)
+    if (p >> 28) != 5:
+        return []
+    _, bt = r.deref(p, 0x20 + nb * 0x30)
+    L = [' <BoneTransforms unk="0">']
+    for i in range(nb):
+        b = bt + 0x20 + i * 0x30
+        L.append("  <Item>")
+        for row in range(3):
+            m = _yv4(r, b + row * 0x10)
+            L.append("   %s %s %s %s" % (_F(m[0]), _F(m[1]), _F(m[2]), _F(m[3])))
+        L.append("  </Item>")
+    L.append(" </BoneTransforms>")
+    return L
+
+
+# fragGroup: name is an INLINE char[] @ group+0x80, so group base = namePtr - 0x80. Scalars below
+# are float @ base+off (25 of them), plus 3 u8 (ParentIndex/GlassWindowIndex/GlassFlags).
+_GROUP_F = [("Strength", 0x10), ("ForceTransmissionScaleUp", 0x14), ("ForceTransmissionScaleDown", 0x18),
+            ("JointStiffness", 0x1C), ("MinSoftAngle1", 0x20), ("MaxSoftAngle1", 0x24), ("MaxSoftAngle2", 0x28),
+            ("MaxSoftAngle3", 0x2C), ("RotationSpeed", 0x30), ("RotationStrength", 0x34), ("RestoringStrength", 0x38),
+            ("RestoringMaxTorque", 0x3C), ("LatchStrength", 0x40), ("Mass", 0x44), ("MinDamageForce", 0x54),
+            ("DamageHealth", 0x58), ("UnkFloat5C", 0x5C), ("UnkFloat60", 0x60), ("UnkFloat64", 0x64), ("UnkFloat68", 0x68),
+            ("UnkFloat6C", 0x6C), ("UnkFloat70", 0x70), ("UnkFloat74", 0x74), ("UnkFloat78", 0x78), ("UnkFloatA8", 0xA8)]
+
+
+def _emit_groups(r, l1):
+    garr = _yM(_yU(r, l1 + 0xC0)); ng = r.sys[l1 + 0x11A]
+    L = ["   <Groups>"]
+    for gi in range(ng):
+        nptr = _yM(_yU(r, garr + gi * 8)); base = nptr - 0x80
+        end = r.sys.find(b"\x00", nptr); nm = r.sys[nptr:end].decode("latin-1")
+        L.append("    <Item>")
+        L.append("     <Name>%s</Name>" % esc(nm))
+        L.append('     <ParentIndex value="%d" />' % r.sys[base + 0x4D])
+        L.append('     <GlassWindowIndex value="%d" />' % r.sys[base + 0x4E])
+        L.append('     <GlassFlags value="%d" />' % r.sys[base + 0x53])
+        for nm2, off in _GROUP_F:
+            L.append('     <%s value="%s" />' % (nm2, _F(_yf(r, base + off))))
+        L.append("    </Item>")
+    L.append("   </Groups>")
+    return L
+
+
+def _emit_children(r, l1):
+    carr = _yM(_yU(r, l1 + 0xD0)); nc = struct.unpack_from("<H", r.sys, l1 + 0x11E)[0]
+    _, ufa = r.deref(_yU(r, l1 + 0x28), nc * 4)
+    _, iva = r.deref(_yU(r, l1 + 0xF0), nc * 16)
+    _, uva = r.deref(_yU(r, l1 + 0xF8), nc * 16)
+    L = ["   <Children>"]
+    for ci in range(nc):
+        base = _yM(_yU(r, carr + ci * 8))
+        gi = struct.unpack_from("<H", r.sys, base + 0x10)[0]
+        bt = struct.unpack_from("<H", r.sys, base + 0x12)[0]    # BoneTag STORED (supersedes _tag_of)
+        L.append("    <Item>")
+        L.append('     <GroupIndex value="%d" />' % gi)
+        L.append('     <BoneTag value="%d" />' % bt)
+        L.append('     <PristineMass value="%s" />' % _F(_yf(r, base + 0x08)))
+        L.append('     <DamagedMass value="%s" />' % _F(_yf(r, base + 0x0C)))
+        L.append('     <UnkFloat value="%s" />' % _F(_yf(r, ufa + ci * 4)))
+        L.append('     <UnkVec x="%s" y="%s" z="%s" w="%s" />' % tuple(_F(x) for x in _yv4(r, uva + ci * 16)))
+        L.append('     <InertiaTensor x="%s" y="%s" z="%s" w="%s" />' % tuple(_F(x) for x in _yv4(r, iva + ci * 16)))
+        if _yU(r, base + 0xB0) != 0:                            # EventSet gated by child+0xB0 ptr
+            L.append("     <EventSet />")
+        _, dbo = r.deref(_yU(r, base + 0xA0), 0x100)            # child drawable (header-only stub)
+        L.append("     <Drawable>")
+        nm = r.cstr(_yU(r, dbo + 0xA8)) if dbo is not None else ""
+        L.append("      <Name>%s</Name>" % esc(nm) if nm else "      <Name />")
+        L.append("      <Matrix>")
+        for row in range(4):
+            m = _yv3(r, dbo + 0xB0 + row * 0x10) if dbo is not None else (0, 0, 0)
+            L.append("       %s %s %s" % (_F(m[0]), _F(m[1]), _F(m[2])))
+        L.append("      </Matrix>")
+        if dbo is not None:
+            sc = _yv3(r, dbo + 0x20); sr = _yf(r, dbo + 0x2C)
+            bmin = _yv3(r, dbo + 0x30); bmax = _yv3(r, dbo + 0x40)
+            ld = struct.unpack_from("<4f", r.sys, dbo + 0x70)
+            fl = [r.sys[dbo + 0x80], r.sys[dbo + 0x84], r.sys[dbo + 0x88], r.sys[dbo + 0x8C]]
+        else:
+            sc = (0, 0, 0); sr = 0
+            bmin = bmax = (0, 0, 0); ld = (0, 0, 0, 0); fl = [0, 0, 0, 0]
+        L.append('      <BoundingSphereCenter x="%s" y="%s" z="%s" />' % tuple(_F(x) for x in sc))
+        L.append('      <BoundingSphereRadius value="%s" />' % _F(sr))
+        L.append('      <BoundingBoxMin x="%s" y="%s" z="%s" />' % tuple(_F(x) for x in bmin))
+        L.append('      <BoundingBoxMax x="%s" y="%s" z="%s" />' % tuple(_F(x) for x in bmax))
+        for t, vv in zip(("LodDistHigh", "LodDistMed", "LodDistLow", "LodDistVlow"), ld):
+            L.append('      <%s value="%s" />' % (t, _F(vv)))
+        for t, vv in zip(("FlagsHigh", "FlagsMed", "FlagsLow", "FlagsVlow"), fl):
+            L.append('      <%s value="%d" />' % (t, vv))
+        L.append("     </Drawable>")
+        L.append("    </Item>")
+    L.append("   </Children>")
+    return L
+
+
+def _emit_physics(r):
+    l1 = _lod1_base(r)
+    L = [" <Physics>", "  <LOD1>"]
+    L.append('   <Unknown14 value="%s" />' % _F(_yf(r, l1 + 0x14)))
+    L.append('   <Unknown18 value="%s" />' % _F(_yf(r, l1 + 0x18)))
+    L.append('   <Unknown1C value="%s" />' % _F(_yf(r, l1 + 0x1C)))
+    L.append('   <PositionOffset x="%s" y="%s" z="%s" />' % tuple(_F(x) for x in _yv3(r, l1 + 0x30)))
+    L.append('   <Unknown40 x="%s" y="%s" z="%s" />' % tuple(_F(x) for x in _yv3(r, l1 + 0x40)))
+    L.append('   <Unknown50 x="%s" y="%s" z="%s" />' % tuple(_F(x) for x in _yv3(r, l1 + 0x50)))
+    for nm, off in (("DampingLinearC", 0x60), ("DampingLinearV", 0x70), ("DampingLinearV2", 0x80),
+                    ("DampingAngularC", 0x90), ("DampingAngularV", 0xA0), ("DampingAngularV2", 0xB0)):
+        L.append('   <%s x="%s" y="%s" z="%s" />' % ((nm,) + tuple(_F(x) for x in _yv3(r, l1 + off))))
+    _, ab = r.deref(_yU(r, l1 + 0xD8), 0x80)                    # Archetype
+    L.append("   <Archetype>")
+    L.append("    <Name>%s</Name>" % esc(r.cstr(_yU(r, ab + 0x18))))
+    L.append('    <Mass value="%s" />' % _F(_yf(r, ab + 0x40)))
+    L.append('    <MassInv value="%s" />' % _F(_yf(r, ab + 0x44)))
+    L.append('    <Unknown48 value="%s" />' % _F(_yf(r, ab + 0x48)))
+    L.append('    <Unknown4C value="%s" />' % _F(_yf(r, ab + 0x4C)))
+    L.append('    <Unknown50 value="%s" />' % _F(_yf(r, ab + 0x50)))
+    L.append('    <Unknown54 value="%s" />' % _F(_yf(r, ab + 0x54)))
+    L.append('    <InertiaTensor x="%s" y="%s" z="%s" />' % tuple(_F(x) for x in _yv3(r, ab + 0x60)))
+    L.append('    <InertiaTensorInv x="%s" y="%s" z="%s" />' % tuple(_F(x) for x in _yv3(r, ab + 0x70)))
+    _, bo = r.deref(_yU(r, ab + 0x20), 0x70)                    # phBound composite -> REUSE _bound_lines
+    L += _bound_lines(r, bo, "    ", "Bounds", "archetype")
+    L.append("   </Archetype>")
+    _, to = r.deref(_yU(r, l1 + 0x100), 0x200); tn = _yU(r, to + 0x10)    # Transforms
+    L.append("   <Transforms>")
+    for i in range(tn):
+        b = to + 0x20 + i * 0x40
+        L.append("    <Item>")
+        for row in range(4):
+            m = _yv4(r, b + row * 0x10)
+            L.append("     %s %s %s %s" % (_F(m[0]), _F(m[1]), _F(m[2]), _F(m[3])))
+        L.append("    </Item>")
+    L.append("   </Transforms>")
+    L += _emit_groups(r, l1)
+    L += _emit_children(r, l1)
+    L += ["  </LOD1>", " </Physics>"]
+    return L
+
+
+def _emit_glass(r):
+    """<GlassWindows> @ fragroot+0xE0 (count u8 @+0xD9, stride 0x70). [] when absent."""
+    cnt = r.sys[0xD9]; p = _yU(r, 0xE0)
+    if (p >> 28) != 5 or cnt == 0:
+        return []
+    _, arr = r.deref(p, cnt * 8)
+    L = [" <GlassWindows>"]
+    for wi in range(cnt):
+        base = _yM(_yU(r, arr + wi * 8))
+        L.append("  <Item>")
+        L.append('   <Flags value="%d" />' % struct.unpack_from("<H", r.sys, base + 0x56)[0])
+        L.append("   <Projection>")
+        for row in range(3):
+            m = _yv3(r, base + row * 0x10)
+            L.append("    %s %s %s" % (_F(m[0]), _F(m[1]), _F(m[2])))
+        L.append("   </Projection>")
+        for tag, off in (("UnkFloat13", 0x30), ("UnkFloat14", 0x34), ("UnkFloat15", 0x38),
+                         ("UnkFloat16", 0x3C), ("Thickness", 0x50), ("UnkFloat18", 0x58),
+                         ("UnkFloat19", 0x5C)):
+            L.append('   <%s value="%s" />' % (tag, _F(_yf(r, base + off))))
+        L.append('   <Tangent x="%s" y="%s" z="%s" />' % tuple(_F(x) for x in _yv3(r, base + 0x60)))
+        L.append('   <Layout type="GTAV4">')
+        for c in ("Position", "Normal", "Colour0", "TexCoord0", "TexCoord1"):
+            L.append("    <%s />" % c)
+        L.append("   </Layout>")
+        L.append("  </Item>")
+    L.append(" </GlassWindows>")
+    return L
+
+
+def _drawable_body(res, base, wrap):
+    """drawable_lines(base) with the fragment <Matrix> (drawable+0xB0, 4x3, NaN 4th col dropped)
+    spliced after <Name>, the trailing <Lights> element RELOCATED out (returned separately), and
+    every line re-indented by `wrap`. -> (body_lines, lights_lines)."""
+    inner = res.cstr(res.ptr(base + 0xA8)) or "skel"           # +0xA8 name ptr NULL -> "skel" (all yft)
     try:
         body = drawable_lines(res, inner, base=base)
     except ValueError as ex:
-        # ⛔ AN EMPTY MAIN DRAWABLE IS A LEGAL SHAPE, NOT A DECODE FAILURE (measured 2026-08-03).
-        # A handful of base-game fragments carry ZERO geometry in the visual drawable and all of
-        # it in a PHYSICS CHILD. drawable_lines raised "no geometry decoded", convert() died here
-        # before extras ever ran, and the fragment lost EVERYTHING - no .yft.xml, no skeleton, no
-        # child sidecar - while quarry filed it in the generic xml_failed bucket beside genuinely
-        # corrupt files, so "the yft lane converts 100% of what it sees" still read as true. The
-        # oracle export agrees the mesh is there (enduro_ex_2: DrawableModelsHigh 0 geometries,
-        # 2 children, child geometry counts [1, 0]). Tolerated ONLY with extras on, because only
-        # the extras lane can still deliver that mesh; a shortfall inside a NON-empty drawable
-        # (the "%d of %d geometries did not resolve" refusal) is a different message and still
-        # propagates.
-        if not extras or "no geometry decoded" not in str(ex):
+        if "no geometry decoded" not in str(ex):
             raise
-        _refuse("main_drawable_empty_geometry_in_child", "%s: %s" % (stem, ex))
+        _refuse("main_drawable_empty_geometry_in_child", "%s" % ex)
         body = drawable_lines(res, inner, base=base, allow_empty=True)
+    lights = [" <Lights />"]
+    if body and body[-1].strip() == "<Lights />":
+        lights = [body.pop()]
+    elif body and body[-1].strip() == "</Lights>":
+        for i in range(len(body) - 1, -1, -1):
+            if body[i].strip() == "<Lights>":
+                lights = body[i:]; del body[i:]; break
+    mtx = [" <Matrix>"]
+    for row in range(4):
+        m = _yv3(res, base + 0xB0 + row * 0x10)
+        mtx.append("  %s %s %s" % (_F(m[0]), _F(m[1]), _F(m[2])))
+    mtx.append(" </Matrix>")
+    body = body[:1] + mtx + body[1:]
+    return [wrap + ln for ln in body], lights
 
-    extra_lines, sidecars = [], []
-    if extras:
-        bones = read_skeleton(res, base)
-        if bones:
-            # reference element ORDER: ShaderGroup, then Skeleton, then the model groups
-            cut = body.index(" </ShaderGroup>") + 1
-            body = body[:cut] + skeleton_lines(bones) + body[cut:]
-        groups, children = read_physics(res)
-        if children:
-            shared_sg = _shader_group_span(body)
-            body_by_child, used = {}, set()
-            for ci, (gi, dbase) in enumerate(children):
-                if dbase is None:
-                    continue
-                gname = groups[gi] if 0 <= gi < len(groups) else ""
-                if not _SAFE_NAME.match(gname):
-                    raise FragmentError(
-                        "child %d carries geometry but its group name %r is not a safe "
-                        "sidecar filename" % (ci, gname))
-                if gname in used:
-                    raise FragmentError(
-                        "two geometry children share the group name %r - one sidecar would "
-                        "overwrite the other" % gname)
-                used.add(gname)
-                cbody = drawable_lines(res, gname, base=dbase)
-                body_by_child[ci] = cbody
-                # the sidecar is that SAME body with the fragment's shader group spliced in:
-                # a standalone <Drawable> document ImportYdr consumes unchanged
-                a = cbody.index(" <ShaderGroup>")
-                b = cbody.index(" </ShaderGroup>")
-                doc = (['<?xml version="1.0" encoding="UTF-8"?>', "<Drawable>"]
-                       + cbody[:a] + shared_sg + cbody[b + 1:] + ["</Drawable>"])
-                sidecars.append(("%s/%s.ydr.xml" % (stem, gname),
-                                 ("\n".join(doc) + "\n").encode("utf-8")))
-            if groups or body_by_child:
-                extra_lines = physics_lines(res, bones, groups, children, body_by_child)
+
+def _is_cloth(r):
+    """A cloth fragment carries a populated environmentCloth pgArray @ fragroot+0x60 (count @+0x68)."""
+    return (_yU(r, _CLOTH_ARR) >> 28) == 5 and struct.unpack_from("<H", r.sys, 0x68)[0] > 0
+
+
+def _emit_cloths(r):
+    """<Cloths> - the environmentCloth array @ fragroot+0x60. Controller offsets match the yld
+    clothController; the VerletCloth1/BridgeSimGfx/Constraints decoders are the yld ones (BBMin is
+    @verlet+0x30 here, not +0x10). MorphController is the fragment-only member the yld lacks."""
+    S = r.sys
+    def u32(o): return struct.unpack_from("<I", S, o)[0]
+    def u16(o): return struct.unpack_from("<H", S, o)[0]
+    def ff(o): return struct.unpack_from("<f", S, o)[0]
+    def mk(o): return u32(o) & 0x0FFFFFFF
+    def arr(o): return (mk(o), u16(o + 8))
+    ap, cnt = arr(_CLOTH_ARR)
+    L = [" <Cloths>"]
+    for ci in range(cnt):
+        item = mk(ap + ci * 8)
+        ctrl = mk(item + 0x28)
+        name = S[ctrl + 0x58:S.find(b"\x00", ctrl + 0x58)].decode("latin-1")
+        L.append("  <Item>")
+        L.append('   <Unknown78 value="%d" />' % u32(item + 0x78))
+        L.append("   <Controller>")
+        L.append("    <Name>%s</Name>" % esc(name))
+        L.append('    <Type value="%d" />' % u32(ctrl + 0x50))
+        L.append('    <Unknown78 value="%s" />' % _F(ff(ctrl + 0x78)))
+        # BridgeSimGfx - arrays OMIT-EMPTY (cloth_01 has an empty Unknown20 -> no element at all)
+        bg = mk(ctrl + 0x10)
+        L.append("    <BridgeSimGfx>")
+        L.append('     <VertexCount value="%d" />' % u32(bg + 0x10))
+        L.append('     <Unknown14 value="%d" />' % u32(bg + 0x14))
+        L.append('     <Unknown18 value="%d" />' % u32(bg + 0x18))
+        for tag, ao, kind in (("Unknown20", 0x20, "f"), ("Unknown60", 0x60, "f"), ("UnknownA0", 0xA0, "f"),
+                              ("UnknownE0", 0xE0, "u16"), ("Unknown128", 0x128, "u32")):
+            p, c = arr(bg + ao)
+            if not c:
+                continue
+            if kind == "f":
+                L += num_list(tag, [ff(p + i * 4) for i in range(c)], "     ")
+            elif kind == "u16":
+                L += scalar_list(tag, [u16(p + i * 2) for i in range(c)], "     ")
+            else:
+                L += scalar_list(tag, [u32(p + i * 4) for i in range(c)], "     ")
+        L.append("    </BridgeSimGfx>")
+        # MorphController (fragment-only): ctrl+0x18 -> struct, +0x18 -> struct, +0x180 = Unknown180
+        mc = mk(ctrl + 0x18); u18 = mk(mc + 0x18)
+        L.append("    <MorphController>")
+        L.append("     <Unknown18>")
+        L.append('      <Unknown180 value="%d" />' % u32(u18 + 0x180))
+        L.append("     </Unknown18>")
+        L.append("    </MorphController>")
+        # VerletCloth1
+        vc = mk(ctrl + 0x20)
+        L.append("    <VerletCloth1>")
+        L.append('     <BBMin x="%s" y="%s" z="%s" />' % (_F(ff(vc + 0x30)), _F(ff(vc + 0x34)), _F(ff(vc + 0x38))))
+        L.append('     <BBMax x="%s" y="%s" z="%s" />' % (_F(ff(vc + 0x40)), _F(ff(vc + 0x44)), _F(ff(vc + 0x48))))
+        L.append('     <Unknown3C value="%d" />' % u32(vc + 0x3C))
+        L.append('     <Unknown4C value="%d" />' % u32(vc + 0x4C))
+        L.append('     <Unknown50 value="%s" />' % _F(ff(vc + 0x50)))
+        L.append('     <UnknownA8 value="%s" />' % _F(ff(vc + 0xA8)))
+        L.append('     <UnknownAC value="%s" />' % _F(ff(vc + 0xAC)))
+        L.append('     <UnknownE8 value="%d" />' % u32(vc + 0xE8))
+        L.append('     <UnknownFA value="%d" />' % u16(vc + 0xFA))
+        L.append('     <Unknown148 value="%d" />' % u16(vc + 0x148))
+        L.append('     <Unknown158 value="%s" />' % _F(ff(vc + 0x158)))
+        L.append("     <Unknown140 />")
+        L.append("     <Behaviour />")
+        vp, vcnt = arr(vc + 0x80)
+        L += _vec4_block(S, vp, vcnt, "Vertices", "     ")
+        cp, ccnt = arr(vc + 0x110)
+        L.append("     <Constraints>")
+        for k in range(ccnt):
+            o = cp + k * 16
+            L.append("      <Item>")
+            L.append('       <Unknown0 value="%d" />' % u16(o))
+            L.append('       <Unknown2 value="%d" />' % u16(o + 2))
+            L.append('       <Unknown4 value="%s" />' % _F(ff(o + 4)))
+            L.append('       <Unknown8 value="%s" />' % _F(ff(o + 8)))
+            L.append('       <UnknownC value="%s" />' % _F(ff(o + 12)))
+            L.append("      </Item>")
+        L.append("     </Constraints>")
+        L.append("    </VerletCloth1>")
+        L.append("   </Controller>")
+        _, dbase = r.deref(u32(item + 0x18), 0xD0)              # cloth drawable == frag+0x30
+        body, _lights = _drawable_body(r, dbase, "   ")
+        L.append("   <Drawable>")
+        L.extend(body)
+        L.append("   </Drawable>")
+        L.append("  </Item>")
+    L.append(" </Cloths>")
+    return L
+
+
+def convert(res, stem, extras=None):
+    """-> (xml text, []). THE entry point; byte-identical vs the reference exporter oracle. `extras` is
+    accepted for call-site compatibility but no longer changes output - the full fragment is always
+    built. Sidecars are [] here; quarry.to_interchange_xml still appends the embedded-texture ones."""
+    res.require_version(YFT_VERSION, "Legacy fragment")
+    frag_name = res.cstr(res.u32(NAME_SLOT))
+    if not frag_name:
+        _refuse("fragment_name_absent_stem_substituted", stem)
+        frag_name = "pack:/" + stem
+    _, draw_base = res.deref(res.u32(DRAWABLE_SLOT), 0xD0)
+    if draw_base is None:
+        raise ValueError("main drawable pointer (+0x30) does not resolve")
+    nb = _bone_count(res, draw_base)
 
     L = ['<?xml version="1.0" encoding="UTF-8"?>', "<Fragment>"]
     L.append(" <Name>%s</Name>" % esc(frag_name))
-    L.append(" <Drawable>")
-    L.extend(" " + ln for ln in body)
-    L.append(" </Drawable>")
-    L.extend(extra_lines)
+    L += _frag_header(res)
+    if _is_cloth(res):
+        # cloth: NO top-level <Drawable>; the drawable is emitted under <Cloths><Item>
+        L += _bone_transforms(res, nb)
+        L += _emit_physics(res)
+        L.append(" <Lights />")
+        L += _emit_cloths(res)
+    else:
+        body, lights = _drawable_body(res, draw_base, " ")
+        L.append(" <Drawable>")
+        L.extend(body)
+        L.append(" </Drawable>")
+        L += _bone_transforms(res, nb)
+        L += _emit_physics(res)
+        L += _emit_glass(res)
+        L += lights                                            # fragment-level <Lights /> (last)
     L.append("</Fragment>")
-    return "\n".join(L) + "\n", sidecars
+    return "\n".join(L) + "\n", []
 
 
 def to_xml(res, stem, extras=None):

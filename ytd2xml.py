@@ -98,10 +98,16 @@ USAGE_BY_CODE = {
 # one bit's indicator set; 224/224 oracle strings reproduced. Spelled in ascending bit order,
 # ", "-joined. UNK24 (bit 29) was set on all 224 - its bit is chosen as the only candidate
 # consistent with the rest of the header map; a texture without UNK24 would pin it uncontested.
+# ⭐ bit 20 = Y1024 added 2026-08-06 - the 224-texture ytd sample never set it, so it was
+# unnamed; a fragment embedded texture (des_fib_frame climbmiss_a, 1024x1024, dword 0x20156014,
+# bits [2,4,13,14,16,18,20,29]) is the counter-witness: bit 20 is the ONLY unnamed set bit and the
+# oracle prints "Y1024" exactly where ascending-bit order places bit 20 (after Y512=18, before
+# UNK24=29). It completes the Y power-ladder (Y512=18 -> Y1024=20, mirroring X512=17 -> X1024=19).
+# Strictly additive: no passing oracle set bit 20, so no ytd/ydr/ydd file can change.
 USAGE_FLAG_BITS = (
     (5, "NOT_HALF"), (6, "HD_SPLIT"), (9, "Y4"), (10, "X8"), (11, "X16"), (12, "X32"),
     (13, "X64"), (14, "Y64"), (15, "X128"), (16, "X256"), (17, "X512"), (18, "Y512"),
-    (19, "X1024"), (21, "X2048"), (29, "UNK24"),
+    (19, "X1024"), (20, "Y1024"), (21, "X2048"), (29, "UNK24"),
 )
 
 
