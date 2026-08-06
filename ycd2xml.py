@@ -298,30 +298,41 @@ class Ycd:
             if c + 12 + msz * 2 == seq_end:
                 co = c; counts = cc; break
         if co is None:
+            # mpsecurity drinking_shots: a single 179-frame sequence with nr=6 RawFloat
+            # channels whose mapping-region size the msz formula does not reconcile - a
+            # separate structural variant, marked (not crashed) for a follow-up pass.
             out.append("     <SequenceData>")
             out.append("      <!-- count table not located -->")
             out.append("     </SequenceData>"); out.append("    </Item>"); return
         nq, nv, nf, nr, nqz, ni = counts
-
-        # A "simple" sequence has the compressed block right after the descriptors
-        # (static pools + 12B-quant descs + 24B-indirect descs == quant_off).  The DLC
-        # drinking_shots files carry a mixed quant+indirect variant whose IndirectQuantize
-        # descriptor is a larger inline-palette record - that layout is not yet pinned.
-        if 12 * nq + 12 * nv + 4 * nf + 12 * nqz + 24 * ni != quant_off:
-            out.append("     <SequenceData>")
-            out.append("      <!-- UNPINNED: mixed quant+indirect (inline-palette variant) -->")
-            out.append("     </SequenceData>"); out.append("    </Item>"); return
 
         # ---- pool bases ----
         quat_b = data
         vec_b = quat_b + nq * 12
         flt_b = vec_b + nv * 12
         qz_b = flt_b + nf * 4                         # QuantizeFloat descriptors (12B)
-        ind_b = qz_b + nqz * 12                       # IndirectQuantizeFloat descriptors (24B)
+        # IndirectQuantizeFloat descriptors are VARIABLE stride (2026-08-06):
+        #   [u32 slotBits, u32 paletteBits, u32 nPalWords, f32 Quantum, f32 Offset,
+        #    u32 palette[nPalWords]]  -> stride = 0x14 + nPalWords*4.
+        # The compact form (nPalWords=1, 24B) and the drinking_shots inline-palette form
+        # (nPalWords=3, 32B, 9-entry palette) are the same record; walk by nPalWords so
+        # both close. npal = (nPalWords*32)//paletteBits (inline pal packed paletteBits
+        # each across the nPalWords u32).
+        ind_descs = []
+        o = qz_b + nqz * 12
+        for _k in range(ni):
+            ind_descs.append(o)
+            o += 0x14 + u32(S, o + 8) * 4
+        # descriptors must exactly fill up to the packed-frame block (quant_off is a
+        # DATA-relative offset, so compare against o - data)
+        if o - data != quant_off:
+            out.append("     <SequenceData>")
+            out.append("      <!-- UNPINNED: indirect descriptors do not reach quant_off -->")
+            out.append("     </SequenceData>"); out.append("    </Item>"); return
 
         # ---- decode the packed frame block (quant + indirect channels, frame-major) ----
         frame_bits = sum(u32(S, qz_b + k * 12) for k in range(nqz)) + \
-                     sum(u32(S, ind_b + k * 24) for k in range(ni))
+                     sum(u32(S, d) for d in ind_descs)
         framebits = ((frame_bits + 31) // 32) * 32
         def readbits(bit, n):
             v = 0
@@ -336,7 +347,7 @@ class Ycd:
                 nb = u32(S, qz_b + k * 12); q = f32(S, qz_b + k * 12 + 4); off = f32(S, qz_b + k * 12 + 8)
                 qz_vals[k].append(F(off + F(readbits(bit, nb) * q))); bit += nb
             for k in range(ni):
-                sb = u32(S, ind_b + k * 24); ind_raw[k].append(readbits(bit, sb)); bit += sb
+                sb = u32(S, ind_descs[k]); ind_raw[k].append(readbits(bit, sb)); bit += sb
 
         # ---- parse the mapping region (right after the 6-u16 count table) ----
         m = co + 12
@@ -398,7 +409,7 @@ class Ycd:
                     self._emit_values(out, qz_vals[pl], "         ")
                     out.append('        </Item>')
                 elif kind == "IQ":
-                    self._emit_indirect(out, S, ind_b + pl * 24, ind_raw[pl])
+                    self._emit_indirect(out, S, ind_descs[pl], ind_raw[pl])
             if it in cached:
                 out.append('        <Item>')
                 out.append('         <Type value="CachedQuaternion1" />')
@@ -420,10 +431,15 @@ class Ycd:
 
     def _emit_indirect(self, out, S, desc, raws):
         from meta2xml import f32 as F
-        slotbits = u32(S, desc); pbits = u32(S, desc + 4)
-        q = f32(S, desc + 0xC); off = f32(S, desc + 0x10); packed = u32(S, desc + 0x14)
-        n_pal = min(32 // pbits, (1 << slotbits) - 1)
-        pal = [F(off + F(((packed >> (k * pbits)) & ((1 << pbits) - 1)) * q)) for k in range(n_pal)]
+        slotbits = u32(S, desc); pbits = u32(S, desc + 4); npw = u32(S, desc + 8)
+        q = f32(S, desc + 0xC); off = f32(S, desc + 0x10)
+        # inline palette: npw u32 at desc+0x14, paletteBits each. Entry count = what the
+        # nPalWords hold, CAPPED at (1<<slotBits)-1 (a frame index can address no more) -
+        # the cap is what keeps the compact form right, and min(9,15) leaves the inline
+        # 9-entry palette intact.
+        big = int.from_bytes(bytes(S[desc + 0x14: desc + 0x14 + npw * 4]), "little")
+        n_pal = min((npw * 32) // pbits, (1 << slotbits) - 1)
+        pal = [F(off + F(((big >> (k * pbits)) & ((1 << pbits) - 1)) * q)) for k in range(n_pal)]
         out.append('        <Item>')
         out.append('         <Type value="IndirectQuantizeFloat" />')
         out.append('         <Quantum value="%s" />' % fmt_num(q))
