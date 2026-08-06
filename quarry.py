@@ -565,6 +565,17 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
         sidecars = () if textures == 'none' else ytd2xml.sidecars(
             texs, stem, want_png=(textures != 'dds'), want_dds=(textures != 'png'))
         return (stem + '.ytd.xml', ytd2xml.to_xml(texs).encode('utf-8'), sidecars)
+    if t == 'yfd':
+        import ydr2xml, yfd2xml
+        return stem + '.yfd.xml', yfd2xml.yfd_to_xml(
+            ydr2xml.Res.from_bytes(blob)).encode('utf-8'), ()
+    if t == 'ynd':
+        import ydr2xml, ynd2xml
+        return stem + '.ynd.xml', ynd2xml.convert(
+            ydr2xml.Res.from_bytes(blob)).encode('utf-8'), ()
+    if t == 'ypdb':
+        import ypdb2xml
+        return stem + '.ypdb.xml', ypdb2xml.decode(blob).encode('utf-8'), ()
     if t == 'yvr':
         import ydr2xml, yvr2xml
         return stem + '.yvr.xml', yvr2xml.yvr_to_xml(
