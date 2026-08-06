@@ -794,9 +794,11 @@ class GeometryList(list):
     declared = 0
 
 
-def read_geometries(res, base=0):
-    """All four LOD arrays are real; +0xa0 is a byte-identical ALIAS of +0x50 and must NOT be walked
-    (it would double every mesh). We emit only the High group, which is what the importer reads.
+def read_geometries(res, base=0, group_off=0x50):
+    """One DrawableModels LOD group -> its geometries. group_off selects the LOD:
+    +0x50 High, +0x58 Medium, +0x60 Low, +0x68 VeryLow (derived 2026-08-06, WAL §skel).
+    +0xA0 is a byte-identical ALIAS of +0x50 and must NOT be walked (it would double
+    every mesh). Default High keeps every existing caller (yft truthiness) unchanged.
     base: see read_shaders.
 
     -> GeometryList; `.declared` is the count the file's own model records claim. Every drop below
@@ -807,11 +809,11 @@ def read_geometries(res, base=0):
     is the SHAPE being closed, not a live loss."""
     geos = GeometryList()
     geos.models = []
-    mh_p = res.ptr(base + 0x50)
+    mh_p = res.ptr(base + group_off)
     if mh_p == 0:
-        # No DrawableModelsHigh group at all. Ordinary for a fragment child that carries only
+        # No group at this LOD. Ordinary for a fragment child that carries only
         # collision (19,102 of 19,493 child drawables over 3,000 base yft) - and for a MAIN
-        # drawable it is caught by drawable_lines, which refuses an empty geometry list.
+        # drawable's High group it is caught by drawable_lines, which refuses empty geometry.
         return geos
     buf, mh = res.deref(mh_p, 0x10)
     if buf is None:
@@ -831,9 +833,11 @@ def read_geometries(res, base=0):
         garr_p, ngeo = res.u32(m + 0x08), res.u16(m + 0x10)
         geos.declared += ngeo
         gb_p = res.u32(m + 0x18)
-        # model header bytes (offsets derived 2026-08-06, see drawable_lines comment)
+        # model header bytes: Unknown1 u8@+0x28, BoneIndex u8@+0x2B, RenderMask u8@+0x2C,
+        # Flags u8@+0x2D. ⛔ BoneIndex was +0x2F (always 0) until the animlight pair caught
+        # it: model[1] carries 0x01 at +0x2B where +0x2F stays 0 (2026-08-06).
         geos.models.append({"mask": _b[m + 0x2C], "flags": _b[m + 0x2D],
-                            "unknown1": _b[m + 0x28], "boneindex": _b[m + 0x2F]})
+                            "unknown1": _b[m + 0x28], "boneindex": _b[m + 0x2B]})
         # per-geometry bounds: float4 (min,max) pairs @ model+0x18; [union]+per-geo
         # when ngeo>1 (probed: 0089 entry0 == union of entries 1..n)
         gb_list = None
@@ -884,6 +888,17 @@ def read_geometries(res, base=0):
                         "model %d geometry %d: %d indices" % (mi, gi, idx_count))
                 continue
             indices = list(struct.unpack_from("<%dH" % idx_count, ibuf, io))
+            # BoneIDs: geometry+0x68 ptr -> u16[count], count u16 @ +0x72 (derived
+            # 2026-08-06). Absent (element entirely omitted) when the ptr is NULL - no
+            # self-closing form is ever emitted (wheel2's 4 NULL geometries witness it).
+            boneids = None
+            bid_p, bid_n = res.u32(g + 0x68), res.u16(g + 0x72)
+            if bid_p and bid_n:
+                bbuf, bo = res.deref(bid_p, bid_n * 2)
+                if bbuf is not None:
+                    boneids = list(struct.unpack_from("<%dH" % bid_n, bbuf, bo))
+                else:
+                    _refuse("boneids_unresolved", "model %d geometry %d" % (mi, gi))
             # shaderMap: u16 per geometry -> shader index (often non-identity in real files)
             # ⛔ THE FALLBACK IS A GUESS THAT LOOKS LIKE DATA (counted 2026-08-03). When the map
             # does not resolve, `shader_idx = gi` assumes geometry i uses shader i - and the
@@ -912,6 +927,7 @@ def read_geometries(res, base=0):
                 "indices": indices,
                 "model": mi,
                 "bbox": gb_list[gi] if gb_list and gi < len(gb_list) else None,
+                "boneids": boneids,
             })
     return geos
 
@@ -925,6 +941,134 @@ def read_bounds(res, base=0):
         "bb_min": (f(0x30), f(0x34), f(0x38)),
         "bb_max": (f(0x40), f(0x44), f(0x48)),
     }
+
+
+BONE_FLAG_BITS = (
+    (0, "RotX"), (1, "RotY"), (2, "RotZ"), (4, "TransX"), (5, "TransY"), (6, "TransZ"),
+    (8, "ScaleX"), (9, "ScaleY"), (10, "ScaleZ"), (12, "Unk0"),
+)
+
+
+def _bone_flags(v):
+    syms = [s for bit, s in BONE_FLAG_BITS if v & (1 << bit)]
+    return ", ".join(syms)
+
+
+def skeleton_lines(res, base=0):
+    """<Skeleton> - crSkeletonData @ drawable+0x18 (NULL = no skeleton element at all).
+    Layout + bone struct + Flags vocabulary derived 2026-08-06: 60/60 header + 155/155
+    bone-int + 434/434 float checks. TransformUnk comes from the +0x30 per-bone matrix
+    array's w column (indices 3,7,11,15), not from the bone struct."""
+    sk_p = res.ptr(base + 0x18)
+    if not sk_p:
+        return []
+    buf, o = res.deref(sk_p, 0x68)
+    if buf is None:
+        _refuse("skeleton_unresolved", "0x%08x" % sk_p)
+        return []
+    u32 = lambda at: struct.unpack_from("<I", buf, o + at)[0]
+    nb = struct.unpack_from("<H", buf, o + 0x5E)[0]
+    bone_p = u32(0x20)
+    tu_p = u32(0x30)
+    bb, bo = res.deref(bone_p, nb * 0x50)
+    if bb is None:
+        _refuse("skeleton_bones_unresolved", "%d bones" % nb)
+        return []
+    tub, tuo = res.deref(tu_p, nb * 0x40) if tu_p else (None, 0)
+    ff = fmt_num
+    L = [" <Skeleton>",
+         '  <Unknown1C value="%d" />' % u32(0x1C),
+         '  <Unknown50 value="%d" />' % u32(0x50),
+         '  <Unknown54 value="%d" />' % u32(0x54),
+         '  <Unknown58 value="%d" />' % u32(0x58),
+         "  <Bones>"]
+    for i in range(nb):
+        b = bo + i * 0x50
+        rot = struct.unpack_from("<4f", bb, b + 0x00)
+        trans = struct.unpack_from("<3f", bb, b + 0x10)
+        scale = struct.unpack_from("<3f", bb, b + 0x20)
+        sib, par = struct.unpack_from("<hh", bb, b + 0x30)
+        flags = struct.unpack_from("<H", bb, b + 0x40)[0]
+        tag = struct.unpack_from("<H", bb, b + 0x44)[0]
+        idx = struct.unpack_from("<H", bb, b + 0x46)[0]
+        nm = res.cstr(struct.unpack_from("<I", bb, b + 0x38)[0])
+        if tub is not None:
+            mtx = struct.unpack_from("<16f", tub, tuo + i * 0x40)
+            tu = (mtx[3], mtx[7], mtx[11], mtx[15])
+        else:
+            tu = (0.0, 0.0, 0.0, 0.0)
+        L += ["   <Item>",
+              "    <Name>%s</Name>" % esc(nm or ""),
+              '    <Tag value="%d" />' % tag,
+              '    <Index value="%d" />' % idx,
+              '    <ParentIndex value="%d" />' % par,
+              '    <SiblingIndex value="%d" />' % sib,
+              "    <Flags>%s</Flags>" % _bone_flags(flags),
+              '    <Translation x="%s" y="%s" z="%s" />' % tuple(ff(x) for x in trans),
+              '    <Rotation x="%s" y="%s" z="%s" w="%s" />' % tuple(ff(x) for x in rot),
+              '    <Scale x="%s" y="%s" z="%s" />' % tuple(ff(x) for x in scale),
+              '    <TransformUnk x="%s" y="%s" z="%s" w="%s" />' % tuple(ff(x) for x in tu),
+              "   </Item>"]
+    L += ["  </Bones>", " </Skeleton>"]
+    return L
+
+
+DRAWABLE_MODEL_GROUPS = (
+    (0x50, "DrawableModelsHigh"), (0x58, "DrawableModelsMedium"),
+    (0x60, "DrawableModelsLow"), (0x68, "DrawableModelsVeryLow"),
+)
+
+
+def _model_group_lines(ff, tag, geos):
+    """One <DrawableModels*> group. Model grouping preserved; per-model quintet;
+    per-geometry bbox + BoneIDs. ⚠ VeryLow's tag spelling has ZERO oracle witnesses -
+    no drawable in the set carries a +0x68 group - so if one ever appears this name is
+    a guess and the sweep will flag it."""
+    L = [" <%s>" % tag]
+    models = getattr(geos, "models", None) or [{}]
+    for mi, mm in enumerate(models):
+        mg = [g for g in geos if g.get("model", 0) == mi]
+        if not mg:
+            continue
+        has_skin = any("BlendWeights" in g["layout"] for g in mg)
+        L += ["  <Item>",
+              '   <RenderMask value="%d" />' % mm.get("mask", 255),
+              '   <Flags value="%d" />' % mm.get("flags", 0),
+              '   <HasSkin value="%d" />' % int(has_skin),
+              '   <BoneIndex value="%d" />' % mm.get("boneindex", 0),
+              '   <Unknown1 value="%d" />' % mm.get("unknown1", 0),
+              "   <Geometries>"]
+        for g in mg:
+            L.append("    <Item>")
+            L.append('     <ShaderIndex value="%d" />' % g["shader"])
+            bb = g.get("bbox")
+            if bb is not None:
+                L.append('     <BoundingBoxMin x="%s" y="%s" z="%s" w="%s" />'
+                         % tuple(ff(v) for v in bb[:4]))
+                L.append('     <BoundingBoxMax x="%s" y="%s" z="%s" w="%s" />'
+                         % tuple(ff(v) for v in bb[4:]))
+            if g.get("boneids"):
+                L.append("     <BoneIDs>%s</BoneIDs>"
+                         % ", ".join(str(x) for x in g["boneids"]))
+            L += ["     <VertexBuffer>", '      <Flags value="0" />',
+                  '      <Layout type="GTAV1">']
+            for nm in g["layout"]:
+                L.append("       <%s />" % nm)
+            L += ["      </Layout>", "      <Data>"]
+            L.extend("       " + v for v in g["verts"])
+            L += ["      </Data>", "     </VertexBuffer>", "     <IndexBuffer>"]
+            idx = g["indices"]
+            if len(idx) <= 24:
+                L.append("      <Data>%s</Data>" % " ".join(str(x) for x in idx))
+            else:
+                L.append("      <Data>")
+                for i in range(0, len(idx), 24):
+                    L.append("       " + " ".join(str(x) for x in idx[i:i + 24]))
+                L.append("      </Data>")
+            L += ["     </IndexBuffer>", "    </Item>"]
+        L += ["   </Geometries>", "  </Item>"]
+    L.append(" </%s>" % tag)
+    return L
 
 
 LIGHT_TYPES = {1: "Point", 2: "Spot"}   # observed codes only - others refuse, never guess
@@ -1442,63 +1586,21 @@ def drawable_lines(res, name, base=0, allow_empty=False):
         L.append("   </Item>")
     L.append("  </Shaders>")
     L.append(" </ShaderGroup>")
-    # Model block shape measured against the 2026-08-05/06 oracle set: one <Item> PER
-    # MODEL (grouping preserved, not flattened), each with the header quintet -
-    # RenderMask (u8 model+0x2C) - Flags (u8 +0x2D) - HasSkin (DERIVED: layout carries
-    # BlendWeights, 176/176 oracle drawables) - BoneIndex (u8 +0x2F, all-zero in every
-    # witness so far; yft children will test variance) - Unknown1 (u8 +0x28 = the
-    # referenced-bone count: 233 on task_000_u's ped skin) - then per-geometry float4
-    # BoundingBoxMin/Max from the model+0x18 bounds array ([union]+per-geo when
-    # multi-geo) and <Flags value="0"> opening each VertexBuffer.
-    L.append(" <DrawableModelsHigh>")
-    models = getattr(geos, "models", None) or [{}]
-    for mi, mm in enumerate(models):
-        mg = [g for g in geos if g.get("model", 0) == mi]
-        if not mg:
+    # <Skeleton> sits between ShaderGroup and the model groups (sniper oracle order);
+    # NULL @+0x18 -> no element at all.
+    L.extend(skeleton_lines(res, base))
+    # DrawableModels{High,Medium,Low,VeryLow} from ptrs +0x50/58/60/68; an absent group
+    # is OMITTED (never self-closed). The High group already read above is reused; the
+    # rest are read per-LOD. RenderMask/Flags/HasSkin/BoneIndex/Unknown1 quintet, plus
+    # per-geometry bbox + BoneIDs; VertexBuffer opens with <Flags value="0">.
+    for goff, tag in DRAWABLE_MODEL_GROUPS:
+        g = geos if goff == 0x50 else read_geometries(res, base, group_off=goff)
+        if goff != 0x50 and (not g or len(g) != g.declared):
+            if g and len(g) != g.declared:
+                raise ValueError("%s: %d of %d geometries did not resolve"
+                                 % (tag, g.declared - len(g), g.declared))
             continue
-        has_skin = any("BlendWeights" in g["layout"] for g in mg)
-        L.append("  <Item>")
-        L.append('   <RenderMask value="%d" />' % mm.get("mask", 255))
-        L.append('   <Flags value="%d" />' % mm.get("flags", 0))
-        L.append('   <HasSkin value="%d" />' % int(has_skin))
-        L.append('   <BoneIndex value="%d" />' % mm.get("boneindex", 0))
-        L.append('   <Unknown1 value="%d" />' % mm.get("unknown1", 0))
-        L.append("   <Geometries>")
-        for g in mg:
-            L.append("    <Item>")
-            L.append('     <ShaderIndex value="%d" />' % g["shader"])
-            bb = g.get("bbox")
-            if bb is not None:
-                L.append('     <BoundingBoxMin x="%s" y="%s" z="%s" w="%s" />'
-                         % tuple(ff(v) for v in bb[:4]))
-                L.append('     <BoundingBoxMax x="%s" y="%s" z="%s" w="%s" />'
-                         % tuple(ff(v) for v in bb[4:]))
-            L.append("     <VertexBuffer>")
-            L.append('      <Flags value="0" />')
-            L.append('      <Layout type="GTAV1">')
-            for nm in g["layout"]:
-                L.append("       <%s />" % nm)
-            L.append("      </Layout>")
-            L.append("      <Data>")
-            L.extend("       " + v for v in g["verts"])
-            L.append("      </Data>")
-            L.append("     </VertexBuffer>")
-            L.append("     <IndexBuffer>")
-            idx = g["indices"]
-            # oracle-measured: a list that fits ONE 24-value line is spelled INLINE
-            # (<Data>0 1 2 ...</Data>); longer lists wrap at 24 per 7-space line
-            if len(idx) <= 24:
-                L.append("      <Data>%s</Data>" % " ".join(str(x) for x in idx))
-            else:
-                L.append("      <Data>")
-                for i in range(0, len(idx), 24):
-                    L.append("       " + " ".join(str(x) for x in idx[i:i + 24]))
-                L.append("      </Data>")
-            L.append("     </IndexBuffer>")
-            L.append("    </Item>")
-        L.append("   </Geometries>")
-        L.append("  </Item>")
-    L.append(" </DrawableModelsHigh>")
+        L.extend(_model_group_lines(ff, tag, g))
     # embedded collision - flows to ydd2xml/yft2xml automatically since they call
     # drawable_lines with their entry's base offset (the bound ptr is base-relative
     # at +0xC8; a drawable without a bound contributes nothing)
