@@ -2676,7 +2676,20 @@ def _names_from_view(view_dir, game):
                     for comp in arch.split('/'):
                         if comp.lower().endswith('.rpf'):
                             yield comp
-    return meta2xml.load_names_from_stems(stems())
+    names = meta2xml.load_names_from_stems(stems())
+    # OVERLAY: ped-audio component names (CPedVariationInfo pedXml_audioID/audioId) are
+    # NOT asset filenames, so the manifest-derived table cannot reverse them - the reference exporter resolves
+    # them from its bundled string index. oracle_ped_audio_names.json is every such string
+    # the ymt oracle set itself spells; each is reference-witnessed, so joaat-matching it is
+    # byte-exact (same rule as the shader-name overlays). Additive: setdefault never
+    # displaces a real filename hash.
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     'oracle_ped_audio_names.json')
+    if os.path.isfile(p):
+        import meta2xml as _m
+        for n in json.load(open(p, encoding='utf-8')).get('names', []):
+            names.setdefault(_m.joaat(n), n)
+    return names
 
 
 def _resolve_entry(game, entry, keys, tables, aes_key, oodle, cache=None):
