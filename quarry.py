@@ -2661,15 +2661,25 @@ def _regress_fixtures(root, per_type, seed):
     return out
 
 
-def _regress_signature(path):
+def _regress_signature(path, tags=None):
     """(xml sha256, [(sidecar name, sha256)]) for one binary, through the REAL pipeline entry
-    point - so the gate measures what extract would actually write, not a private code path."""
+    point - so the gate measures what extract would actually write, not a private code path.
+
+    `tags` (optional set) collects the WITNESS TOPICS this fixture's output actually carries -
+    see witness.py. It is filled from the very bytes that get hashed, so a topic reported as
+    witnessed is witnessed by the artifact under gate, not by a re-run of the converter."""
     import hashlib
     blob = open(path, 'rb').read()
     conv = to_interchange_xml(os.path.basename(path), blob, 'none', None)
     if conv is None:
         return {'converted': False}
     _n, xml_bytes, sidecars = conv
+    if tags is not None:
+        import witness
+        tags |= witness.witnessed_tags(xml_bytes.decode('utf-8', 'replace'))
+        for rel, data in (sidecars or ()):
+            if rel.lower().endswith('.xml'):
+                tags |= witness.witnessed_tags(data.decode('utf-8', 'replace'))
     # ⛔ JSON-STABLE BY CONSTRUCTION. The first version stored tuples; json.load returns them as
     # LISTS, so the signature never equalled its own baseline and the gate failed the run
     # immediately after blessing it. A gate that cries wolf on a healthy run gets switched off by
@@ -2786,7 +2796,7 @@ def _regress_witness_report(pinned):
     return covered, missing, unreadable
 
 
-def _regress_meta_signature(path, names):
+def _regress_meta_signature(path, names, tags=None):
     """(kind, xml sha256) for one ytyp/ymap/ymt, through meta2xml.convert - the same call cmd_meta
     makes, with the same names table, so the gate measures what `quarry meta` would actually write.
 
@@ -2801,8 +2811,97 @@ def _regress_meta_signature(path, names):
         # A recognised boundary, not a failure - and a real thing to guard: the day an emitter
         # appears for that root, this entry moves and has to be blessed like any other change.
         return {'converted': False, 'noEmitter': ex.root_name}
+    if tags is not None:
+        import witness
+        tags |= witness.witnessed_tags(xml)
     return {'converted': True, 'kind': kind,
             'xml': hashlib.sha256(xml.encode('utf-8')).hexdigest(), 'bytes': len(xml)}
+
+
+def _regress_topic_report(root, live_tags, pin_tags, types):
+    """⛔⛔ WHAT THE GATE CANNOT SEE, FOR EVERY TYPE - printed on every run.
+
+    #32d closed this for ymap containers and left the residual in writing: "the witness set
+    covers ymap containers only - ytyp/ymt/ydr/ybn/ydd/yft features are still guarded by a
+    random sample alone". This is that residual. A topic here is any tag an emitter can write
+    with CONTENT; it is covered only when a PINNED fixture's own output carries it.
+
+    Returns [] when everything is witnessed or receipted, else the reasons --strict must stop on.
+    """
+    import witness
+    census = witness.load_census(root)
+    stop = []
+    if census is None:
+        print(f'  ! NO TOPIC CENSUS at {witness.census_path(root)} - the gate can only speak '
+              f'for the ymap containers above. Build it:\n'
+              f'      quarry.py witness --out "{root}" --emitted <resolved corpus>')
+        stop.append('no topic census')
+        return stop
+    print(f'topics    : census {census.get("built", "?")[:10]} from '
+          f'{census.get("emittedCorpus") or "(binaries only)"}')
+    known_all = set()
+    for t in types:
+        need, exempt = witness.topics_for(census, t)
+        rec = (census.get('types') or {}).get(t) or {}
+        known_all |= need | exempt
+        live = live_tags.get(t, set())
+        pin = pin_tags.get(t, set())
+        # A tag a FIXTURE emitted is a topic whether or not the census knew about it: the census
+        # is a snapshot of an older emitter, the fixture is this build.
+        new_to_census = sorted(live - need - exempt)
+        need |= set(new_to_census)
+        missing = sorted(need - pin)
+        line = (f'  {t:<5} {len(need):>3} topic(s), {len(need & pin):>3} witnessed by pins, '
+                f'{len(missing):>3} NOT')
+        if exempt:
+            line += f', {len(exempt)} exempt'
+        print(line)
+        if exempt:
+            # THE RECEIPT, EVERY RUN. `containerLods` is the precedent: a topic with no possible
+            # witness is never silenced, it is printed with the measurement that says why.
+            det = ' '.join('%s(%s)' % (tag, f'{(rec.get("emptyOnly") or {}).get(tag, 0):,}')
+                           for tag in sorted(exempt))
+            print(f'        EXEMPT - 0 content-bearing carriers in {rec.get("emittedFiles", 0):,} '
+                  f'emitted {t}; the count is how many carry the EMPTY form: {det}')
+        if new_to_census:
+            print(f'        ! {len(new_to_census)} topic(s) a fixture emits that the census has '
+                  f'never seen ({", ".join(new_to_census[:6])}) - the census predates this '
+                  f'emitter; re-run `quarry.py witness`')
+        if missing:
+            for tag in missing[:8]:
+                e = (rec.get('content') or {}).get(tag) or {}
+                pn = (rec.get('pinnable') or {}).get(tag) or {}
+                where = ''
+                if e.get('smallest'):
+                    where = ' (smallest emitted carrier %s, %s B)' % (
+                        e['smallest'][0][1], f'{e["smallest"][0][0]:,}')
+                if pn.get('smallest'):
+                    where += ' (pin %s)' % os.path.basename(pn['smallest'])
+                print(f'        ! NO PINNED WITNESS for {t} topic {tag}{where}')
+            if len(missing) > 8:
+                print(f'        ! ... and {len(missing) - 8} more')
+            stop.append(f'{t}: {len(missing)} unwitnessed topic(s)')
+    # The SOURCE half, re-derived live from the emitters' own AST every run - this is what makes
+    # the list unable to fall behind the code. A tag the emitters can spell that the census has
+    # never seen ANY carrier for is either a receipted zero-carrier topic or a sign the census is
+    # stale; the two are told apart by whether the census recorded it as leftover.
+    left = witness.source_leftover(census)
+    nleft = sum(len(v) for v in left.values())
+    if nleft:
+        print(f'        EXEMPT - {nleft} source-only tag(s) with 0 carriers in any emitted file: '
+              + ', '.join(sorted(t for v in left.values() for t in v))[:400])
+    known_all |= {t for v in left.values() for t in v}
+    unknown = {}
+    for m in sorted({m for ms in witness.type_emitters().values() for m in ms}):
+        for tag in sorted(set(witness.source_topics(m)) - known_all):
+            unknown.setdefault(m, []).append(tag)
+    if unknown:
+        n = sum(len(v) for v in unknown.values())
+        print(f'  ! {n} tag(s) the EMITTERS can write are unknown to this census '
+              + '; '.join(f'{m}: {", ".join(v[:6])}' for m, v in unknown.items())[:300]
+              + f'\n    the census is behind the code - re-run `quarry.py witness --out "{root}"`')
+        stop.append(f'{n} emitter tag(s) not in the census')
+    return stop
 
 
 def cmd_regress(a):
@@ -2930,13 +3029,25 @@ def cmd_regress(a):
             print('STOP - --strict was requested and the gate cannot see every converter.')
             return 2
 
+    # ⭐ TOPIC WITNESSES, ALL EIGHT TYPES (#32d part 2, 2026-08-05). `live` is what the whole
+    # fixture set emits, `pin` is what the PINNED set emits. Only `pin` counts as coverage - a
+    # topic the seeded sample happens to draw is luck, and luck is the defect - but `live` is
+    # what catches a topic the census has never heard of, i.e. an emitter that grew since the
+    # census was built.
+    live_tags, pin_tags = {}, {}
+
+    def _tagset(store, path):
+        return store.setdefault(os.path.splitext(path)[1].lstrip('.').lower(), set())
+
     sigs, errors = {}, {}
     for p in fixtures:
         key = os.path.relpath(p, root).replace(os.sep, '/')
+        seen = set()
         try:
-            sigs[key] = _regress_signature(p)
+            sigs[key] = _regress_signature(p, seen)
         except Exception as ex:
             errors[key] = f'{type(ex).__name__}: {ex}'
+        _tagset(live_tags, p).update(seen)
 
     if meta_fixtures or pinned:
         import meta2xml
@@ -2954,10 +3065,12 @@ def cmd_regress(a):
         sigs[REGRESS_NAMES_KEY] = {'names': len(names)}
         for p in meta_fixtures:
             key = 'meta:' + os.path.relpath(p, meta_root).replace(os.sep, '/')
+            seen = set()
             try:
-                sigs[key] = _regress_meta_signature(p, names)
+                sigs[key] = _regress_meta_signature(p, names, seen)
             except Exception as ex:
                 errors[key] = f'{type(ex).__name__}: {ex}'
+            _tagset(live_tags, p).update(seen)
         # PINNED fixtures get their own key namespace ('pinned:<type>/<file>') so they can never
         # be confused with a sampled entry, and so a reader of the baseline can see at a glance
         # which entries are guaranteed present. They run through the SAME signature functions -
@@ -2966,11 +3079,17 @@ def cmd_regress(a):
         for p in pinned:
             key = 'pinned:' + os.path.relpath(p, pin_base).replace(os.sep, '/')
             t = os.path.splitext(p)[1].lstrip('.').lower()
+            seen = set()
             try:
-                sigs[key] = (_regress_meta_signature(p, names) if t in REGRESS_META_TYPES
-                             else _regress_signature(p))
+                sigs[key] = (_regress_meta_signature(p, names, seen)
+                             if t in REGRESS_META_TYPES else _regress_signature(p, seen))
             except Exception as ex:
                 errors[key] = f'{type(ex).__name__}: {ex}'
+            _tagset(live_tags, p).update(seen)
+            _tagset(pin_tags, p).update(seen)
+
+    witness_stop = _regress_topic_report(root, live_tags, pin_tags,
+                                         REGRESS_TYPES + REGRESS_META_TYPES)
 
     if a.bless:
         if not a.reason:
@@ -3072,9 +3191,62 @@ def cmd_regress(a):
               + (f' --meta-from "{a.meta_from}"' if a.meta_from else '')
               + ' --bless --reason "record baseline for <what these cover>"')
         return 2
+    # ⛔ AN UNWITNESSED TOPIC IN *ANY* TYPE FAILS, not just ymap (#32d part 2). Reported last so
+    # a real output change is still the headline, but it is a refusal, not a note: a topic with
+    # a carrier and no pin is a structure the gate is blind to, which is the whole defect.
+    if witness_stop and a.strict:
+        print(f'\nSTOP - --strict was requested and the topic gate is not satisfied: '
+              + '; '.join(witness_stop)
+              + f'\n  Pin the smallest carrier under {os.path.join(root, REGRESS_PINNED)}/<type>/ '
+                f'and re-bless, or re-run `quarry.py witness` if the census is stale.')
+        return 2
     if changed or errors or lost_pins:
         return 1
     print('\nOK - every fixture produced byte-identical output. No churn.')
+    return 0
+
+
+def cmd_witness(a):
+    """Rebuild `<project>/_pinned/_TOPICS.json` - the topic census `regress` reads.
+
+    ⛔ IT IS A DERIVED ARTIFACT AND IS NEVER COMMITTED, the same rule as the baseline: it is
+    measured from the operator's own extraction of their own copy of the game.
+
+    Re-run it whenever an EMITTER CHANGES. The gate does not need it to notice that the emitters
+    grew - it re-derives the source half live on every run and fails on a tag it has never seen -
+    but only this pass can say how many real files carry a new structure, and that count is what
+    turns "unwitnessed" into either a pin or a receipted exemption.
+    """
+    import witness
+    root = a.out
+    if not os.path.isdir(root):
+        print(f'no project folder at {root}')
+        return 2
+    types = a.types.split(',') if a.types else None
+    print(f'building topic census from {root}'
+          + (f' + emitted corpus {a.emitted}' if a.emitted else '')
+          + (f' + binaries {a.binaries}' if a.binaries else ''))
+    c = witness.build_census(root, a.emitted, tuple(a.binaries), types, a.workers,
+                             prior=witness.load_census(root))
+    p = witness.census_path(root)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, 'w') as fh:
+        json.dump(c, fh, indent=1, sort_keys=True)
+    ntop = sum(len(v['content']) + len(v['emptyOnly']) for v in c['types'].values())
+    nleft = sum(len(v) for v in c['sourceLeftover'].values())
+    print(f'wrote {p}\n  {ntop} topics across {len(c["types"])} types; '
+          f'{nleft} source-only tag(s) with no carrier in any emitted file')
+    if a.plan:
+        for t in sorted(c['types']):
+            pins, nocarrier = witness.plan_pins(c, t)
+            tot = sum(os.path.getsize(x) for x in pins)
+            print(f'-- {t}: {len(pins)} pin(s), {tot:,} B, '
+                  f'{len(nocarrier)} topic(s) with no pinnable binary')
+            for x in sorted(pins, key=lambda k: os.path.getsize(k)):
+                print(f'     {os.path.getsize(x):>9,} B  {os.path.basename(x):<44} '
+                      f'{len(pins[x])} topic(s)')
+            if nocarrier:
+                print('     NO PINNABLE CARRIER: ' + ' '.join(nocarrier))
     return 0
 
 
@@ -3201,6 +3373,23 @@ def main():
                     help='FAIL if the project holds no binaries for some converter, instead of '
                          'reporting a green pass that only covered the types it could see')
     pr.set_defaults(fn=cmd_regress)
+
+    pw = sub.add_parser('witness', help='rebuild the TOPIC CENSUS the churn gate reads: what '
+                                        'every emitter can write, how many real files carry it, '
+                                        'and which binary is the smallest carrier')
+    pw.add_argument('--out', required=True, help='the fixture project (writes _pinned/_TOPICS.json)')
+    pw.add_argument('--emitted', help='a corpus of ALREADY-EMITTED <type>/*.<type>.xml (e.g. a '
+                                      'resolved filebase). This is the whole-game evidence base '
+                                      'every exemption receipt quotes; without it the census can '
+                                      'only speak for the binaries in --out')
+    pw.add_argument('--binaries', action='append', default=[],
+                    help='extra root holding <type>/ binaries to consider as pin candidates '
+                         '(repeatable)')
+    pw.add_argument('--types', help='comma-separated types (default: all eight)')
+    pw.add_argument('--workers', type=int, default=6)
+    pw.add_argument('--plan', action='store_true',
+                    help='also print the pin set this census implies, smallest carrier per topic')
+    pw.set_defaults(fn=cmd_witness)
 
     a = ap.parse_args()
     if a.cmd in ('init', 'extract') and not a.out:
