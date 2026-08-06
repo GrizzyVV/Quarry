@@ -2820,14 +2820,31 @@ def cmd_export(a):
                                         cache=arch_cache)
             kind = type_of(name)
             if kind in META_KINDS:
-                if kind == 'ymt' and blob[:4] in (b'PSIN', b'RBF0'):
-                    # parity with the meta pass: a PSO/RBF .ymt is a DIFFERENT container,
-                    # counted and kept binary - never failed, never guessed
+                if kind == 'ymt' and blob[:4] == b'PSIN':
+                    # a PSIN .ymt is a PSO container, not META - route it through the
+                    # generic pso2xml lane (firingpatterns / naOcclusion), same as ymf.
+                    # the reference exporter names it <stem>.ymt.pso.xml.
+                    conv = to_interchange_xml(name, blob,
+                                              getattr(a, 'textures', 'both'),
+                                              stats, names=names)
+                    if conv is not None:
+                        xml_name, xml_bytes, _extras = conv
+                        with open(os.path.join(out_dir, xml_name), 'wb') as fh:
+                            fh.write(xml_bytes)
+                        ok += 1
+                        print(f'  {entry} -> {xml_name}')
+                        continue
                     with open(os.path.join(out_dir, name), 'wb') as fh:
                         fh.write(blob)
                     kept_binary += 1
-                    print(f'  {name}: {blob[:4].decode()} container - kept binary '
-                          '(counted; not META)')
+                    continue
+                if kind == 'ymt' and blob[:4] == b'RBF0':
+                    # RBF0 = old binary-XML container, a different format with no reader
+                    # here - kept binary, counted, never guessed.
+                    with open(os.path.join(out_dir, name), 'wb') as fh:
+                        fh.write(blob)
+                    kept_binary += 1
+                    print(f'  {name}: RBF0 container - kept binary (counted; not META)')
                     continue
                 stem = name[:-(len(kind) + 1)]
                 xml, got_kind, w = meta2xml.convert_bytes(blob, stem, names)
