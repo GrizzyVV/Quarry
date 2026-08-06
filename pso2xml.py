@@ -27,26 +27,48 @@ CONTAINER (all integers BIG-ENDIAN):
     CHKS  {u32 totalSize, u32 checksum, u32 0x79707070} (unmapped, not needed).
 
 METAPOINTER (u32): low 12 bits = 1-based block index, high 20 bits = byte offset in block.
-ARRAY descriptor (16 B at the field offset): {u32 ptr, u32 pad, u16 count, u16 cap, u32 pad}.
+ARRAY storage (type 0x0d) is TWO shapes, told apart by the field's own .sub:
+  .sub 0x00  POINTER array: 16-B descriptor at the field offset {u32 metaptr, u32 pad,
+             u16 count, u16 cap, u32 pad}; element data in the pointed block. count from the
+             descriptor. (Every CPackFileMetaData/.ymf array; .cut pointer lists.)
+  .sub 0x01/0x02/0x04/0x81  INLINE array: element data stored inline AT the field offset in
+             THIS struct; COUNT = extra>>16 (a fixed/capacity array, NOT in any descriptor);
+             the 16-bit offset is used RAW (no high-bit reconstruction - measured against
+             junctions AutoJunctionAdjustments @0x99b0). (junctions Entries/Entrances/
+             PhaseTimings/TrafficLightLocations/vJunctionNodePositions/AutoJunctionAdjustments;
+             .cut concatDataList/iCutsceneFlags.) The .sub value (01 vs 02 vs 81) carries
+             storage nuance we do not need: all render identically given (count, element).
+ARRAY ELEMENT (refTypeIdx = extra & 0xFFFF -> a sibling schema entry, name 0x100) drives XML:
+  struct (0x0c)     -> <name itemType="ElemStruct"> <Item>..</Item> .. </name>  (stride = size)
+  struct-ptr (0x0c/sub03, pointer lane only) -> <Item type="PolyStruct"> per pointed block id
+  vec3 (0x09/0x14)  -> one "x, y, z" per line (fmt_num, ", "-joined), indented; no <Item>
+  hash-string(0x0b) -> <Item>name</Item> per element (no itemType)
+  scalar(0x00/02/03/05/06/07) -> space-joined in the tag body, one line ("268452352 0 0 0"; "3")
 
 MEMBER TYPE CODES (schema entry .type), with the reference exporter XML rendering:
-  0x00 bool            <X value="true|false" />         (measured: scenario EnabledByDefault)
-  0x02 u8   (1 byte)   <X value="N" />                  (cut; stride 1)   [scalar, unpinned sign]
+  0x00 bool            <X value="true|false" />         (scenario EnabledByDefault; cut IsChild)
+  0x02 u8   (1 byte)   <X value="N" />                  (cut attributeList UserData1/2)
   0x03 i16  (2 bytes)  <X value="N" />                  (firingpatterns NumberOfBursts = -1)
-  0x05 u32/int (4B)    <X value="N" />                  (cut; manifest unk0) [unpinned exact]
-  0x06 ? (element)     -                                (cut array element) [UNPINNED]
+  0x05 int32 (4B)      <X value="N" /> signed           (cut iObjectId/iRangeStart)
+  0x06 int32 (4B)      sub 0x00 <X value="N" /> SIGNED (cut AnimStreamingBase = -175977911);
+                       sub 0x01 <X value="0xNNNNNNNN" /> packed colour (cut fadeInColor)
   0x07 float32 (4B)    <X value="fmt_num" />            (firingpatterns TimeBetween... = 2.5)
-  0x0b string          sub 0x00 inline char[extra>>16]; sub 0x07/0x08 joaat(lower) hash-string
-  0x0c struct          element-desc (name 0x100): extra = element struct hash; else inline struct
-  0x0d array           extra = refTypeIdx of its element-descriptor within the same struct
+  0x09 vec3            <X x=".." y=".." z=".." /> 3 BE floats in a 16-B slot; 4th word = pad
+  0x0b string          see STRING SUBTYPES
+  0x0c struct          tagged by the FIELD name (not the struct's own name):
+                       sub 0x00 inline struct at field offset (extra = struct hash);
+                       sub 0x03 POINTER to a struct (null -> empty; block id gives the type);
+                       sub 0x04 / extra 0 -> empty <X /> (cut cutfAttributes)
+  0x0d array           see ARRAY STORAGE / ARRAY ELEMENT above
   0x0e enum            extra = enum def hash; renders member NAME as element text
-  0x0f flags           extra low16 = refTypeIdx of enum element-desc; 0 -> empty, else names ", "-joined
-  0x15 float4/vec4     (measured: scenario AABB min/max) [not exercised by CPackFileMetaData]
-Codes seen but NOT pinned to an XML form are listed in UNPINNED at bottom.
+  0x0f flags           extra low16 = refTypeIdx of enum element-desc; 0 -> empty, else " "-joined
+  0x14 vec3            same XML as 0x09 (cut vLocation) - shares one renderer
+  0x15 float4/vec4     <X x y z w /> (scenario AABB min/max)
 
 STRING SUBTYPES (type 0x0b .sub):
-  0x00 inline fixed char[len], len = extra>>16, NUL-terminated  (targetAsset, HDTxd)
-  0x07 / 0x08 joaat(lower) hash -> name via dict, else hash_%08X (imapName, itypName, Bounds ...)
+  0x00 inline fixed char[len], len = extra>>16, NUL-terminated       (cFaceDir, targetAsset, HDTxd)
+  0x03 POINTER to a NUL-terminated inline string in a block          (cut cName "UNDER_INT_4.WAV")
+  0x07 / 0x08 joaat(lower) hash -> name via dict, else hash_%08X     (imapName, StreamingName, ..)
 """
 import struct
 
@@ -94,6 +116,36 @@ SCHEMA_NAMES = (
     "NumberOfShotsPerBurstMax", "TimeBetweenShotsMin", "TimeBetweenShotsMax",
     "TimeBetweenShotsAbsoluteMin", "TimeBetweenBurstsMin", "TimeBetweenBurstsMax",
     "TimeBetweenBurstsAbsoluteMin", "TimeBeforeFiringMin", "TimeBeforeFiringMax",
+    # CJunctionTemplateArray (junctions.pso) tree
+    "CJunctionTemplateArray", "Entries", "CJunctionTemplate", "AutoJunctionAdjustments",
+    "CAutoJunctionAdjustment", "CJunctionTemplate__CEntrance", "CJunctionTemplate__CPhaseTiming",
+    "CJunctionTemplate__CTrafficLightLocation",
+    "iFlags", "iNumJunctionNodes", "iNumEntrances", "iNumPhases", "iNumTrafficLightLocations",
+    "fSearchDistance", "fPhaseOffset", "vJunctionMin", "vJunctionMax", "vJunctionNodePositions",
+    "Entrances", "PhaseTimings", "TrafficLightLocations", "vNodePosition", "iPhase",
+    "fStoppingDistance", "fOrientation", "fAngleFromCenter", "bCanTurnRightOnRedLight",
+    "bLeftLaneIsAheadOnly", "bRightLaneIsRightOnly", "iLeftFilterLanePhase", "fStartTime",
+    "fDuration", "iPosX", "iPosY", "iPosZ", "vLocation", "fCycleOffset", "fCycleDuration",
+    # rage__cutfCutsceneFile2 (.cut) tree - struct/object type names
+    "rage__cutfCutsceneFile2", "rage__cutfCutsceneFile2__SConcatData", "vHaltFrequency",
+    "rage__cutfAssetManagerObject", "rage__cutfAnimationManagerObject", "rage__cutfAudioObject",
+    "rage__cutfPedModelObject", "rage__cutfCameraObject", "rage__cutfObjectIdEvent",
+    "rage__cutfLoadSceneEventArgs", "rage__cutfObjectIdListEventArgs", "rage__cutfNameEventArgs",
+    "rage__cutfObjectIdNameEventArgs",
+    # .cut field names
+    "fTotalDuration", "cFaceDir", "iCutsceneFlags", "vOffset", "fRotation", "vTriggerOffset",
+    "pCutsceneObjects", "pCutsceneLoadEventList", "pCutsceneEventList", "pCutsceneEventArgsList",
+    "attributes", "cutfAttributes", "iRangeStart", "iRangeEnd", "iAltRangeEnd",
+    "fSectionByTimeSliceDuration", "fFadeOutCutsceneDuration", "fFadeInGameDuration", "fadeInColor",
+    "iBlendOutCutsceneDuration", "iBlendOutCutsceneOffset", "fFadeOutGameDuration",
+    "fFadeInCutsceneDuration", "fadeOutColor", "DayCoCHours", "cameraCutList", "sectionSplitList",
+    "concatDataList", "discardFrameList", "cSceneName", "fPitch", "fRoll", "bValidForPlayBack",
+    "frames", "iObjectId", "attributeList", "UserData1", "UserData2", "cName", "StreamingName",
+    "AnimStreamingBase", "fOffset", "fNearDrawDistance", "fFarDrawDistance", "fTime", "iEventId",
+    "iEventArgsIndex", "pChildEvents", "StickyId", "IsChild", "iObjectIdList",
+    "cAnimExportCtrlSpecFile", "cFaceExportCtrlSpecFile", "cAnimCompressionFile", "cHandle",
+    "typeFile", "overrideFaceAnimationFilename", "bFoundFaceAnimation", "bFaceAndBodyAreMerged",
+    "bOverrideFaceAnimation", "faceAnimationNodeName", "faceAttributesFilename",
 )
 SCHEMA_BY_HASH = {joaat_case(n): n for n in SCHEMA_NAMES}
 
@@ -281,23 +333,33 @@ class Emitter:
         out = newline.join(lines)
         return out + newline if trailing else out
 
-    def emit_struct(self, shash, buf, base, depth):
-        """Emit <name>..fields..</name> for a struct at buf[base:]."""
-        name = schema_name(shash)
-        ind = " " * depth
-        try:
-            sdef = self.p.struct_def(shash)
-        except PsoError:
-            self._warn("no schema for struct %#010x" % shash)
-            return ["%s<%s />" % (ind, name)]
+    def _struct_body(self, shash, buf, base, depth):
+        """The field lines of a struct (no wrapping tag). Raises PsoError if no schema."""
+        sdef = self.p.struct_def(shash)
         body = []
         for e in sdef["entries"]:
             if e["name"] == ELEM:
                 continue
-            body += self.emit_member(sdef, e, buf, base, depth + 1)
+            body += self.emit_member(sdef, e, buf, base, depth)
+        return body
+
+    def emit_struct(self, shash, buf, base, depth):
+        """Emit <StructName>..fields..</StructName> for a struct at buf[base:]."""
+        return self._emit_named_struct(schema_name(shash), shash, buf, base, depth)
+
+    def _emit_named_struct(self, tag, shash, buf, base, depth):
+        """Emit <tag>..fields..</tag>; the tag is the CALLER's choice (a struct member uses
+        its FIELD name, not the struct's own name - .cut's <attributes>/<attributeList> both
+        wrap the same SUserAttributes struct)."""
+        ind = " " * depth
+        try:
+            body = self._struct_body(shash, buf, base, depth + 1)
+        except PsoError:
+            self._warn("no schema for struct %#010x" % shash)
+            return ["%s<%s />" % (ind, tag)]
         if not body:
-            return ["%s<%s />" % (ind, name)]
-        return ["%s<%s>" % (ind, name)] + body + ["%s</%s>" % (ind, name)]
+            return ["%s<%s />" % (ind, tag)]
+        return ["%s<%s>" % (ind, tag)] + body + ["%s</%s>" % (ind, tag)]
 
     def _struct_item(self, shash, buf, base, depth, type_attr=None):
         """Emit one <Item[ type="X"]> ... </Item> for a struct array element."""
@@ -305,18 +367,32 @@ class Emitter:
         open_tag = '%s<Item type="%s">' % (ind, type_attr) if type_attr else "%s<Item>" % ind
         empty_tag = '%s<Item type="%s" />' % (ind, type_attr) if type_attr else "%s<Item />" % ind
         try:
-            sdef = self.p.struct_def(shash)
+            body = self._struct_body(shash, buf, base, depth + 1)
         except PsoError:
             self._warn("no schema for item struct %#010x" % shash)
             return [empty_tag]
-        body = []
-        for e in sdef["entries"]:
-            if e["name"] == ELEM:
-                continue
-            body += self.emit_member(sdef, e, buf, base, depth + 1)
         if not body:
             return [empty_tag]
         return [open_tag] + body + ["%s</Item>" % ind]
+
+    # ---- scalar element helpers (shared by scalar members and scalar arrays) ----
+    _SCALAR_SIZE = {0x00: 1, 0x02: 1, 0x03: 2, 0x05: 4, 0x06: 4, 0x07: 4}
+
+    @staticmethod
+    def _scalar_str(et, esub, buf, o):
+        """One scalar rendered as the reference exporter spells it. 0x06 sub 0x01 is a packed colour (hex u32);
+        every other int is decimal-signed; 0x07 float via fmt_num; 0x00 bool as true/false."""
+        if et == 0x00:
+            return "true" if buf[o] else "false"
+        if et == 0x02:
+            return str(buf[o])
+        if et == 0x03:
+            return str(struct.unpack_from(">h", buf, o)[0])
+        if et == 0x07:
+            return fmt_num(struct.unpack_from(">f", buf, o)[0])
+        if et == 0x06 and esub == 0x01:
+            return "0x%08X" % struct.unpack_from(">I", buf, o)[0]
+        return str(struct.unpack_from(">i", buf, o)[0])          # 0x05 / 0x06 signed int32
 
     def emit_member(self, sdef, e, buf, base, depth):
         ind = " " * depth
@@ -332,7 +408,14 @@ class Emitter:
                 s = raw.decode("latin1")
                 return ["%s<%s />" % (ind, name)] if s == "" else \
                        ["%s<%s>%s</%s>" % (ind, name, esc(s), name)]
-            # hash-string
+            if sub == 0x03:                        # POINTER to a NUL-terminated inline string
+                # metaptr -> block; the char data lives in a separate string block. Null -> empty.
+                # (.cut rage__cutfAudioObject cName -> "UNDER_INT_4.WAV").
+                mp = struct.unpack_from(">I", buf, o)[0]
+                s = self._string_at_ptr(mp)
+                return ["%s<%s />" % (ind, name)] if s == "" else \
+                       ["%s<%s>%s</%s>" % (ind, name, esc(s), name)]
+            # hash-string (sub 0x07 / 0x08): joaat(lower) -> name dict, else hash_%08X
             h = struct.unpack_from(">I", buf, o)[0]
             s = self.resolve_hashstring(h)
             return ["%s<%s />" % (ind, name)] if s == "" else \
@@ -362,8 +445,20 @@ class Emitter:
             # order (CMapDataGroup Flags -> "TIME_DEPENDENT WEATHER_DEPENDENT"). Note this
             # differs from RSC7-META's comma-join in meta2xml - a per-format rendering law.
             return ["%s<%s>%s</%s>" % (ind, name, esc(" ".join(parts)), name)]
-        if t == 0x0c:                              # inline STRUCT member
-            return self.emit_struct(extra, buf, o, depth)
+        if t == 0x0c:                              # STRUCT member (tagged by FIELD name)
+            if sub == 0x03:                        # POINTER to a single struct; null -> empty
+                # the pointed block's own id gives the (polymorphic) struct type.
+                # (.cut pChildEvents is always null here -> <pChildEvents />).
+                mp = struct.unpack_from(">I", buf, o)[0]
+                if mp == 0:
+                    return ["%s<%s />" % (ind, name)]
+                bidx, boff2 = self.p.metaptr(mp)
+                tbid = self.p.blocks[bidx - 1][0]
+                return self._emit_named_struct(name, tbid, self.p.block_data(bidx), boff2, depth)
+            if sub == 0x04 or extra == 0:          # typed inline struct with no fields -> empty
+                # (.cut cutfAttributes: the element struct hash reads 0 -> <cutfAttributes />).
+                return ["%s<%s />" % (ind, name)]
+            return self._emit_named_struct(name, extra, buf, o, depth)
         # scalars
         if t == 0x00:                              # bool
             return ['%s<%s value="%s" />' % (ind, name, "true" if buf[o] else "false")]
@@ -375,14 +470,24 @@ class Emitter:
         if t == 0x05:                              # signed int32
             v = struct.unpack_from(">i", buf, o)[0]
             return ['%s<%s value="%d" />' % (ind, name, v)]
-        if t == 0x06:                              # signed int32. MEASURED: the reference exporter renders it signed
-            # (naOcclusion EntityModelHashkey = -1033001619, stored 0xC26F7CAD). CPackFileMetaData's
-            # HoursOnOff is also 0x06 but every value is < 2^31 so signed == unsigned there.
+        if t == 0x06:                              # int32. MEASURED: the reference exporter renders sub 0x00 SIGNED
+            # (naOcclusion EntityModelHashkey = -1033001619, stored 0xC26F7CAD; .cut AnimStreamingBase
+            # = -175977911). sub 0x01 is a PACKED COLOUR -> hex u32 (.cut fadeInColor 0xFF000000).
+            if sub == 0x01:
+                return ['%s<%s value="0x%08X" />'
+                        % (ind, name, struct.unpack_from(">I", buf, o)[0])]
             v = struct.unpack_from(">i", buf, o)[0]
             return ['%s<%s value="%d" />' % (ind, name, v)]
         if t == 0x07:                              # float32
             v = struct.unpack_from(">f", buf, o)[0]
             return ['%s<%s value="%s" />' % (ind, name, fmt_num(v))]
+        if t == 0x09 or t == 0x14:                 # vec3 (3 BE floats in a 16-byte slot; x/y/z)
+            # MEASURED: both codes render x/y/z only, 4th word is padding (.cut vOffset, junctions
+            # vJunctionMin/vNodePosition = 0x09; junctions vLocation = 0x14). No observed difference
+            # in XML form between the two, so they share one renderer.
+            x, y, z = struct.unpack_from(">3f", buf, o)
+            return ['%s<%s x="%s" y="%s" z="%s" />'
+                    % (ind, name, fmt_num(x), fmt_num(y), fmt_num(z))]
         if t == 0x15:                              # vec4
             x, y, z, w = struct.unpack_from(">4f", buf, o)
             return ['%s<%s x="%s" y="%s" z="%s" w="%s" />'
@@ -390,10 +495,63 @@ class Emitter:
         self._warn("unhandled member type %#04x" % t)
         return ["%s<%s />" % (ind, name)]
 
+    def _string_at_ptr(self, mp):
+        """Follow a metaptr to a block and read a NUL-terminated latin1 string. 0 -> ''."""
+        if mp == 0:
+            return ""
+        bidx, off = self.p.metaptr(mp)
+        bdata = self.p.block_data(bidx)
+        return bytes(bdata[off:]).split(b"\x00", 1)[0].decode("latin1")
+
+    # ---- array element renderers (shared by the pointer and inline lanes) ----
+    def _emit_struct_array(self, name, ind, shash, buf, o, count, stride, depth):
+        itype = schema_name(shash)
+        if count == 0:
+            return ['%s<%s itemType="%s" />' % (ind, name, itype)]
+        out = ['%s<%s itemType="%s">' % (ind, name, itype)]
+        for i in range(count):
+            out += self._struct_item(shash, buf, o + i * stride, depth + 1)
+        out.append("%s</%s>" % (ind, name))
+        return out
+
+    def _emit_vec3_array(self, name, ind, buf, o, count, depth):
+        # MEASURED: a vec3 array renders ONE "x, y, z" per line (fmt_num, ", "-joined),
+        # indented depth+1 (junctions vJunctionNodePositions). NO <Item> wrappers.
+        if count == 0:
+            return ["%s<%s />" % (ind, name)]
+        f = " " * (depth + 1)
+        out = ["%s<%s>" % (ind, name)]
+        for i in range(count):
+            x, y, z = struct.unpack_from(">3f", buf, o + i * 16)
+            out.append("%s%s, %s, %s" % (f, fmt_num(x), fmt_num(y), fmt_num(z)))
+        out.append("%s</%s>" % (ind, name))
+        return out
+
+    def _emit_hashstring_array(self, name, ind, buf, o, count, depth):
+        if count == 0:
+            return ["%s<%s />" % (ind, name)]
+        f = " " * (depth + 1)
+        out = ["%s<%s>" % (ind, name)]
+        for i in range(count):
+            h = struct.unpack_from(">I", buf, o + i * 4)[0]
+            out.append("%s<Item>%s</Item>" % (f, esc(self.resolve_hashstring(h))))
+        out.append("%s</%s>" % (ind, name))
+        return out
+
+    def _emit_scalar_array(self, name, ind, et, esub, buf, o, count):
+        # MEASURED: a scalar array renders space-joined in the tag body, one line
+        # (.cut iCutsceneFlags "268452352 0 0 0"; iObjectIdList "3").
+        if count == 0:
+            return ["%s<%s />" % (ind, name)]
+        sz = self._SCALAR_SIZE.get(et, 4)
+        parts = [self._scalar_str(et, esub, buf, o + i * sz) for i in range(count)]
+        return ["%s<%s>%s</%s>" % (ind, name, " ".join(parts), name)]
+
     def emit_array(self, sdef, e, buf, base, depth, name, ind):
-        # refTypeIdx = low 16 bits of extra (high bits carry element-storage info in the
-        # richer .cut/.pso schemas; 0 for every CPackFileMetaData array). Guarded so an
-        # unrecognised richer-format array degrades to a warning, never a crash.
+        # refTypeIdx = low 16 bits of extra; the element descriptor is another entry of THIS
+        # struct (its name is the synthetic 0x100). High 16 bits of extra = the element COUNT
+        # for the inline subtypes (0 for every sub-0x00 pointer array, whose count is in the
+        # descriptor). Guarded so an unrecognised array degrades to a warning, never a crash.
         ridx = e["extra"] & 0xFFFF
         if ridx >= len(sdef["entries"]):
             self._warn("array refTypeIdx %d out of range (extra=%#x)" % (ridx, e["extra"]))
@@ -401,58 +559,80 @@ class Emitter:
         desc = sdef["entries"][ridx]               # element descriptor (name 0x100)
         et, esub, eextra = desc["type"], desc["sub"], desc["extra"]
         o = base + e["off"]
-        ptr, _pad, count, cap = struct.unpack_from(">IIHH", buf, o)
-        if et == 0x0c and esub == 0x03:            # array of POINTERS to structs
-            # element block holds {u32 metaptr, u32 pad} pairs; each -> a struct block whose
-            # own id gives the item's polymorphic type. No itemType attr on the array; each
-            # <Item> carries type="StructName" (measured: firingpatterns Infos).
-            if count == 0:
-                return ["%s<%s />" % (ind, name)]
-            bidx, boff = self.p.metaptr(ptr)
-            bdata = self.p.block_data(bidx)
-            out = ["%s<%s>" % (ind, name)]
-            for i in range(count):
-                mp = struct.unpack_from(">I", bdata, boff + i * 8)[0]
-                tbidx, tboff = self.p.metaptr(mp)
-                tbid = self.p.blocks[tbidx - 1][0]
-                out += self._struct_item(tbid, self.p.block_data(tbidx), tboff,
-                                         depth + 1, type_attr=schema_name(tbid))
-            out.append("%s</%s>" % (ind, name))
-            return out
-        if et == 0x0c:                             # array of INLINE structs -> itemType attr
-            itype = schema_name(eextra)
-            if count == 0:
-                return ['%s<%s itemType="%s" />' % (ind, name, itype)]
+
+        if e["sub"] == 0x00:
+            # POINTER array: 16-byte descriptor {u32 metaptr, u32 pad, u16 count, u16 cap, u32}.
+            # Element data lives in the pointed block. (Every CPackFileMetaData/.ymf array.)
+            ptr, _pad, count, cap = struct.unpack_from(">IIHH", buf, o)
+            if et == 0x0c and esub == 0x03:        # array of POINTERS to structs
+                # element block holds {u32 metaptr, u32 pad} pairs; each -> a struct block whose
+                # own id gives the item's polymorphic type. No itemType attr; each <Item> carries
+                # type="StructName" (firingpatterns Infos; .cut pCutsceneObjects/EventLists).
+                if count == 0:
+                    return ["%s<%s />" % (ind, name)]
+                bidx, boff = self.p.metaptr(ptr)
+                bdata = self.p.block_data(bidx)
+                out = ["%s<%s>" % (ind, name)]
+                for i in range(count):
+                    mp = struct.unpack_from(">I", bdata, boff + i * 8)[0]
+                    tbidx, tboff = self.p.metaptr(mp)
+                    tbid = self.p.blocks[tbidx - 1][0]
+                    out += self._struct_item(tbid, self.p.block_data(tbidx), tboff,
+                                             depth + 1, type_attr=schema_name(tbid))
+                out.append("%s</%s>" % (ind, name))
+                return out
+            if et == 0x0c:                         # array of INLINE structs via pointer
+                if count == 0:
+                    return ['%s<%s itemType="%s" />' % (ind, name, schema_name(eextra))]
+                if eextra not in self.p.def_off:
+                    self._warn("inline-struct array element struct %#010x missing (sub=%#x)"
+                               % (eextra, esub))
+                    return ["%s<%s />" % (ind, name)]
+                bidx, boff = self.p.metaptr(ptr)
+                stride = self.p.struct_def(eextra)["size"]
+                return self._emit_struct_array(name, ind, eextra, self.p.block_data(bidx),
+                                               boff, count, stride, depth)
+            if et == 0x0b:                         # array of hash-strings (no itemType)
+                if count == 0:
+                    return ["%s<%s />" % (ind, name)]
+                bidx, boff = self.p.metaptr(ptr)
+                return self._emit_hashstring_array(name, ind, self.p.block_data(bidx),
+                                                   boff, count, depth)
+            if et in (0x09, 0x14):                 # array of vec3 via pointer
+                if count == 0:
+                    return ["%s<%s />" % (ind, name)]
+                bidx, boff = self.p.metaptr(ptr)
+                return self._emit_vec3_array(name, ind, self.p.block_data(bidx),
+                                             boff, count, depth)
+            if et in self._SCALAR_SIZE:            # array of scalars via pointer (iObjectIdList)
+                if count == 0:
+                    return ["%s<%s />" % (ind, name)]
+                bidx, boff = self.p.metaptr(ptr)
+                return self._emit_scalar_array(name, ind, et, esub, self.p.block_data(bidx),
+                                               boff, count)
+            self._warn("unhandled array element type %#04x" % et)
+            return ["%s<%s />" % (ind, name)]
+
+        # INLINE array (sub 0x01/0x02/0x04/0x81): element data is stored inline at base+off in
+        # THIS buffer; count = extra>>16 (a fixed/capacity array). Verified against junctions
+        # (Entries/Entrances/PhaseTimings/TrafficLightLocations/vJunctionNodePositions/
+        # AutoJunctionAdjustments) and .cut (concatDataList/iCutsceneFlags), byte-identical.
+        count = e["extra"] >> 16
+        if et == 0x0c:
             if eextra not in self.p.def_off:
                 self._warn("inline-struct array element struct %#010x missing (sub=%#x)"
-                           % (eextra, esub))
+                           % (eextra, e["sub"]))
                 return ["%s<%s />" % (ind, name)]
-            bidx, boff = self.p.metaptr(ptr)
-            bdata = self.p.block_data(bidx)
             stride = self.p.struct_def(eextra)["size"]
-            out = ['%s<%s itemType="%s">' % (ind, name, itype)]
-            for i in range(count):
-                out += self._struct_item(eextra, bdata, boff + i * stride, depth + 1)
-            out.append("%s</%s>" % (ind, name))
-            return out
-        if et == 0x0b:                             # array of hash-strings -> no itemType
-            if count == 0:
-                return ["%s<%s />" % (ind, name)]
-            bidx, boff = self.p.metaptr(ptr)
-            bdata = self.p.block_data(bidx)
-            out = ["%s<%s>" % (ind, name)]
-            f = " " * (depth + 1)
-            for i in range(count):
-                h = struct.unpack_from(">I", bdata, boff + i * 4)[0]
-                s = self.resolve_hashstring(h)
-                out.append("%s<Item>%s</Item>" % (f, esc(s)))
-            out.append("%s</%s>" % (ind, name))
-            return out
-        # other element kinds (primitive arrays etc.) - declared, not guessed
-        self._warn("unhandled array element type %#04x" % et)
-        if count == 0:
-            return ["%s<%s />" % (ind, name)]
-        return ["%s<%s>" % (ind, name), "%s</%s>" % (ind, name)]
+            return self._emit_struct_array(name, ind, eextra, buf, o, count, stride, depth)
+        if et in (0x09, 0x14):
+            return self._emit_vec3_array(name, ind, buf, o, count, depth)
+        if et == 0x0b:
+            return self._emit_hashstring_array(name, ind, buf, o, count, depth)
+        if et in self._SCALAR_SIZE:
+            return self._emit_scalar_array(name, ind, et, esub, buf, o, count)
+        self._warn("unhandled inline array element type %#04x (sub=%#x)" % (et, e["sub"]))
+        return ["%s<%s />" % (ind, name)]
 
 
 # ---------------------------------------------------------------- API

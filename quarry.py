@@ -599,6 +599,19 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
         import ydr2xml, ywr2xml
         return stem + '.ywr.xml', ywr2xml.ywr_to_xml(
             ydr2xml.Res.from_bytes(blob)).encode('utf-8'), ()
+    if t == 'ybd':
+        # A .ybd is a pgDictionary of phBound - and the reference exporter has NO XML export for it,
+        # so its "export" is a RAW dump of the DECOMPRESSED resource, not the stored file.
+        # MEASURED 2026-08-06 (des_heli_biotech): oracle 40,960 B == Res(blob).sys exactly,
+        # while the stored RSC7 is 24,285 B. So parity = emit the inflated segment under
+        # the ORIGINAL name (no .xml). gfx is empty in the witnessed case; concatenating
+        # sys+gfx reduces to it, and a gfx-carrying ybd is UNWITNESSED (flagged, not guessed).
+        import ydr2xml
+        r = ydr2xml.Res.from_bytes(blob)
+        if r.gfx and stats is not None:
+            stats['ybd with a graphics segment - concatenation order UNWITNESSED'] = \
+                stats.get('ybd with a graphics segment - concatenation order UNWITNESSED', 0) + 1
+        return name, bytes(r.sys) + bytes(r.gfx or b''), ()
     if t == 'ymf' or (blob[:4] == b'PSIN'):
         # PSO ('PSIN') container -> reference-identical XML via the generic pso2xml
         # (schema-driven from the file's own PSCH; 38/38 ymf byte-identical, 2026-08-06).
