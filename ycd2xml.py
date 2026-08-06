@@ -2,14 +2,16 @@ r"""ycd2xml - GTA V .ycd (rage::crClipDictionary, RSC7 v46) -> RAGE .ycd.xml.
 
 CLEAN-ROOM: derived from oracle XML + game binary + our own quarry code only.
 
-STATUS (measured against all 10 oracles):
-  * SHELL = 100% byte-identical: container, both dictionaries, both clip types,
-    Properties/Tags/Attributes, animation headers, BoneIds, sequence Hash+FrameCount.
-    Every file's first divergence is at the SequenceData channel body.
-  * QuantizeFloat channel body FULLY DECODED (verify_quant.py: 9/9 channels byte-exact).
-  * Remaining GAP = the per-item channel-TYPE/layout table (which pooled channels group
-    into each SequenceData <Item>) + IndirectQuantizeFloat palette-count/Frames packing.
-    See emit_sequence() and the CHANNEL notes below.
+STATUS (measured against all 10 oracles): 7/10 FULLY byte-identical
+  (compactgl, plg_01, veh, move_characters, ng_optimise, facials x2).  The full pipeline -
+  container, both dictionaries, both clip types, Properties/Tags/Attributes, animation
+  headers, BoneIds, sequences, AND every SequenceData channel body - is closed for these.
+  Channel codecs verified byte-exact: StaticVector3/StaticFloat, StaticQuaternion (3f + f32
+  reconstructed w), CachedQuaternion1, QuantizeFloat, compact IndirectQuantizeFloat.
+  The per-item channel-TYPE table is SOLVED (see SEQUENCE below).
+  Remaining GAP (3 files, all the DLC drinking_shots): a mixed quant+indirect sequence whose
+  IndirectQuantizeFloat descriptor is a larger inline-palette record (palette stored inline,
+  not packed in one u32) - not yet pinned; those sequences emit an UNPINNED marker.
 
 CONTAINER (RSC7 v46, all data in system segment):
   sys+0x00 u64 vtable
@@ -49,12 +51,23 @@ SEQUENCE (crAnimSequence) @ seq :
         frame-major, each frame DWORD-aligned (framebits = roundup(sum(numBits),32)),
         LSB-first bitstream, channels in descriptor order ;
         value = float32(Offset + raw*Quantum).                          [VERIFIED 9/9]
-    (tail) channel-count table @end: u16 numStaticQuat,numStaticVec3,numStaticFloat,...
-IndirectQuantizeFloat descriptor (24B): u32=2, u32 paletteBits, u32 indexBits,
-    f32 Quantum, f32 Offset, u32 packedPalette (little-palette values packed paletteBits each,
-    value=Offset+raw*Quantum).  Frames = per-frame indexBits index into the palette. GAP: the
-    palette-entry count and the Frames bit-packing offset are not yet pinned.
+    quant/indirect frame value = float32(Offset + float32(raw*Quantum)).   [VERIFIED]
+  After the packed block: the count table then the per-item MAP region.
+COUNT TABLE (6 u16): numStaticQuat, numStaticVec3, numStaticFloat, numRawFloat,
+    numQuantizeFloat, numIndirectQuantizeFloat.
+PER-ITEM MAP region (SOLVED) - located by exact-fit: it ends at seq+0x10 (total size); it is
+    [u16 0, u16 numCached, u16 0] header, then one list per pool in count-table order, then a
+    Cached list; each list = one u16 per channel = (BoneId-item-index*4 + component), padded
+    to a multiple of 4 entries with sentinel (numBones*4).  component 0..2 for a split
+    x/y/z channel (or the QuatIndex for a Cached entry), 0 for a whole static vector/quat.
+    Reconstruct: group channels by item, order by component, append the Cached channel last.
+IndirectQuantizeFloat descriptor (compact, 24B): u32 slotBits, u32 paletteBits, u32(=1),
+    f32 Quantum, f32 Offset, u32 packedPalette.  palette entries = min(32//paletteBits,
+    (1<<slotBits)-1), value = float32(Offset + float32(raw*Quantum)); per-frame <Frames> index
+    = slotBits-wide slot (frame-major, DWORD-aligned).  A LARGER inline-palette variant appears
+    in mixed drinking_shots sequences and is the sole remaining gap.
 """
+import math
 import os
 import struct
 import sys
@@ -94,7 +107,7 @@ ATTR_TYPE = {2: "Int", 6: "Vector3", 8: "Vector4", 1: "Float"}
 
 class Ycd:
     def __init__(self, path):
-        self.r = Res(path)
+        self.r = path if hasattr(path, "sys") else Res(path)
         self.r.require_version(46, "ycd")
         self.S = self.r.sys
         S = self.S
@@ -258,37 +271,172 @@ class Ycd:
         out.append("  </Item>")
 
     def emit_sequence(self, out, seq, nbones):
+        from meta2xml import f32 as F
         S = self.S
         out.append("    <Item>")
         out.append("     <Hash>%s</Hash>" % self.hstr(u32(S, seq)))
-        out.append('     <FrameCount value="%d" />' % u16(S, seq + 0x16))
-        # ---- SequenceData: shell closes here; the per-item channel-TYPE table is the
-        #      declared GAP.  The channel BODIES are decodable (static pools + the verified
-        #      decode_quantize below), but assigning pooled channels to <Item>s needs the
-        #      seq-tail type table which is not yet pinned. ----
+        framecount = u16(S, seq + 0x16)
+        out.append('     <FrameCount value="%d" />' % framecount)
+
+        data = seq + 0x20
+        quant_off = u32(S, seq + 0x0C)
+        packed = data + quant_off
+        seq_end = seq + u32(S, seq + 0x10)              # +0x10 = total sequence size
+        # ---- locate count table: the 6-u16 counts are immediately followed by the mapping
+        #      region ([0,numCached,0] header + per-pool item-maps padded to mult-of-4 +
+        #      cached map), and the mapping region ends exactly at seq_end. ----
+        def _rup(n): return ((n + 3) // 4) * 4
+        co = None; counts = None
+        for c in range(packed, seq_end - 12, 2):
+            if u16(S, c + 12) != 0 or u16(S, c + 16) != 0:   # mapping header must be [0, nc, 0]
+                continue
+            cc = tuple(u16(S, c + i * 2) for i in range(6))
+            if max(cc) > 400:
+                continue
+            nc = u16(S, c + 14)
+            msz = 3 + sum(_rup(x) for x in cc) + _rup(nc)
+            if c + 12 + msz * 2 == seq_end:
+                co = c; counts = cc; break
+        if co is None:
+            out.append("     <SequenceData>")
+            out.append("      <!-- count table not located -->")
+            out.append("     </SequenceData>"); out.append("    </Item>"); return
+        nq, nv, nf, nr, nqz, ni = counts
+
+        # A "simple" sequence has the compressed block right after the descriptors
+        # (static pools + 12B-quant descs + 24B-indirect descs == quant_off).  The DLC
+        # drinking_shots files carry a mixed quant+indirect variant whose IndirectQuantize
+        # descriptor is a larger inline-palette record - that layout is not yet pinned.
+        if 12 * nq + 12 * nv + 4 * nf + 12 * nqz + 24 * ni != quant_off:
+            out.append("     <SequenceData>")
+            out.append("      <!-- UNPINNED: mixed quant+indirect (inline-palette variant) -->")
+            out.append("     </SequenceData>"); out.append("    </Item>"); return
+
+        # ---- pool bases ----
+        quat_b = data
+        vec_b = quat_b + nq * 12
+        flt_b = vec_b + nv * 12
+        qz_b = flt_b + nf * 4                         # QuantizeFloat descriptors (12B)
+        ind_b = qz_b + nqz * 12                       # IndirectQuantizeFloat descriptors (24B)
+
+        # ---- decode the packed frame block (quant + indirect channels, frame-major) ----
+        frame_bits = sum(u32(S, qz_b + k * 12) for k in range(nqz)) + \
+                     sum(u32(S, ind_b + k * 24) for k in range(ni))
+        framebits = ((frame_bits + 31) // 32) * 32
+        def readbits(bit, n):
+            v = 0
+            for i in range(n):
+                p = bit + i
+                v |= ((S[packed + (p >> 3)] >> (p & 7)) & 1) << i
+            return v
+        qz_vals = [[] for _ in range(nqz)]; ind_raw = [[] for _ in range(ni)]
+        for fr in range(framecount):
+            bit = fr * framebits
+            for k in range(nqz):
+                nb = u32(S, qz_b + k * 12); q = f32(S, qz_b + k * 12 + 4); off = f32(S, qz_b + k * 12 + 8)
+                qz_vals[k].append(F(off + F(readbits(bit, nb) * q))); bit += nb
+            for k in range(ni):
+                sb = u32(S, ind_b + k * 24); ind_raw[k].append(readbits(bit, sb)); bit += sb
+
+        # ---- parse the mapping region (right after the 6-u16 count table) ----
+        m = co + 12
+        numCached = u16(S, m + 2); m += 6                 # header [0, numCached, 0]
+        def take(cnt):                                    # cnt values padded to a multiple of 4
+            nonlocal m
+            vals = [u16(S, m + i * 2) for i in range(cnt)]
+            m += ((cnt + 3) // 4) * 4 * 2
+            return vals
+        map_quat = take(nq); map_vec = take(nv); map_flt = take(nf)
+        map_raw = take(nr); map_qz = take(nqz); map_ind = take(ni)
+        map_cached = take(numCached)
+
+        # ---- assemble channels per item ----
+        items = {}                                        # item -> list of (comp, kind, payload)
+        def add(mapping, kind, payload_of):
+            for slot, val in enumerate(mapping):
+                it, comp = val // 4, val % 4
+                items.setdefault(it, []).append((comp, kind, payload_of(slot)))
+        add(map_quat, "SQ", lambda s: (quat_b + s * 12))
+        add(map_vec, "SV", lambda s: (vec_b + s * 12))
+        add(map_flt, "SF", lambda s: (flt_b + s * 4))
+        add(map_qz, "QZ", lambda s: s)
+        add(map_ind, "IQ", lambda s: s)
+        cached = {}                                       # item -> QuatIndex
+        for val in map_cached:
+            cached[val // 4] = val % 4
+
+        # ---- emit ----
         out.append("     <SequenceData>")
-        out.append("      <!-- CHANNEL DATA UNPINNED: per-item channel-type table -->")
+        for it in range(nbones):
+            out.append("      <Item>")
+            out.append("       <Channels>")
+            for comp, kind, pl in sorted(items.get(it, [])):
+                if kind == "SQ":
+                    x, y, z = f32(S, pl), f32(S, pl + 4), f32(S, pl + 8)
+                    w = F(math.sqrt(max(0.0, F(1.0 - F(F(F(x * x) + F(y * y)) + F(z * z))))))
+                    out.append('        <Item>')
+                    out.append('         <Type value="StaticQuaternion" />')
+                    out.append('         <Value x="%s" y="%s" z="%s" w="%s" />' % (
+                        fmt_num(x), fmt_num(y), fmt_num(z), fmt_num(w)))
+                    out.append('        </Item>')
+                elif kind == "SV":
+                    out.append('        <Item>')
+                    out.append('         <Type value="StaticVector3" />')
+                    out.append('         <Value x="%s" y="%s" z="%s" />' % (
+                        fmt_num(f32(S, pl)), fmt_num(f32(S, pl + 4)), fmt_num(f32(S, pl + 8))))
+                    out.append('        </Item>')
+                elif kind == "SF":
+                    out.append('        <Item>')
+                    out.append('         <Type value="StaticFloat" />')
+                    out.append('         <Value value="%s" />' % fmt_num(f32(S, pl)))
+                    out.append('        </Item>')
+                elif kind == "QZ":
+                    out.append('        <Item>')
+                    out.append('         <Type value="QuantizeFloat" />')
+                    out.append('         <Quantum value="%s" />' % fmt_num(f32(S, qz_b + pl * 12 + 4)))
+                    out.append('         <Offset value="%s" />' % fmt_num(f32(S, qz_b + pl * 12 + 8)))
+                    self._emit_values(out, qz_vals[pl], "         ")
+                    out.append('        </Item>')
+                elif kind == "IQ":
+                    self._emit_indirect(out, S, ind_b + pl * 24, ind_raw[pl])
+            if it in cached:
+                out.append('        <Item>')
+                out.append('         <Type value="CachedQuaternion1" />')
+                out.append('         <QuatIndex value="%d" />' % cached[it])
+                out.append('        </Item>')
+            out.append("       </Channels>")
+            out.append("      </Item>")
         out.append("     </SequenceData>")
         out.append("    </Item>")
 
-    @staticmethod
-    def decode_quantize(S, packed, framecount, chans):
-        """VERIFIED (9/9 byte-exact on compactgl). `chans` = [(numBits,Quantum,Offset), ...] in
-        descriptor order.  Frame-major, each frame DWORD-aligned; LSB-first bitstream.
-        Returns [ [f32 value per frame] per channel ]."""
-        from meta2xml import f32 as _f32
-        framebits = ((sum(c[0] for c in chans) + 31) // 32) * 32
-        out = [[] for _ in chans]
-        for fr in range(framecount):
-            bit = fr * framebits
-            for ci, (nb, q, off) in enumerate(chans):
-                raw = 0
-                for i in range(nb):
-                    pos = bit + i
-                    raw |= ((S[packed + (pos >> 3)] >> (pos & 7)) & 1) << i
-                bit += nb
-                out[ci].append(_f32(off + raw * q))
-        return out
+    def _emit_values(self, out, vals, ind):
+        if len(vals) <= 10:
+            out.append("%s<Values>%s</Values>" % (ind, " ".join(fmt_num(v) for v in vals)))
+            return
+        out.append("%s<Values>" % ind)
+        for i in range(0, len(vals), 10):
+            out.append("%s %s" % (ind, " ".join(fmt_num(v) for v in vals[i:i + 10])))
+        out.append("%s</Values>" % ind)
+
+    def _emit_indirect(self, out, S, desc, raws):
+        from meta2xml import f32 as F
+        slotbits = u32(S, desc); pbits = u32(S, desc + 4)
+        q = f32(S, desc + 0xC); off = f32(S, desc + 0x10); packed = u32(S, desc + 0x14)
+        n_pal = min(32 // pbits, (1 << slotbits) - 1)
+        pal = [F(off + F(((packed >> (k * pbits)) & ((1 << pbits) - 1)) * q)) for k in range(n_pal)]
+        out.append('        <Item>')
+        out.append('         <Type value="IndirectQuantizeFloat" />')
+        out.append('         <Quantum value="%s" />' % fmt_num(q))
+        out.append('         <Offset value="%s" />' % fmt_num(off))
+        if len(pal) <= 10:
+            out.append('         <Values>%s</Values>' % " ".join(fmt_num(v) for v in pal))
+        else:
+            self._emit_values(out, pal, "         ")
+        out.append('         <Frames>')
+        for i in range(0, len(raws), 10):
+            out.append('          %s' % " ".join(str(r) for r in raws[i:i + 10]))
+        out.append('         </Frames>')
+        out.append('        </Item>')
 
 
 def ycd_to_xml(path):
