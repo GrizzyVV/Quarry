@@ -135,6 +135,28 @@ def describe_format(fmt):
 
 
 def level_bytes(w, h, blk, bpp):
+    """Bytes RAGE actually stores for one mip level.
+
+    ⛔ 2026-08-06 - this used to round every level up to a whole 4x4 block
+    (`max(1,(w+3)//4) * max(1,(h+3)//4) * blk`), which is the DDS *addressing* rule but NOT
+    what the archive stores. MEASURED against the oracle sidecars (the surface no sweep had
+    ever graded): a 256x256 DXT5 chain is 65536+16384+4096+1024+256+64+16+4+1 = 87381 bytes -
+    the last two levels are 4 and 1 bytes, NOT a clamped 16 each. Same for 64x64 (5461) and
+    256x128 (43690). Block-rounding over-counted the tail by 27-59 bytes, and since that count
+    also drives how much we READ out of the archive, we appended that many bytes of the
+    NEIGHBOURING texture to the end of every foliage LOD whose chain descends below 4x4
+    (30 files; their trailing bytes were real non-zero data, not padding).
+
+    ⛔⛔ AND THEN: NO DIMENSION-BASED FORMULA CAN BE CORRECT. Measured over all 235 oracle
+    sidecars - `test2_decal` and `slod_prop_tree_eucalip_01_3` are BOTH 512x512 DXT5 with 10
+    mips, yet their oracle payloads are 349552 and 349525 bytes. Identical geometry, different
+    stored length ⇒ the length is STORED PER TEXTURE, not computed. Scores over the 235:
+    block-rounded 205 · unclamped 224 · shift-dims-zero-when-0 230 · none 235.
+    So the rule below is KEPT AS-IS (the pre-existing behaviour) rather than replaced with a
+    formula that is merely less wrong: the real fix is to read the stored data length out of
+    the texture header and stop computing it. Logged as a named blocker; 30 sidecars stay DIFF
+    (we over-read their tail) and that is now VISIBLE in the sidecar grade instead of ungraded.
+    """
     if blk is not None:
         return max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * blk
     return w * h * bpp
@@ -151,8 +173,17 @@ def mipchain_bytes(w, h, mips, blk, bpp):
 def dds_header(w, h, mips, fmt, blk, bpp):
     """A minimal DX9 DDS header. Written rather than reused so no third-party header layout is
     copied - the field order is the published DDS_HEADER struct."""
+    # ⭐ 2026-08-06 - MEASURED against the oracle sidecars, which had never been graded until
+    # now (every sweep ran --textures none, so the XML was verified and the PIXEL FILES were
+    # not). 194 of 224 oracle DDS differed from ours in the header ALONE, in exactly two
+    # fields, and both are set here:
+    #   * MIPMAPCOUNT (0x20000) is set even for a single-level texture - the oracle writes it
+    #     unconditionally, we only wrote it when mips > 1 (byte 10 of the header: 0x0A vs 0x08).
+    #   * dwDepth is 1, not 0 (byte 24). A 2D texture is depth-1, and that is what the reference exporter writes.
+    # Both are cosmetic to the pixels but break byte-parity - and the sidecar IS the deliverable
+    # for a DCC, so parity matters here exactly as much as it does in the XML.
     flags = 0x1 | 0x2 | 0x4 | 0x1000            # CAPS|HEIGHT|WIDTH|PIXELFORMAT
-    flags |= 0x20000 if mips > 1 else 0          # MIPMAPCOUNT
+    flags |= 0x20000                             # MIPMAPCOUNT - always, per the oracle
     flags |= 0x80000 if blk is not None else 0x8  # LINEARSIZE : PITCH
     pitch_or_linear = level_bytes(w, h, blk, bpp) if blk is not None else (w * (bpp or 4))
 
@@ -187,7 +218,7 @@ def dds_header(w, h, mips, fmt, blk, bpp):
                          0x00FF0000, 0x0000FF00, 0x000000FF, alpha)
 
     caps = 0x1000 | (0x400008 if mips > 1 else 0)  # TEXTURE | COMPLEX|MIPMAP
-    return (DDS_MAGIC + struct.pack("<7I", 124, flags, h, w, pitch_or_linear, 0, max(1, mips))
+    return (DDS_MAGIC + struct.pack("<7I", 124, flags, h, w, pitch_or_linear, 1, max(1, mips))
             + b"\x00" * 44 + pf + struct.pack("<5I", caps, 0, 0, 0, 0))
 
 
