@@ -585,6 +585,9 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
         import ydr2xml, ynd2xml
         return stem + '.ynd.xml', ynd2xml.convert(
             ydr2xml.Res.from_bytes(blob)).encode('utf-8'), ()
+    if t == 'ynv':
+        import ynv2xml
+        return stem + '.ynv.xml', ynv2xml.convert(name, blob, names=names).encode('utf-8'), ()
     if t == 'ypdb':
         import ypdb2xml
         return stem + '.ypdb.xml', ypdb2xml.decode(blob).encode('utf-8'), ()
