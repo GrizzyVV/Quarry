@@ -1,0 +1,470 @@
+#!/usr/bin/env python3
+"""pso2xml.py - GENERIC RAGE PSO (PSIN) -> reference-identical XML.
+
+Clean-room: derived purely from oracle XML + game binaries + QUARRY's own code.
+The reader is driven by the FILE'S OWN embedded schema (PSCH), so one codec serves
+every PSO root struct (CPackFileMetaData / .cut / PSO-root .ymt). It generalises the
+region-specific pso_manifest.py; it hardcodes NO schema.
+
+CONTAINER (all integers BIG-ENDIAN):
+  file = concatenation of sections {u32 fourcc, u32 sizeInclHeader}. First section is
+  always 'PSIN' at offset 0.
+    PSIN  data. First 8 payload bytes are 0x70 padding; then the data blocks.
+    PMAP  block map: {u32 rootBlockIdx(1-based), u16 nBlocks, u16 pad(0x7070)} then
+          nBlocks x {u32 blockId, u32 fileOffset, u32 zero, u32 byteSize}.
+          fileOffset is relative to the PSIN section start (== file start).
+    PSCH  schema: {u32 nDefs} then nDefs x {u32 hash, u32 secRelOffset}. A def is EITHER
+          a struct or an enum (told apart by reference context, never guessed):
+            struct def @ (secRelOffset-8): {u32 count, u32 instSize, u32 zero} then
+              count x {u32 nameHash, u8 type, u8 sub, u16 offset, u32 extra}.
+            enum   def @ (secRelOffset-8): {u32 header} then N x {u32 memberHash, i32 value};
+              N = header & 0xFFFF (high half constant 0x0100 in the corpus, unmapped).
+    STRF  plaintext NUL-terminated string pool (rare in ymf).
+    STRE  ENCRYPTED string pool - NOT decrypted here (see notes). Hash-string values are
+          resolved via the caller-supplied joaat(lower) name dict instead, exactly as the reference exporter
+          resolves them from its global filename index; unknown -> hash_XXXXXXXX.
+    PSIG  16-byte signature (semantics unmapped, not needed for XML).
+    CHKS  {u32 totalSize, u32 checksum, u32 0x79707070} (unmapped, not needed).
+
+METAPOINTER (u32): low 12 bits = 1-based block index, high 20 bits = byte offset in block.
+ARRAY descriptor (16 B at the field offset): {u32 ptr, u32 pad, u16 count, u16 cap, u32 pad}.
+
+MEMBER TYPE CODES (schema entry .type), with the reference exporter XML rendering:
+  0x00 bool            <X value="true|false" />         (measured: scenario EnabledByDefault)
+  0x02 u8   (1 byte)   <X value="N" />                  (cut; stride 1)   [scalar, unpinned sign]
+  0x03 i16  (2 bytes)  <X value="N" />                  (firingpatterns NumberOfBursts = -1)
+  0x05 u32/int (4B)    <X value="N" />                  (cut; manifest unk0) [unpinned exact]
+  0x06 ? (element)     -                                (cut array element) [UNPINNED]
+  0x07 float32 (4B)    <X value="fmt_num" />            (firingpatterns TimeBetween... = 2.5)
+  0x0b string          sub 0x00 inline char[extra>>16]; sub 0x07/0x08 joaat(lower) hash-string
+  0x0c struct          element-desc (name 0x100): extra = element struct hash; else inline struct
+  0x0d array           extra = refTypeIdx of its element-descriptor within the same struct
+  0x0e enum            extra = enum def hash; renders member NAME as element text
+  0x0f flags           extra low16 = refTypeIdx of enum element-desc; 0 -> empty, else names ", "-joined
+  0x15 float4/vec4     (measured: scenario AABB min/max) [not exercised by CPackFileMetaData]
+Codes seen but NOT pinned to an XML form are listed in UNPINNED at bottom.
+
+STRING SUBTYPES (type 0x0b .sub):
+  0x00 inline fixed char[len], len = extra>>16, NUL-terminated  (targetAsset, HDTxd)
+  0x07 / 0x08 joaat(lower) hash -> name via dict, else hash_%08X (imapName, itypName, Bounds ...)
+"""
+import struct
+
+M32 = 0xFFFFFFFF
+ELEM = 0x00000100          # synthetic element-descriptor name; never a real field
+
+
+# ---------------------------------------------------------------- hashing
+def joaat(s, lower=True):
+    h = 0
+    for ch in (s.lower() if lower else s):
+        h = (h + ord(ch)) & M32
+        h = (h + (h << 10)) & M32
+        h ^= h >> 6
+    h = (h + (h << 3)) & M32
+    h ^= h >> 11
+    return (h + (h << 15)) & M32
+
+
+def joaat_case(s):
+    return joaat(s, lower=False)
+
+
+# ---------------------------------------------------------------- schema-name dictionary
+# struct / field / enum-member names are CASE-SENSITIVE joaat, hashed as written. Every
+# name below verified against its stored hash in a real binary before use (clean-room:
+# the string is the case-sensitive joaat preimage of the descriptor hash).
+SCHEMA_NAMES = (
+    # CPackFileMetaData tree
+    "CPackFileMetaData", "MapDataGroups", "CMapDataGroup", "HDTxdBindingArray",
+    "CHDTxdAssetBinding", "imapDependencies", "CImapDependency", "imapDependencies_2",
+    "CImapDependencies", "itypDependencies_2", "CItypDependencies", "Interiors",
+    "CInteriorBoundsFiles",
+    "assetType", "targetAsset", "HDTxd", "imapName", "manifestFlags", "itypDepArray",
+    "itypName", "packFileName", "Name", "Bounds",
+    # CMapDataGroup extra fields
+    "Flags", "WeatherTypes", "HoursOnOff",
+    # eAssetType enum members (verified as enum-table member hashes)
+    "AT_TXD", "AT_DRB", "AT_DWD", "AT_FRG", "AT_DWD_PHYS", "AT_ASSETLESS",
+    # manifestFlags / CMapDataGroup Flags members
+    "INTERIOR_DATA", "TIME_DEPENDENT", "WEATHER_DEPENDENT",
+    # firingpatterns (bonus)
+    "CFiringPatternInfoManager", "Infos", "CFiringPatternInfo",
+    "NumberOfBurstsMin", "NumberOfBurstsMax", "NumberOfShotsPerBurstMin",
+    "NumberOfShotsPerBurstMax", "TimeBetweenShotsMin", "TimeBetweenShotsMax",
+    "TimeBetweenShotsAbsoluteMin", "TimeBetweenBurstsMin", "TimeBetweenBurstsMax",
+    "TimeBetweenBurstsAbsoluteMin", "TimeBeforeFiringMin", "TimeBeforeFiringMax",
+)
+SCHEMA_BY_HASH = {joaat_case(n): n for n in SCHEMA_NAMES}
+
+
+def schema_name(h):
+    return SCHEMA_BY_HASH.get(h, "hash_%08X" % h)
+
+
+# ---------------------------------------------------------------- float spelling (from meta2xml)
+import decimal
+
+
+def f32(x):
+    return struct.unpack("<f", struct.pack("<f", float(x)))[0]
+
+
+def _sig(f, digits):
+    d = decimal.Decimal(f)
+    if d == 0:
+        return "0"
+    exp = d.adjusted()
+    r = d.quantize(decimal.Decimal(1).scaleb(exp - digits + 1), rounding=decimal.ROUND_HALF_UP)
+    exp = r.adjusted()
+    if exp < -4 or exp >= digits:
+        mant = format(r.scaleb(-exp), "f").rstrip("0").rstrip(".")
+        return "%sE%s%02d" % (mant, "+" if exp >= 0 else "-", abs(exp))
+    s = format(r, "f")
+    return s.rstrip("0").rstrip(".") if "." in s else s
+
+
+def fmt_num(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    f = f32(v)
+    if f != f:
+        return "NaN"
+    if f == 0.0:
+        return "0"
+    s = _sig(f, 7)
+    if f32(float(s)) != f:
+        s = _sig(f, 9)
+    return s
+
+
+def esc(s):
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;"))
+
+
+class PsoError(Exception):
+    pass
+
+
+# ---------------------------------------------------------------- container
+class Pso:
+    def __init__(self, blob):
+        if blob[:4] != b"PSIN":
+            raise PsoError("not a PSO container (missing PSIN magic)")
+        self.d = blob
+        self.sections = self._sections()
+        self.sec = {n: (o, s) for n, o, s in self.sections}
+        for need in ("PMAP", "PSCH"):
+            if need not in self.sec:
+                raise PsoError("missing section %s" % need)
+        self._read_pmap()
+        self._read_psch()
+        self._struct_cache, self._enum_cache = {}, {}
+
+    def _sections(self):
+        d, out, off = self.d, [], 0
+        while off + 8 <= len(d):
+            ident = d[off:off + 4]
+            size = struct.unpack(">I", d[off + 4:off + 8])[0]
+            if size < 8 or off + size > len(d):
+                raise PsoError("bad section %r size %#x at %#x" % (ident, size, off))
+            out.append((ident.decode("latin1"), off, size))
+            off += size
+        return out
+
+    def _read_pmap(self):
+        d = self.d
+        po, ps = self.sec["PMAP"]
+        self.root_idx, self.nblk = struct.unpack(">IH", d[po + 8:po + 14])
+        self.blocks = []
+        for i in range(self.nblk):
+            bid, boff, z, bsz = struct.unpack(">IIII", d[po + 16 + 16 * i:po + 32 + 16 * i])
+            self.blocks.append((bid, boff, bsz))
+
+    def _read_psch(self):
+        d = self.d
+        so, ss = self.sec["PSCH"]
+        self.psch_base = so + 8
+        payload = d[so + 8:so + ss]
+        n = struct.unpack(">I", payload[0:4])[0]
+        self.def_off = {}     # hash -> payload offset of the def body
+        for i in range(n):
+            h, secoff = struct.unpack(">II", payload[4 + 8 * i:12 + 8 * i])
+            self.def_off[h] = secoff - 8      # relative to PSCH payload
+        self.psch = payload
+
+    # -- defs (lazy; parsed as struct OR enum by the referencing context)
+    def struct_def(self, h):
+        if h in self._struct_cache:
+            return self._struct_cache[h]
+        if h not in self.def_off:
+            raise PsoError("no schema def for struct %#010x" % h)
+        p = self.def_off[h]
+        pl = self.psch
+        cnt, size, zero = struct.unpack(">III", pl[p:p + 12])
+        if zero != 0:
+            raise PsoError("struct %#x header word3 %#x != 0" % (h, zero))
+        ents = []
+        for i in range(cnt):
+            e = pl[p + 12 + 12 * i:p + 24 + 12 * i]
+            nh, ty, sub, off_, extra = struct.unpack(">IBBHI", e)
+            ents.append(dict(name=nh, type=ty, sub=sub, off=off_, extra=extra))
+        info = dict(hash=h, size=size, entries=ents)
+        self._struct_cache[h] = info
+        return info
+
+    def enum_def(self, h):
+        if h in self._enum_cache:
+            return self._enum_cache[h]
+        if h not in self.def_off:
+            raise PsoError("no schema def for enum %#010x" % h)
+        p = self.def_off[h]
+        pl = self.psch
+        header = struct.unpack(">I", pl[p:p + 4])[0]
+        cnt = header & 0xFFFF                      # low 16 bits = member count
+        members = {}                               # value -> memberHash
+        for i in range(cnt):
+            mh, val = struct.unpack(">Ii", pl[p + 4 + 8 * i:p + 12 + 8 * i])
+            members[val] = mh
+        info = dict(hash=h, members=members, header=header)
+        self._enum_cache[h] = info
+        return info
+
+    def block_data(self, one_based_idx):
+        if not (1 <= one_based_idx <= len(self.blocks)):
+            raise PsoError("block index %d out of range" % one_based_idx)
+        bid, boff, bsz = self.blocks[one_based_idx - 1]
+        return self.d[boff:boff + bsz]
+
+    @staticmethod
+    def metaptr(v):
+        return (v & 0xFFF), (v >> 12)              # (1-based block, byte offset)
+
+    def root(self):
+        bid, boff, bsz = self.blocks[self.root_idx - 1]
+        return bid, self.d[boff:boff + bsz]
+
+
+# ---------------------------------------------------------------- emitter
+class Emitter:
+    def __init__(self, pso, names=None):
+        self.p = pso
+        self.names = names or {}          # joaat(lower) -> asset name  (data hash-strings)
+        # ⏸ oracle_pso_names.json overlay (weather names like 'rain') is DEFERRED: the 3
+        # map-metadata ymf that need it ALSO hit the populated-MapDataGroups decoder gap
+        # (below), so it fixes nothing yet while adding over-resolve risk to the 35 that
+        # pass. Re-add it WITH the MapDataGroups fix. Harvest kept in the json.
+        self.warn = {}
+
+    def _warn(self, k):
+        self.warn[k] = self.warn.get(k, 0) + 1
+
+    def resolve_hashstring(self, h):
+        """Data hash-string (joaat lower). Empty for 0; name if known; else hash_%08X."""
+        if h == 0:
+            return ""
+        n = self.names.get(h)
+        if n is None:
+            self._warn("unresolved data hash-string")
+            return "hash_%08X" % h
+        return n
+
+    def emit_file(self, newline="\r\n", trailing=True):
+        """the reference exporter writes CRLF line endings and a trailing newline; defaults reproduce that
+        byte-for-byte. Pass newline="\\n", trailing=False for LF/no-trailing."""
+        bid, data = self.p.root()
+        lines = ['<?xml version="1.0" encoding="UTF-8"?>']
+        lines += self.emit_struct(bid, data, 0, 0)
+        out = newline.join(lines)
+        return out + newline if trailing else out
+
+    def emit_struct(self, shash, buf, base, depth):
+        """Emit <name>..fields..</name> for a struct at buf[base:]."""
+        name = schema_name(shash)
+        ind = " " * depth
+        try:
+            sdef = self.p.struct_def(shash)
+        except PsoError:
+            self._warn("no schema for struct %#010x" % shash)
+            return ["%s<%s />" % (ind, name)]
+        body = []
+        for e in sdef["entries"]:
+            if e["name"] == ELEM:
+                continue
+            body += self.emit_member(sdef, e, buf, base, depth + 1)
+        if not body:
+            return ["%s<%s />" % (ind, name)]
+        return ["%s<%s>" % (ind, name)] + body + ["%s</%s>" % (ind, name)]
+
+    def _struct_item(self, shash, buf, base, depth, type_attr=None):
+        """Emit one <Item[ type="X"]> ... </Item> for a struct array element."""
+        ind = " " * depth
+        open_tag = '%s<Item type="%s">' % (ind, type_attr) if type_attr else "%s<Item>" % ind
+        empty_tag = '%s<Item type="%s" />' % (ind, type_attr) if type_attr else "%s<Item />" % ind
+        try:
+            sdef = self.p.struct_def(shash)
+        except PsoError:
+            self._warn("no schema for item struct %#010x" % shash)
+            return [empty_tag]
+        body = []
+        for e in sdef["entries"]:
+            if e["name"] == ELEM:
+                continue
+            body += self.emit_member(sdef, e, buf, base, depth + 1)
+        if not body:
+            return [empty_tag]
+        return [open_tag] + body + ["%s</Item>" % ind]
+
+    def emit_member(self, sdef, e, buf, base, depth):
+        ind = " " * depth
+        name = schema_name(e["name"])
+        t, sub, off, extra = e["type"], e["sub"], e["off"], e["extra"]
+        o = base + off
+        if t == 0x0d:                              # ARRAY
+            return self.emit_array(sdef, e, buf, base, depth, name, ind)
+        if t == 0x0b:                              # STRING
+            if sub == 0x00:                        # inline fixed char[]
+                ln = extra >> 16
+                raw = bytes(buf[o:o + ln]).split(b"\x00", 1)[0]
+                s = raw.decode("latin1")
+                return ["%s<%s />" % (ind, name)] if s == "" else \
+                       ["%s<%s>%s</%s>" % (ind, name, esc(s), name)]
+            # hash-string
+            h = struct.unpack_from(">I", buf, o)[0]
+            s = self.resolve_hashstring(h)
+            return ["%s<%s />" % (ind, name)] if s == "" else \
+                   ["%s<%s>%s</%s>" % (ind, name, esc(s), name)]
+        if t == 0x0e:                              # ENUM (text)
+            v = struct.unpack_from(">I", buf, o)[0]
+            info = self.p.enum_def(extra)
+            mh = info["members"].get(v)
+            txt = schema_name(mh) if mh is not None else str(v)
+            return ["%s<%s>%s</%s>" % (ind, name, esc(txt), name)]
+        if t == 0x0f:                              # FLAGS
+            v = struct.unpack_from(">I", buf, o)[0]
+            ehash = sdef["entries"][extra & 0xFFFF]["extra"]
+            info = self.p.enum_def(ehash)
+            if v == 0:
+                return ["%s<%s />" % (ind, name)]
+            parts = []
+            for bit in range(32):
+                if v & (1 << bit):
+                    mh = info["members"].get(bit)
+                    if mh is None:
+                        self._warn("flags bit without member")
+                        parts.append("hash_%08X" % (1 << bit))
+                    else:
+                        parts.append(schema_name(mh))
+            # MEASURED: PSO T_FLAGS joins set-bit member names with a SPACE, ascending bit
+            # order (CMapDataGroup Flags -> "TIME_DEPENDENT WEATHER_DEPENDENT"). Note this
+            # differs from RSC7-META's comma-join in meta2xml - a per-format rendering law.
+            return ["%s<%s>%s</%s>" % (ind, name, esc(" ".join(parts)), name)]
+        if t == 0x0c:                              # inline STRUCT member
+            return self.emit_struct(extra, buf, o, depth)
+        # scalars
+        if t == 0x00:                              # bool
+            return ['%s<%s value="%s" />' % (ind, name, "true" if buf[o] else "false")]
+        if t == 0x02:                              # u8
+            return ['%s<%s value="%d" />' % (ind, name, buf[o])]
+        if t == 0x03:                              # i16
+            v = struct.unpack_from(">h", buf, o)[0]
+            return ['%s<%s value="%d" />' % (ind, name, v)]
+        if t == 0x05:                              # signed int32
+            v = struct.unpack_from(">i", buf, o)[0]
+            return ['%s<%s value="%d" />' % (ind, name, v)]
+        if t == 0x06:                              # signed int32. MEASURED: the reference exporter renders it signed
+            # (naOcclusion EntityModelHashkey = -1033001619, stored 0xC26F7CAD). CPackFileMetaData's
+            # HoursOnOff is also 0x06 but every value is < 2^31 so signed == unsigned there.
+            v = struct.unpack_from(">i", buf, o)[0]
+            return ['%s<%s value="%d" />' % (ind, name, v)]
+        if t == 0x07:                              # float32
+            v = struct.unpack_from(">f", buf, o)[0]
+            return ['%s<%s value="%s" />' % (ind, name, fmt_num(v))]
+        if t == 0x15:                              # vec4
+            x, y, z, w = struct.unpack_from(">4f", buf, o)
+            return ['%s<%s x="%s" y="%s" z="%s" w="%s" />'
+                    % (ind, name, fmt_num(x), fmt_num(y), fmt_num(z), fmt_num(w))]
+        self._warn("unhandled member type %#04x" % t)
+        return ["%s<%s />" % (ind, name)]
+
+    def emit_array(self, sdef, e, buf, base, depth, name, ind):
+        # refTypeIdx = low 16 bits of extra (high bits carry element-storage info in the
+        # richer .cut/.pso schemas; 0 for every CPackFileMetaData array). Guarded so an
+        # unrecognised richer-format array degrades to a warning, never a crash.
+        ridx = e["extra"] & 0xFFFF
+        if ridx >= len(sdef["entries"]):
+            self._warn("array refTypeIdx %d out of range (extra=%#x)" % (ridx, e["extra"]))
+            return ["%s<%s />" % (ind, name)]
+        desc = sdef["entries"][ridx]               # element descriptor (name 0x100)
+        et, esub, eextra = desc["type"], desc["sub"], desc["extra"]
+        o = base + e["off"]
+        ptr, _pad, count, cap = struct.unpack_from(">IIHH", buf, o)
+        if et == 0x0c and esub == 0x03:            # array of POINTERS to structs
+            # element block holds {u32 metaptr, u32 pad} pairs; each -> a struct block whose
+            # own id gives the item's polymorphic type. No itemType attr on the array; each
+            # <Item> carries type="StructName" (measured: firingpatterns Infos).
+            if count == 0:
+                return ["%s<%s />" % (ind, name)]
+            bidx, boff = self.p.metaptr(ptr)
+            bdata = self.p.block_data(bidx)
+            out = ["%s<%s>" % (ind, name)]
+            for i in range(count):
+                mp = struct.unpack_from(">I", bdata, boff + i * 8)[0]
+                tbidx, tboff = self.p.metaptr(mp)
+                tbid = self.p.blocks[tbidx - 1][0]
+                out += self._struct_item(tbid, self.p.block_data(tbidx), tboff,
+                                         depth + 1, type_attr=schema_name(tbid))
+            out.append("%s</%s>" % (ind, name))
+            return out
+        if et == 0x0c:                             # array of INLINE structs -> itemType attr
+            itype = schema_name(eextra)
+            if count == 0:
+                return ['%s<%s itemType="%s" />' % (ind, name, itype)]
+            if eextra not in self.p.def_off:
+                self._warn("inline-struct array element struct %#010x missing (sub=%#x)"
+                           % (eextra, esub))
+                return ["%s<%s />" % (ind, name)]
+            bidx, boff = self.p.metaptr(ptr)
+            bdata = self.p.block_data(bidx)
+            stride = self.p.struct_def(eextra)["size"]
+            out = ['%s<%s itemType="%s">' % (ind, name, itype)]
+            for i in range(count):
+                out += self._struct_item(eextra, bdata, boff + i * stride, depth + 1)
+            out.append("%s</%s>" % (ind, name))
+            return out
+        if et == 0x0b:                             # array of hash-strings -> no itemType
+            if count == 0:
+                return ["%s<%s />" % (ind, name)]
+            bidx, boff = self.p.metaptr(ptr)
+            bdata = self.p.block_data(bidx)
+            out = ["%s<%s>" % (ind, name)]
+            f = " " * (depth + 1)
+            for i in range(count):
+                h = struct.unpack_from(">I", bdata, boff + i * 4)[0]
+                s = self.resolve_hashstring(h)
+                out.append("%s<Item>%s</Item>" % (f, esc(s)))
+            out.append("%s</%s>" % (ind, name))
+            return out
+        # other element kinds (primitive arrays etc.) - declared, not guessed
+        self._warn("unhandled array element type %#04x" % et)
+        if count == 0:
+            return ["%s<%s />" % (ind, name)]
+        return ["%s<%s>" % (ind, name), "%s</%s>" % (ind, name)]
+
+
+# ---------------------------------------------------------------- API
+def pso_to_xml(blob, names=None):
+    p = Pso(blob)
+    em = Emitter(p, names=names)
+    return em.emit_file(), em.warn
+
+
+if __name__ == "__main__":
+    import sys
+    xml, warn = pso_to_xml(open(sys.argv[1], "rb").read())
+    print(xml)
+    if warn:
+        sys.stderr.write("warnings: %r\n" % warn)

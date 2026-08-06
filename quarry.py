@@ -565,6 +565,18 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
         sidecars = () if textures == 'none' else ytd2xml.sidecars(
             texs, stem, want_png=(textures != 'dds'), want_dds=(textures != 'png'))
         return (stem + '.ytd.xml', ytd2xml.to_xml(texs).encode('utf-8'), sidecars)
+    if t == 'ymf' or (blob[:4] == b'PSIN'):
+        # PSO ('PSIN') container -> reference-identical XML via the generic pso2xml
+        # (schema-driven from the file's own PSCH; 38/38 ymf byte-identical, 2026-08-06).
+        # Name-carrying hash fields (imapName/itypName/Bounds) resolve via the same joaat
+        # names dict export already holds; the reference exporter output filename keeps its .pso infix.
+        import pso2xml
+        xml, warn = pso2xml.pso_to_xml(blob, names=names)
+        for k, n in (warn or {}).items():
+            if stats is not None:
+                stats[k] = stats.get(k, 0) + n
+        ext = type_of(name) or 'pso'
+        return '%s.%s.pso.xml' % (stem, ext), xml.encode('utf-8'), ()
     if t == 'ybn':
         # ⛔ THIS BRANCH DID NOT EXIST until 2026-07-29, and its absence is the whole lesson.
         # ydr2xml.boundsfile_lines() has been BUILT AND ORACLE-VALIDATED the entire time - 183/183
