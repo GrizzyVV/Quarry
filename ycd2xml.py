@@ -2,24 +2,14 @@ r"""ycd2xml - GTA V .ycd (rage::crClipDictionary, RSC7 v46) -> RAGE .ycd.xml.
 
 CLEAN-ROOM: derived from oracle XML + game binary + our own quarry code only.
 
-STATUS (measured against all 10 oracles): 9/10 FULLY byte-identical
-  (compactgl, plg_01, veh, move_characters, ng_optimise, facials x2, AND the mpbattle +
-  patchday24ng drinking_shots via the variable-stride inline-palette IndirectQuantizeFloat).
+STATUS (measured against all 10 oracles): 10/10 FULLY byte-identical.
   The full pipeline - container, both dictionaries, both clip types, Properties/Tags/
   Attributes, animation headers, BoneIds, sequences, AND every SequenceData channel body -
-  is closed for these.  Channel codecs verified byte-exact: StaticVector3/StaticFloat,
+  is closed.  Channel codecs verified byte-exact: StaticVector3/StaticFloat,
   StaticQuaternion (3f + f32 reconstructed w), CachedQuaternion1, QuantizeFloat,
-  IndirectQuantizeFloat (compact AND inline-palette forms).  The per-item channel-TYPE table
-  is SOLVED - and the true count table is EIGHT pools, not six (see COUNT TABLE below).
-  Remaining GAP (1 file, mpsecurity drinking_shots, 732/734 lines identical): a single
-  179-frame sequence with a 7-channel INLINE QuantizeFloat pool (count[6]=7).  The count table,
-  mapping, all 8 pools, descriptors, every non-inline channel, AND 5 of the 7 inline-QZ channels
-  now decode byte-identical.  The inline-QZ codec is SOLVED as a double-integration bitstream
-  (see INLINE QuantizeFloat below) with a UNIFORM init (fstart = 24 + 3*numBits, all V0).
-  The one open RESIDUAL is 2 fine per-2-frame staircase channels: at the entry to an alternating
-  +1,-1 second-difference 'buzz' the encoder budgets one fewer hold-0 than the value stream
-  needs (code count is fixed at FrameCount-3), so they decode 1 frame early from the buzz on.
-  Only those 2 <Values> blocks (11 lines) differ.
+  IndirectQuantizeFloat (compact AND inline-palette forms), and INLINE QuantizeFloat.
+  The per-item channel-TYPE table is SOLVED - and the true count table is EIGHT pools,
+  not six (see COUNT TABLE below).
 
 CONTAINER (RSC7 v46, all data in system segment):
   sys+0x00 u64 vtable
@@ -88,29 +78,35 @@ IndirectQuantizeFloat descriptor (variable, 0x14 + nPalWords*4): u32 slotBits, u
     min((nPalWords*32)//paletteBits, (1<<slotBits)-1); value = f32(Offset + f32(raw*Quantum));
     <Frames> = slotBits-wide slot (frame-major, DWORD-aligned).  Both the compact (nPalWords=1)
     and inline-palette (nPalWords>1) forms close.
-INLINE QuantizeFloat descriptor (variable) [emits <Type>QuantizeFloat</Type>]:
-    u32 sizeWords(=total descriptor size in u32, incl this 16B header), u32 B(=(numBits<<8)|8),
-    f32 Quantum, f32 Offset, then payload = (sizeWords-4) u32 words.  numBits = B>>8.
-    The payload is a DOUBLE-INTEGRATION (second-order-difference) bitstream, LSB-first:
-      - state V (raw value), D (first-order delta = velocity), both start with D=0.
-        V0 = payload-bits[24 : 24+numBits].  Stream starts at fstart = 24 + 3*numBits
-        (uniform for ALL V0 - the earlier V0!=0 'variable init' was a wrong-model artifact).
-      - per frame read a second-difference code d2:  bit '1' -> d2 = 0 (a HOLD);
-        bit '0' -> d2 = +/-q where q = count of leading 0s (incl this bit) up to a '1'
-        terminator, then a sign bit (1 = negative).   Then V += D ; D += d2 ; emit V.
-        (Order V+=D BEFORE D+=d2 - i.e. the code sets the velocity for the NEXT step.)
-      - trailing payload zeros are padding: once only zeros remain, fill the rest with V.
-    VERIFIED byte-exact (float) for 5 of the 7 inline-QZ channels in this file, spanning
-    numBits 5 and 6 and V0 in {0, 31} - the count table, init region and codec are closed.
-    RESIDUAL (2 channels, both fine per-2-frame staircases: Q=0.000752907945 and Q=0.0007529079):
-    a staircase of slope 1/2 is stored as an alternating +1,-1,+1,-1 second-difference 'buzz',
-    and at the entry to such a buzz (a slope transition / valley) the encoder stores ONE FEWER
-    hold-0 than the value sequence needs (its code count is FrameCount-3 = 176 for every channel,
-    so the transition holds are budgeted, not literal) - so those two channels decode 1 frame
-    early from the buzz onward.  This transition-hold rule is the sole open item; everything else
-    in this sequence (all static, packed-quant, indirect, cached channels, the 8-pool count table,
-    mapping, descriptors, and 5/7 inline-QZ channels) is byte-identical to the oracle (proven:
-    only those 2 <Values> blocks - 11 lines of 734 - differ).
+INLINE QuantizeFloat descriptor (variable) [emits <Type>QuantizeFloat</Type>] - SOLVED:
+    u32 sizeWords(=total descriptor size in u32, incl this 16B header), u32 B,
+    f32 Quantum, f32 Offset, then payload = (sizeWords-4) u32 words.
+    B is THREE bytes, not (numBits<<8)|8:
+        B & 0xFF        = W, the width of each of the 3 payload PROLOGUE fields (8 here)
+        (B>>8) & 0xFF   = numBits, the width of the 3 SEEDED values
+        (B>>16) & 0xFF  = a further selector (0 in this file; 0..9 seen game-wide)
+    Payload bit layout (LSB-first throughout): 3 W-bit prologue fields, then
+        f0 = raw[0] ; f1 = raw[1] ; f2 = the value at the REST frame   (numBits each),
+    then the code stream at bit 3*W + 3*numBits.  numBits is only wide enough to hold
+    f0/f1/f2 - the DECODED values routinely exceed it (a nb=3 channel here spans 0..15).
+    Codes: '1' -> 0 ; '0'*z '1' <sign> -> -z if sign else +z (z = leading-zero run).
+    The stream carries exactly FrameCount-3 codes; trailing payload zeros are padding.
+    DOUBLE-INTEGRATION with a single REST:
+        raw[0] = f0 ; raw[1] = f1 ; V = f1 ; D = f1 - f0
+        for each code c:
+            if (not yet rested) and V == f2 and c == D:      # the REST
+                emit V (the frame is duplicated) ; D = 0 ; rested = True
+            D += c ; V += D ; emit V
+    FRAME BUDGET closes exactly and is the structural proof of the rule:
+        2 seeded frames + (FrameCount-3) codes + 1 rest == FrameCount.
+    So f2 is NOT 'the last value' - it is the value at the one duplicated frame.  In a
+    channel with a flat tail the rest lands in that tail and is invisible (which is why
+    f2 == raw[FrameCount-1] there); in a fine per-2-frame staircase channel it lands
+    mid-stream, at the point where the encoder wrote a code equal to the current velocity.
+    VERIFIED byte-exact for all 7 inline-QZ channels of the mpsecurity drinking_shots
+    sequence (numBits 3..6, W=8, selector 0), and the rest fires exactly once in each,
+    with no padding-fill fallback.  A descriptor whose budget does NOT close (an unproven
+    variant) yields None and the emitter writes a visible RESIDUAL comment, never values.
 """
 import math
 import os
@@ -368,12 +364,15 @@ class Ycd:
         # each across the nPalWords u32).
         ind_descs = []
         o = qz_b + nqz * 12
+        overrun = False
         for _k in range(ni):
+            if o + 0x14 > len(S):                     # bogus walk -> this is not the 6-pool layout
+                overrun = True; break
             ind_descs.append(o)
             o += 0x14 + u32(S, o + 8) * 4
         # descriptors must exactly fill up to the packed-frame block (quant_off is a
         # DATA-relative offset, so compare against o - data)
-        if o - data != quant_off:
+        if overrun or o - data != quant_off:
             out.append("     <SequenceData>")
             out.append("      <!-- UNPINNED: indirect descriptors do not reach quant_off -->")
             out.append("     </SequenceData>"); out.append("    </Item>"); return
@@ -498,10 +497,17 @@ class Ycd:
         qz_descs = [o + k * 12 for k in range(nqz)]; o += nqz * 12   # 12B: numBits,Q,Off
         ind_descs = []
         for _k in range(ni):
+            if o + 0x14 > len(S):                                    # bogus walk -> not our layout
+                return False
             ind_descs.append(o); o += 0x14 + u32(S, o + 8) * 4       # variable IQ descriptor
         inl_descs = []
         for _k in range(n6):
-            inl_descs.append(o); o += u32(S, o) * 4                  # sizeWords (u32) stride
+            if o + 16 > len(S):
+                return False
+            sw = u32(S, o)
+            if sw < 4 or o + sw * 4 > len(S):                        # sizeWords must be sane
+                return False
+            inl_descs.append(o); o += sw * 4                         # sizeWords (u32) stride
         if o - data != quant_off:                        # descriptors must reach the packed block
             return False
 
@@ -593,7 +599,13 @@ class Ycd:
                     out.append('         <Type value="QuantizeFloat" />')
                     out.append('         <Quantum value="%s" />' % fmt_num(f32(S, d + 8)))
                     out.append('         <Offset value="%s" />' % fmt_num(f32(S, d + 0xC)))
-                    self._emit_values(out, inl_vals[pl], "         ")
+                    if inl_vals[pl] is None:
+                        # frame budget did not close -> an inline variant this decoder has
+                        # not proven.  Emit a RESIDUAL marker, never invented values.
+                        out.append('         <!-- RESIDUAL: inline QuantizeFloat variant '
+                                   'B=%#010x sizeWords=%d not decoded -->' % (u32(S, d + 4), u32(S, d)))
+                    else:
+                        self._emit_values(out, inl_vals[pl], "         ")
                     out.append('        </Item>')
             if it in cached:
                 out.append('        <Item>')
@@ -607,55 +619,72 @@ class Ycd:
         return True
 
     def _decode_inline_qz(self, desc, framecount):
-        """Decode one INLINE QuantizeFloat channel -> list of framecount float values.
-        Codec = double-integration (2nd-order-difference) bitstream, LSB-first (see docstring):
-          payload = S[desc+16 : desc+sizeWords*4].  numBits = B>>8 ; V0 = payload-bits[24:24+numBits].
-          stream starts at payload-bit 24+3*numBits ; state V,D (D=0) ; per frame read d2 code
-          ('1' -> 0 ; '0' -> +/-q where q = leading-zero run to a '1', then a sign bit) ;
-          V += D ; D += d2 ; emit V.  Trailing payload zeros are padding -> fill with last V.
-        VERIFIED byte-exact for smooth channels; the fine-staircase channels (rapid per-2-frame
-        ramps through slope transitions) drop a code at turning points and are NOT yet bit-exact."""
+        """Decode one INLINE QuantizeFloat channel -> list of framecount float values,
+        or None when the frame budget does not close exactly (an unproven variant - the
+        caller then emits a visible residual instead of wrong values).
+
+        Descriptor: u32 sizeWords, u32 B, f32 Quantum, f32 Offset, then the payload.
+        B is three bytes: B&0xFF = W (prologue field width), (B>>8)&0xFF = numBits
+        (the width of the three seeded values), (B>>16)&0xFF = a further selector (0 here).
+        Payload header = 3 W-bit fields, then f0, f1, f2 (numBits each); the code stream
+        starts at 3*W + 3*numBits.
+        Codes (LSB-first): '1' -> 0 ; '0'*z '1' <sign> -> -z if sign else +z.
+        Integration (see the module docstring INLINE QuantizeFloat for the derivation):
+            raw[0] = f0 ; raw[1] = f1 ; V = f1 ; D = f1 - f0
+            per code c:  if (not yet done) and V == f2 and c == D:  emit V ; D = 0   # REST
+                         D += c ; V += D ; emit V
+        FrameCount == 2 + (FrameCount-3 codes) + 1 rest, so the budget closes exactly."""
         S = self.S
         A = u32(S, desc); B = u32(S, desc + 4)
         q = f32(S, desc + 8); off = f32(S, desc + 0xC)
-        nb = B >> 8
+        nb = (B >> 8) & 0xFF                       # width of the three seeded values
+        wp = B & 0xFF                              # width of each of the 3 prologue fields
         base = desc + 16
-        payend = desc + A * 4                                   # payload end (bytes)
-        nbits = (payend - base) * 8
+        nbits = (desc + A * 4 - base) * 8          # payload bits
+        hdr = 3 * wp + 3 * nb
+        if nb == 0 or framecount < 3 or hdr + 1 > nbits:
+            return None
 
         def bit(i):
             return (S[base + (i >> 3)] >> (i & 7)) & 1
 
-        def readfield(pos, n):
+        def fld(pos, n):
             v = 0
             for i in range(n):
                 v |= bit(pos + i) << i
             return v
 
-        def any_one_from(pos):
-            for i in range(pos, nbits):
-                if bit(i):
-                    return True
-            return False
-
+        f0 = fld(hdr - 3 * nb, nb)                 # raw[0]
+        f1 = fld(hdr - 2 * nb, nb)                 # raw[1]  (seeds D = f1 - f0)
+        f2 = fld(hdr - nb, nb)                     # the value at the REST frame
+        # ---- code stream ----
+        codes = []; p = hdr
+        while p < nbits:
+            if bit(p):
+                codes.append(0); p += 1
+                continue
+            z = 0
+            while p < nbits and not bit(p):        # leading-zero run = magnitude
+                z += 1; p += 1
+            if p >= nbits:
+                break                              # trailing zero padding
+            p += 1                                 # the '1' terminator
+            if p >= nbits:
+                break
+            s = bit(p); p += 1
+            codes.append(-z if s else z)
+        if len(codes) != framecount - 3:
+            return None
+        # ---- double integration with the single REST ----
+        raw = [f0, f1]; V = f1; D = f1 - f0; rested = False
+        for c in codes:
+            if not rested and V == f2 and c == D:
+                raw.append(V); D = 0; rested = True
+            D += c; V += D; raw.append(V)
+        if len(raw) != framecount:
+            return None
         from meta2xml import f32 as _F
-        V = readfield(24, nb); D = 0
-        raw = [V]; p = 24 + 3 * nb
-        while len(raw) < framecount:
-            if p >= nbits or not any_one_from(p):              # only padding left -> fill
-                raw += [V] * (framecount - len(raw)); break
-            if bit(p) == 1:
-                p += 1; d2 = 0
-            else:
-                z = 0
-                while p < nbits and bit(p) == 0:
-                    z += 1; p += 1
-                p += 1                                          # the '1' terminator
-                s = bit(p) if p < nbits else 0; p += 1
-                d2 = -z if s else z
-            V += D; D += d2
-            raw.append(V)
-        return [_F(off + _F(rw * q)) for rw in raw[:framecount]]
+        return [_F(off + _F(rw * q)) for rw in raw]
 
     def _emit_values(self, out, vals, ind):
         if len(vals) <= 10:
