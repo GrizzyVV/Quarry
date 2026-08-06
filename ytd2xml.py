@@ -74,18 +74,40 @@ LINEAR_FORMATS = {
 # disagreements. Codes absent here were never observed and deliberately fall through to UNKNOWN.
 USAGE_BY_CODE = {
     0: "UNKNOWN",      # 3/3
-    1: "DIFFUSE",      # 12/12  (LOD atlases; distinct from code 20 but renders the same)
-    2: "TERRAIN",      # 1/1    single witness - thin, but measured
+    1: "DEFAULT",      # ⚠ RE-MEASURED 2026-08-05 against the oracle set: script_rt_dials_race
+                       # spells DEFAULT. The old "DIFFUSE 12/12" third-party measurement now has
+                       # a direct oracle counter-witness; the oracle set is the spec, so DEFAULT
+                       # wins. (Old claim kept here as the record of the conflict.)
+    2: "TERRAIN",      # 1/1 third-party + 9 oracle witnesses 2026-08-05
+    5: "CABLE",        # 3/3 oracle 2026-08-05 (plg_01_cables, cs1_09 wires)
     6: "FENCE",        # 2/2
-    20: "DIFFUSE",     # 157/157
-    22: "NORMAL",      # 61/61   <-- drives ImportYtd's normal-map handling
-    23: "SPECULAR",    # 50/50   <-- drives ImportYtd's specular handling
+    9: "WATERFLOW",    # 1/1 oracle 2026-08-05
+    11: "WATERFOG",    # 1/1 oracle 2026-08-05
+    12: "WATEROCEAN",  # 2/2 oracle 2026-08-05
+    20: "DIFFUSE",     # 157/157 (+192 oracle 2026-08-05)
+    22: "NORMAL",      # 61/61 (+6 oracle)   <-- drives ImportYtd's normal-map handling
+    23: "SPECULAR",    # 50/50 (+6 oracle)   <-- drives ImportYtd's specular handling
+    26: "SKIPPROCESSING",  # 3/3 oracle 2026-08-05 (nxg_im_ground_cover LODs)
 }
-# Codes 5, 8, 21, 24, 26 DO occur in real archives (129 of 11,905 textures = 1.08%) but no
-# matched third-party export in the corpus contains one, so their strings are genuinely unmeasured
-# and they emit UNKNOWN. This is inert for RUDE: `ImportYtd` branches only on NORMAL and
-# SPECULAR - both of which are measured unanimous - and treats every other value identically.
-# To close them, obtain a reference export of a dictionary containing one and re-measure.
+# Codes 8, 21, 24 still occur in real archives with no oracle witness yet - they emit UNKNOWN
+# until a reference export containing one is measured (the 2026-08-05 oracle set closed
+# 5/9/11/12/26 exactly this way).
+
+# grcTexture+0x40 bits 5+ -> the <UsageFlags> symbol per bit. Derived by exact co-occurrence
+# over all 224 oracle-matched textures (2026-08-05): each symbol's indicator set equals exactly
+# one bit's indicator set; 224/224 oracle strings reproduced. Spelled in ascending bit order,
+# ", "-joined. UNK24 (bit 29) was set on all 224 - its bit is chosen as the only candidate
+# consistent with the rest of the header map; a texture without UNK24 would pin it uncontested.
+USAGE_FLAG_BITS = (
+    (5, "NOT_HALF"), (6, "HD_SPLIT"), (9, "Y4"), (10, "X8"), (11, "X16"), (12, "X32"),
+    (13, "X64"), (14, "Y64"), (15, "X128"), (16, "X256"), (17, "X512"), (18, "Y512"),
+    (19, "X1024"), (21, "X2048"), (29, "UNK24"),
+)
+
+
+def usage_flags_text(dword):
+    syms = [s for bit, s in USAGE_FLAG_BITS if dword & (1 << bit)]
+    return ", ".join(syms) if syms else "0"
 
 DDS_MAGIC = b"DDS "
 DDPF_ALPHAPIXELS, DDPF_FOURCC, DDPF_RGB, DDPF_LUMINANCE, DDPF_ALPHA = 0x1, 0x4, 0x40, 0x20000, 0x2
@@ -252,13 +274,24 @@ def _read_one_texture(res, ptr_arr, i):
         return dict(name=name, width=w, height=h, mips=mips, fmt=fmt, xml_fmt=xml_fmt,
                     usage=USAGE_BY_CODE.get(res.u32(tp + 0x40) & 0x1F, "UNKNOWN"),
                     usage_code=res.u32(tp + 0x40) & 0x1F,
+                    # measured 2026-08-05 (224/224 oracle textures): Unk32 = u16 @ +0x32
+                    # (the high half of the dword whose low half is the +0x30 refcount);
+                    # UsageFlags = bits 5+ of the same +0x40 dword the usage code lives in;
+                    # ExtraFlags = u32 @ +0x48
+                    unk32=res.u16(tp + 0x32),
+                    usage_flags=usage_flags_text(res.u32(tp + 0x40)),
+                    extra_flags=res.u32(tp + 0x48),
                     dds=dds_header(w, h, mips, fmt, blk, bpp) + bytes(pbuf[po:po + need]))
 
 
 def to_xml(textures):
-    """The interchange <TextureDictionary> shape. Unk32/UsageFlags/ExtraFlags are emitted as 0:
-    all 25,816 <Item> across 4,000 corpus dictionaries carry 0 for all three, so 0 is the
-    measured constant rather than a placeholder."""
+    """The interchange <TextureDictionary> shape.
+
+    ⛔ RETRACTED 2026-08-05: this docstring used to claim Unk32/UsageFlags/ExtraFlags are a
+    "measured constant 0" over 25,816 corpus Items. The oracle set contradicts it outright -
+    0 of 224 matched textures carry Unk32=0 (values 128/32/64) and every one carries real
+    UsageFlags symbols. The old claim was measured against OUR OWN emissions, not references -
+    the wrong property. All three now come from the header fields named in read_texture."""
     L = ['<?xml version="1.0" encoding="UTF-8"?>']
     if not textures:
         L.append("<TextureDictionary />")
@@ -267,10 +300,10 @@ def to_xml(textures):
     for t in textures:
         L += [" <Item>",
               "  <Name>%s</Name>" % esc(t["name"]),
-              '  <Unk32 value="0" />',
+              '  <Unk32 value="%d" />' % t.get("unk32", 0),
               "  <Usage>%s</Usage>" % t["usage"],
-              "  <UsageFlags>0</UsageFlags>",
-              '  <ExtraFlags value="0" />',
+              "  <UsageFlags>%s</UsageFlags>" % t.get("usage_flags", "0"),
+              '  <ExtraFlags value="%d" />' % t.get("extra_flags", 0),
               '  <Width value="%d" />' % t["width"],
               '  <Height value="%d" />' % t["height"],
               '  <MipLevels value="%d" />' % t["mips"],

@@ -55,7 +55,7 @@ import struct
 import sys
 import zlib
 
-from meta2xml import fmt_num          # THE proven float-text rule (7->9 sig digits,
+from meta2xml import fmt_num, joaat   # THE proven float-text rule (7->9 sig digits,
                                       # ties away from zero) - single implementation
 
 # ---------------------------------------------------------------- refusal accounting
@@ -257,10 +257,16 @@ def build_decl(mask, nibbles, declared_stride):
 
 
 def fmt_float(v):
-    """Any parseable float is fine (FCString::Atof). Trim to keep files small and diffable."""
-    if v == int(v) and abs(v) < 1e15:
-        return str(int(v))
-    return repr(round(v, 8))
+    """Delegates to THE float-text law (meta2xml.fmt_num): 7-else-9 significant digits,
+    ties away from zero, %G fixed/scientific thresholds, uppercase signed exponent.
+
+    ⛔ The old body - `repr(round(v, 8))` - was a REAL SHIPPED DEFECT twice over
+    (measured 2026-08-05 against the oracle set, 128,289/128,289 paired spellings):
+    wrong spelling on every non-integral value, AND real precision loss below ~1e-4
+    (8 DECIMAL places turns -1.62920685E-07 into 2 significant digits). 1,772 vertex
+    Data-stream values in one sweep alone did not round-trip to their own float32.
+    fmt_num snaps to float32 itself; ints and strings pass through it unchanged."""
+    return fmt_num(v)
 
 
 def decode_vertices(res, vdata_tagged, count, stride, fields):
@@ -410,6 +416,29 @@ def preset_name(hash32):
     return "hash_%08X" % hash32
 
 
+_SPS = None
+
+
+def sps_filename(hash32, preset):
+    """Shader entry +0x18 holds joaat of the preset FILENAME - the '.sps' extension is
+    INSIDE the hashed string, and it is stored separately from the +0x08 name hash.
+    Derived 2026-08-05: plg_01_props_dtr1_002's shader has Name=default (+0x08 =
+    joaat('default') @sys+3096) with joaat('cutout.sps') 16 bytes later; across the
+    oracle set 188/192 shaders spell FileName == Name + '.sps' and 4 (the cutout
+    defaults) do not, so the filename can never be derived from the name. Resolved from
+    the same preset table with '.sps' appended; an unresolved hash is COUNTED and
+    emitted as hash text - never guessed."""
+    global _SPS
+    if _SPS is None:
+        tab = _load_name_table("joaat_shaders.json", required=True)
+        _SPS = {joaat(n + ".sps"): n + ".sps" for n in tab.values()}
+    got = _SPS.get(hash32)
+    if got is None:
+        _refuse("sps_filename_unresolved", "%s: 0x%08X" % (preset, hash32))
+        return "hash_%08X.sps" % hash32
+    return got
+
+
 # ---------------------------------------------------------------- drawable walk
 
 # Shader param NAMES are in the binary as joaat(lowercase(name)): a u32 array of npar hashes
@@ -526,6 +555,17 @@ def sampler_name(hash32):
     global _SAMPLERS
     if _SAMPLERS is None:
         _SAMPLERS = {_joaat(n.lower()): n for n in SAMPLER_NAMES}
+        # WIRING FIX 2026-08-06 (agent-2 measurement): shader_param_names.json already
+        # holds thousands of fxc-derived sampler names (DetailDensitySampler...) under
+        # their joaat keys, and this resolver never consulted it - 6 of the sweep's
+        # unresolved hashes were sitting in a table we ship. Hand-verified tuple wins
+        # on any overlap; the generated table only fills gaps.
+        gen = _load_name_table("shader_param_names.json", required=False) or {}
+        for k, n in gen.items():
+            try:
+                _SAMPLERS.setdefault(int(k, 16), n)
+            except (TypeError, ValueError):
+                pass
     nm = _SAMPLERS.get(hash32)
     if nm:
         return nm
@@ -644,6 +684,7 @@ def read_shaders(res, base=0):
             out.append(("default", 0, [], []))
             continue
         preset = preset_name(res.u32(bo + 0x08))
+        spsfn = sps_filename(res.u32(bo + 0x18), preset)
         w10 = res.u32(bo + 0x10)
         npar, bucket = w10 & 0xFF, (w10 >> 8) & 0xFF
         dsize = res.u16(bo + 0x14)
@@ -705,7 +746,7 @@ def read_shaders(res, base=0):
         elif npar:
             _refuse("shader_param_header_implausible",
                     "%s: npar=%d dsize=%d" % (preset, npar, dsize))
-        out.append((preset, bucket, texs, vals))
+        out.append((preset, spsfn, bucket, texs, vals))
     return out
 
 
@@ -732,6 +773,7 @@ def read_geometries(res, base=0):
     13,693 over 3,479 base ydr, 12,032/12,032 main + 568/568 child over 3,000 base yft - so this
     is the SHAPE being closed, not a live loss."""
     geos = GeometryList()
+    geos.models = []
     mh_p = res.ptr(base + 0x50)
     if mh_p == 0:
         # No DrawableModelsHigh group at all. Ordinary for a fragment child that carries only
@@ -756,6 +798,21 @@ def read_geometries(res, base=0):
         garr_p, ngeo = res.u32(m + 0x08), res.u16(m + 0x10)
         geos.declared += ngeo
         gb_p = res.u32(m + 0x18)
+        # model header bytes (offsets derived 2026-08-06, see drawable_lines comment)
+        geos.models.append({"mask": _b[m + 0x2C], "flags": _b[m + 0x2D],
+                            "unknown1": _b[m + 0x28], "boneindex": _b[m + 0x2F]})
+        # per-geometry bounds: float4 (min,max) pairs @ model+0x18; [union]+per-geo
+        # when ngeo>1 (probed: 0089 entry0 == union of entries 1..n)
+        gb_list = None
+        n_ent = ngeo + 1 if ngeo > 1 else ngeo
+        gbb, gbo = res.deref(gb_p, n_ent * 32)
+        if gbb is not None:
+            gb_list = [struct.unpack_from("<8f", gbb, gbo + k * 32)
+                       for k in range(n_ent)]
+            if ngeo > 1:
+                gb_list = gb_list[1:]
+        else:
+            _refuse("geometry_bounds_unresolved", "model %d" % mi)
         gbuf, ga = res.deref(garr_p, ngeo * 8)
         if gbuf is None:
             _refuse("geometry_array_unresolved", "model %d: %d geometries" % (mi, ngeo))
@@ -820,9 +877,9 @@ def read_geometries(res, base=0):
                 "layout": [f[1] for f in fields],
                 "verts": vlines,
                 "indices": indices,
+                "model": mi,
+                "bbox": gb_list[gi] if gb_list and gi < len(gb_list) else None,
             })
-        # geoBounds is N+1 pairs (union first) when N>1 - not needed for the minimal XML
-        _ = gb_p
     return geos
 
 
@@ -835,6 +892,79 @@ def read_bounds(res, base=0):
         "bb_min": (f(0x30), f(0x34), f(0x38)),
         "bb_max": (f(0x40), f(0x44), f(0x48)),
     }
+
+
+LIGHT_TYPES = {1: "Point", 2: "Spot"}   # observed codes only - others refuse, never guess
+
+
+def lights_lines(res, base=0):
+    """<Lights> - LightAttrs array @ drawable+0xB0 (tagged ptr) / +0xB8 (u16 count),
+    stride 0xA8. Layout + 36-element XML order derived 2026-08-06 from the 4
+    light-bearing oracle pairs: 315/315 field checks (WAL §6i). Two sample-ambiguities
+    are documented there (volume five-pack bijection; Falloff vs CullingPlaneOffset,
+    equal in every sample) - the assignment below reproduces every observed byte, and a
+    future divergent sample surfaces as a visible diff, never silent corruption."""
+    n = res.u16(base + 0xB8)
+    lp = res.u32(base + 0xB0)
+    if not n or not lp:
+        return [" <Lights />"]
+    buf, off = res.deref(lp, n * 0xA8)
+    if buf is None:
+        _refuse("lights_array_unresolved", "%d lights" % n)
+        return [" <Lights />"]
+    ff = fmt_num
+    L = [" <Lights>"]
+    for i in range(n):
+        o = off + i * 0xA8
+        f = lambda at: struct.unpack_from("<f", buf, o + at)[0]
+        u32 = lambda at: struct.unpack_from("<I", buf, o + at)[0]
+        v3 = lambda at: struct.unpack_from("<3f", buf, o + at)
+        tcode = buf[o + 38]
+        tname = LIGHT_TYPES.get(tcode)
+        if tname is None:
+            _refuse("light_type_unmeasured", str(tcode))
+            tname = str(tcode)
+        L += ["  <Item>",
+              '   <Position x="%s" y="%s" z="%s" />' % tuple(ff(x) for x in v3(8)),
+              '   <Colour r="%d" g="%d" b="%d" />' % (buf[o + 24], buf[o + 25], buf[o + 26]),
+              '   <Flashiness value="0" />',
+              '   <Intensity value="%s" />' % ff(f(28)),
+              '   <Flags value="%d" />' % u32(32),
+              '   <BoneId value="%d" />' % struct.unpack_from("<H", buf, o + 36)[0],
+              "   <Type>%s</Type>" % tname,
+              '   <GroupId value="%d" />' % buf[o + 39],
+              '   <TimeFlags value="%d" />' % u32(40),
+              '   <Falloff value="%s" />' % ff(f(44)),
+              '   <FalloffExponent value="%s" />' % ff(f(48)),
+              '   <CullingPlaneNormal x="%s" y="%s" z="%s" />' % tuple(ff(x) for x in v3(52)),
+              '   <CullingPlaneOffset value="%s" />' % ff(f(64)),
+              '   <Unknown45 value="0" />',
+              '   <Unknown46 value="0" />',
+              '   <VolumeIntensity value="%s" />' % ff(f(76)),
+              '   <VolumeSizeScale value="%s" />' % ff(f(80)),
+              '   <VolumeOuterColour r="%d" g="%d" b="%d" />'
+              % (buf[o + 84], buf[o + 85], buf[o + 86]),
+              '   <LightHash value="%d" />' % buf[o + 87],
+              '   <VolumeOuterIntensity value="%s" />' % ff(f(88)),
+              '   <CoronaSize value="%s" />' % ff(f(92)),
+              '   <VolumeOuterExponent value="%s" />' % ff(f(96)),
+              '   <LightFadeDistance value="%d" />' % buf[o + 100],
+              '   <ShadowBlur value="%d" />' % buf[o + 68],
+              '   <ShadowFadeDistance value="%d" />' % buf[o + 101],
+              '   <SpecularFadeDistance value="%d" />' % buf[o + 102],
+              '   <VolumetricFadeDistance value="%d" />' % buf[o + 103],
+              '   <ShadowNearClip value="%s" />' % ff(f(104)),
+              '   <CoronaIntensity value="%s" />' % ff(f(108)),
+              '   <CoronaZBias value="%s" />' % ff(f(112)),
+              '   <Direction x="%s" y="%s" z="%s" />' % tuple(ff(x) for x in v3(116)),
+              '   <Tangent x="%s" y="%s" z="%s" />' % tuple(ff(x) for x in v3(128)),
+              '   <ConeInnerAngle value="%s" />' % ff(f(140)),
+              '   <ConeOuterAngle value="%s" />' % ff(f(144)),
+              '   <Extent x="%s" y="%s" z="%s" />' % tuple(ff(x) for x in v3(148)),
+              '   <ProjectedTextureHash />',
+              "  </Item>"]
+    L.append(" </Lights>")
+    return L
 
 
 # ---------------------------------------------------------------- embedded collision
@@ -1194,6 +1324,24 @@ def drawable_lines(res, name, base=0, allow_empty=False):
     L.append(' <BoundingSphereRadius value="%s" />' % ff(b["sphere_r"]))
     L.append(' <BoundingBoxMin x="%s" y="%s" z="%s" />' % tuple(ff(v) for v in b["bb_min"]))
     L.append(' <BoundingBoxMax x="%s" y="%s" z="%s" />' % tuple(ff(v) for v in b["bb_max"]))
+    # LodDist quartet: consecutive float32 @ drawable+0x70..0x7C - derived 2026-08-05 by
+    # oracle-value/offset intersection over 8 binaries (wheel2_bkr_01p discriminates High;
+    # the rest follow in struct order). Flags quartet: the bitmask of RenderBuckets used
+    # by that LOD's geometries - COMPUTED, not read: no aligned header field holds it, and
+    # the computed mask matches 170/172 oracle drawables. The 2 exceptions carry a stored
+    # Med bit with NO Med models (wheel2_bkr_01p, task_000_u) - a named residual the sweep
+    # keeps visible until the stored field is located; never guessed.
+    ld = struct.unpack_from("<4f", res.sys, base + 0x70)
+    for tag, v in zip(("LodDistHigh", "LodDistMed", "LodDistLow", "LodDistVlow"), ld):
+        L.append(' <%s value="%s" />' % (tag, ff(v)))
+    # Flags quartet: STORED u8 @ base+0x80/84/88/8C (4-byte stride; the second byte is
+    # 0xFF when the LOD is active). Probed 2026-08-06: wheel2 `01 FF|01 FF|00|00` reads
+    # (1,1,0,0) exactly - including the Med flag its emitted models can't compute, which
+    # is what disproved the earlier computed-bucket-mask shortcut (right 170/172 by
+    # coincidence: stored usually equals the mask).
+    for tag, off in zip(("FlagsHigh", "FlagsMed", "FlagsLow", "FlagsVlow"),
+                        (0x80, 0x84, 0x88, 0x8C)):
+        L.append(' <%s value="%d" />' % (tag, res.sys[base + off]))
     L.append(" <ShaderGroup>")
     emb = embedded_textures(res, base, what=name)
     if emb:
@@ -1203,10 +1351,10 @@ def drawable_lines(res, name, base=0, allow_empty=False):
         for t in emb:
             L += ["   <Item>",
                   "    <Name>%s</Name>" % esc(t["name"]),
-                  '    <Unk32 value="0" />',
+                  '    <Unk32 value="%d" />' % t.get("unk32", 0),
                   "    <Usage>%s</Usage>" % t["usage"],
-                  "    <UsageFlags>0</UsageFlags>",
-                  '    <ExtraFlags value="0" />',
+                  "    <UsageFlags>%s</UsageFlags>" % t.get("usage_flags", "0"),
+                  '    <ExtraFlags value="%d" />' % t.get("extra_flags", 0),
                   '    <Width value="%d" />' % t["width"],
                   '    <Height value="%d" />' % t["height"],
                   '    <MipLevels value="%d" />' % t["mips"],
@@ -1224,55 +1372,101 @@ def drawable_lines(res, name, base=0, allow_empty=False):
         # the default material.
         if res.ptr(base + 0x10):
             _refuse("shader_group_yielded_nothing_default_substituted", name)
-        shaders = [("default", 0, [], [])]
-    for preset, bucket, texs, vals in shaders:
+        shaders = [("default", "default.sps", 0, [], [])]
+    # Shader item shape measured against the 2026-08-05 oracle set: FileName after Name
+    # (the +0x18 hash - NOT derivable from the name, see sps_filename); texture params
+    # as a 3-line Item; single-float4 value params INLINE as attributes; multi-row
+    # params as type="Array" with <Value> children. `count=` is never spelled (0
+    # occurrences corpus-wide).
+    for preset, spsfn, bucket, texs, vals in shaders:
         L.append("   <Item>")
         L.append("    <Name>%s</Name>" % esc(preset))
+        L.append("    <FileName>%s</FileName>" % esc(spsfn))
         L.append('    <RenderBucket value="%d" />' % bucket)
         L.append("    <Parameters>")
         for sampler, t in texs:
-            L.append('     <Item name="%s" type="Texture"><Name>%s</Name></Item>'
-                     % (sampler, esc(t)))
-        for pname, rows in vals:
-            L.append('     <Item name="%s" type="Vector" count="%d">' % (pname, len(rows)))
-            for (x, y, z, wv) in rows:
-                L.append('      <Value x="%s" y="%s" z="%s" w="%s" />'
-                         % (ff(x), ff(y), ff(z), ff(wv)))
+            L.append('     <Item name="%s" type="Texture">' % sampler)
+            L.append("      <Name>%s</Name>" % esc(t))
             L.append("     </Item>")
+        for pname, rows in vals:
+            if len(rows) == 1:
+                x, y, z, wv = rows[0]
+                L.append('     <Item name="%s" type="Vector" x="%s" y="%s" z="%s" w="%s" />'
+                         % (pname, ff(x), ff(y), ff(z), ff(wv)))
+            else:
+                L.append('     <Item name="%s" type="Array">' % pname)
+                for (x, y, z, wv) in rows:
+                    L.append('      <Value x="%s" y="%s" z="%s" w="%s" />'
+                             % (ff(x), ff(y), ff(z), ff(wv)))
+                L.append("     </Item>")
         L.append("    </Parameters>")
         L.append("   </Item>")
     L.append("  </Shaders>")
     L.append(" </ShaderGroup>")
+    # Model block shape measured against the 2026-08-05/06 oracle set: one <Item> PER
+    # MODEL (grouping preserved, not flattened), each with the header quintet -
+    # RenderMask (u8 model+0x2C) - Flags (u8 +0x2D) - HasSkin (DERIVED: layout carries
+    # BlendWeights, 176/176 oracle drawables) - BoneIndex (u8 +0x2F, all-zero in every
+    # witness so far; yft children will test variance) - Unknown1 (u8 +0x28 = the
+    # referenced-bone count: 233 on task_000_u's ped skin) - then per-geometry float4
+    # BoundingBoxMin/Max from the model+0x18 bounds array ([union]+per-geo when
+    # multi-geo) and <Flags value="0"> opening each VertexBuffer.
     L.append(" <DrawableModelsHigh>")
-    L.append("  <Item>")
-    L.append("   <Geometries>")
-    for g in geos:
-        L.append("    <Item>")
-        L.append('     <ShaderIndex value="%d" />' % g["shader"])
-        L.append("     <VertexBuffer>")
-        L.append('      <Layout type="GTAV1">')
-        for nm in g["layout"]:
-            L.append("       <%s />" % nm)
-        L.append("      </Layout>")
-        L.append("      <Data>")
-        L.extend("       " + v for v in g["verts"])
-        L.append("      </Data>")
-        L.append("     </VertexBuffer>")
-        L.append("     <IndexBuffer>")
-        idx = g["indices"]
-        L.append("      <Data>")
-        for i in range(0, len(idx), 24):
-            L.append("       " + " ".join(str(x) for x in idx[i:i + 24]))
-        L.append("      </Data>")
-        L.append("     </IndexBuffer>")
-        L.append("    </Item>")
-    L.append("   </Geometries>")
-    L.append("  </Item>")
+    models = getattr(geos, "models", None) or [{}]
+    for mi, mm in enumerate(models):
+        mg = [g for g in geos if g.get("model", 0) == mi]
+        if not mg:
+            continue
+        has_skin = any("BlendWeights" in g["layout"] for g in mg)
+        L.append("  <Item>")
+        L.append('   <RenderMask value="%d" />' % mm.get("mask", 255))
+        L.append('   <Flags value="%d" />' % mm.get("flags", 0))
+        L.append('   <HasSkin value="%d" />' % int(has_skin))
+        L.append('   <BoneIndex value="%d" />' % mm.get("boneindex", 0))
+        L.append('   <Unknown1 value="%d" />' % mm.get("unknown1", 0))
+        L.append("   <Geometries>")
+        for g in mg:
+            L.append("    <Item>")
+            L.append('     <ShaderIndex value="%d" />' % g["shader"])
+            bb = g.get("bbox")
+            if bb is not None:
+                L.append('     <BoundingBoxMin x="%s" y="%s" z="%s" w="%s" />'
+                         % tuple(ff(v) for v in bb[:4]))
+                L.append('     <BoundingBoxMax x="%s" y="%s" z="%s" w="%s" />'
+                         % tuple(ff(v) for v in bb[4:]))
+            L.append("     <VertexBuffer>")
+            L.append('      <Flags value="0" />')
+            L.append('      <Layout type="GTAV1">')
+            for nm in g["layout"]:
+                L.append("       <%s />" % nm)
+            L.append("      </Layout>")
+            L.append("      <Data>")
+            L.extend("       " + v for v in g["verts"])
+            L.append("      </Data>")
+            L.append("     </VertexBuffer>")
+            L.append("     <IndexBuffer>")
+            idx = g["indices"]
+            # oracle-measured: a list that fits ONE 24-value line is spelled INLINE
+            # (<Data>0 1 2 ...</Data>); longer lists wrap at 24 per 7-space line
+            if len(idx) <= 24:
+                L.append("      <Data>%s</Data>" % " ".join(str(x) for x in idx))
+            else:
+                L.append("      <Data>")
+                for i in range(0, len(idx), 24):
+                    L.append("       " + " ".join(str(x) for x in idx[i:i + 24]))
+                L.append("      </Data>")
+            L.append("     </IndexBuffer>")
+            L.append("    </Item>")
+        L.append("   </Geometries>")
+        L.append("  </Item>")
     L.append(" </DrawableModelsHigh>")
     # embedded collision - flows to ydd2xml/yft2xml automatically since they call
     # drawable_lines with their entry's base offset (the bound ptr is base-relative
     # at +0xC8; a drawable without a bound contributes nothing)
     L.extend(bounds_lines(res, base, name))
+    # <Lights> comes AFTER Bounds (oracle order, caught by the golddisc pair); the
+    # LightAttrs decoder emits the populated form (animlight family + des_tvsmash)
+    L.extend(lights_lines(res, base))
     return L
 
 

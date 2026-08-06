@@ -504,7 +504,7 @@ def embedded_texture_sidecars(res, stem, textures, base=0, bases=None):
     return sidecars
 
 
-def to_interchange_xml(name, blob, textures='both', stats=None):
+def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
     """One asset -> (xml filename, xml bytes, [(sidecar relpath, bytes)]), or None when no
     converter exists for that type yet.
 
@@ -581,11 +581,12 @@ def to_interchange_xml(name, blob, textures='both', stats=None):
     if t == 'ydd':
         import ydd2xml
         res = ydd2xml.Res.from_bytes(blob)
-        # names={}: the joaat reverse table is a meta-pass artifact and does not exist at extract
-        # time, so entry names are emitted hash_%08X here and RESOLVED LATER by `quarry meta`
-        # (the same second pass that names ytyp/ymap hashes). Dictionary joins are hash-to-hash,
-        # so nothing downstream depends on the resolution - it is for humans and by-name lookups.
-        xml, _n = ydd2xml.to_xml(res, {})
+        # names: at EXTRACT time the joaat table does not exist yet, so callers pass None
+        # and entry names emit hash_%08X, resolved later by `quarry meta` (unchanged).
+        # `quarry export` DOES have the table (view-manifest-derived) and passes it -
+        # the 2026-08-06 wiring fix: this call hardcoded {} and the export sweep's ydd
+        # lane emitted its own stem as hash_F19DE766.
+        xml, _n = ydd2xml.to_xml(res, names or {})
         # ⭐ A DICTIONARY'S ENTRIES CARRY EMBEDDED TEXTURES TOO (2026-08-03). This branch was the
         # last of the three drawable lanes still hardcoding `[]`: ydr got sidecars 07-30, yft
         # 07-31, and ydd was simply never revisited - the same "built for one lane, never wired
@@ -2312,6 +2313,512 @@ def cmd_scan(a):
     return 0
 
 
+# ------------------------------------------------------------------ view (the whole-game manifest)
+VIEW_DEPTH_CAP = 16   # cycle guard only - the game nests archives 2-3 deep in practice
+
+
+def _tree_paths(entries):
+    """In-archive directory path for every entry, from the TOC's OWN tree (root = entry 0).
+
+    RPF7 stores a flat entry list; a directory entry carries (idx, n) = the slice holding its
+    children. `extract` never needed paths (it files by basename), but a whole-game register
+    does: a file's folder (levels/gta5/..., x64/models/...) is classification evidence the
+    basename alone does not carry. Returns None when the structure is not actually a tree
+    (an index reachable twice, a slice out of range) - the caller falls back to flat names
+    and COUNTS the fallback, never guesses a path.
+    """
+    n = len(entries)
+    if not n or not entries[0].get('dir'):
+        return None
+    paths = [''] * n
+    seen = {0}
+    stack = [(0, '')]
+    while stack:
+        i, base = stack.pop()
+        e = entries[i]
+        lo, hi = e['idx'], e['idx'] + e['n']
+        if lo < 0 or hi > n:
+            return None
+        for k in range(lo, hi):
+            if k in seen:
+                return None
+            seen.add(k)
+            c = entries[k]
+            if c['dir']:
+                stack.append((k, f'{base}/{c["name"]}' if base else c['name']))
+            else:
+                paths[k] = base
+    return paths
+
+
+def _view_walk(r, oodle, emit, slot, chain, depth, max_depth, stats):
+    """Register every FILE entry, descending into nested .rpf - leaves are NEVER inflated.
+
+    The only payload() calls are on nested archives themselves (their TOC cannot be read
+    without their bytes); every leaf is recorded from its 16-byte TOC entry alone. That is
+    what makes a whole-game view cost minutes and ~0 disk where extract costs hours and
+    ~136 GB. Every failure and every depth-cap skip is counted AND itemized - a register
+    that silently misses an archive would poison every phase built on it.
+    """
+    stats['maxDepthSeen'] = max(stats.get('maxDepthSeen', 0), depth)
+    paths = _tree_paths(r.entries)
+    if paths is None:
+        stats['treeFallback'] = stats.get('treeFallback', 0) + 1
+        paths = [''] * len(r.entries)
+    for idx, e in enumerate(r.entries):
+        if e['dir']:
+            continue
+        name = e['name']
+        dirp = paths[idx]
+        low = name.lower()
+        if low.endswith('.rpf'):
+            if depth >= (max_depth or VIEW_DEPTH_CAP):
+                stats['nestedSkippedDepth'] = stats.get('nestedSkippedDepth', 0) + 1
+                stats.setdefault('failures', []).append(
+                    f'{chain}/{dirp}/{name}: SKIPPED at depth cap {max_depth or VIEW_DEPTH_CAP}')
+                continue
+            try:
+                blob = r.payload(e, oodle)
+                sub = Rpf(f'{chain}/{name}', r.keys, r.tables, data=blob, name=name,
+                          aes_key=getattr(r, 'aes_key', None))
+                sub.read_toc()
+                if not sub.sane():
+                    raise ValueError('nested TOC did not decode')
+            except Exception as ex:
+                stats['nestedFailed'] = stats.get('nestedFailed', 0) + 1
+                stats.setdefault('failures', []).append(
+                    f'{chain}/{dirp}/{name}: {type(ex).__name__}: {ex}')
+                continue
+            stats['nestedOpened'] = stats.get('nestedOpened', 0) + 1
+            # The chain keeps the nested archive's FOLDER inside its parent, not just its name:
+            # `x64g.rpf/levels/gta5/generic/cutsprops.rpf`, not `x64g.rpf/cutsprops.rpf`. The
+            # containing folder is classification + association evidence (levels vs vehicles vs
+            # anim) that the flat leaf archives themselves no longer carry.
+            hop = f'{dirp}/{name}' if dirp else name
+            _view_walk(sub, oodle, emit, slot, f'{chain}/{hop}', depth + 1, max_depth, stats)
+            continue
+        ext = low.rsplit('.', 1)[1] if '.' in low else ''
+        rec = {'slot': slot, 'archive': chain, 'path': dirp, 'name': name, 'ext': ext,
+               'depth': depth, 'resource': e['resource']}
+        if e['resource']:
+            # FileSize is a u24 and saturates at >=16MB; recovering the real length reads file
+            # data, which the view deliberately does not do - record the saturation instead.
+            if e['size'] == SIZE_SATURATED:
+                rec['disk'], rec['saturated'] = None, True
+            else:
+                rec['disk'] = e['size']
+        else:
+            rec['disk'] = e['size'] or e['usize']
+            rec['usize'] = e['usize']
+        emit(rec)
+
+
+def cmd_view(a):
+    """ONE manifest, period: every file in every archive, registered from TOCs alone."""
+    import time
+    t0 = time.time()
+    title, exe = detect_title(a.game)
+    base, upd, dlc = find_sources(a.game)
+
+    keys = tables = aes_key = None
+    try:
+        import keyderive
+        raw_k, raw_t = keyderive.acquire(a.game, a.keys, getattr(a, 'magic', None))
+        keys, tables = ngcrypto.keys_from_bytes(raw_k), ngcrypto.tables_from_bytes(raw_t)
+    except Exception as e:
+        print(f'keys     : UNAVAILABLE - {e}')
+        print('keys     : every NG archive TOC would be unreadable - refusing to run a view '
+              'that cannot actually see the game')
+        return 2
+    try:
+        import keyderive
+        aes_key = keyderive.acquire_aes(a.game)
+    except Exception:
+        aes_key = None
+    print(f'aes key  : ' + ('recovered - AES nested archives will open' if aes_key else
+                            'NOT FOUND - AES nested archives will fail, and be counted'))
+
+    dll = oodle_dll(a.game, getattr(a, 'oodle', None))
+    oodle = None
+    if dll:
+        import ctypes
+        lib = ctypes.CDLL(dll)
+        fn = lib.OodleLZ_Decompress
+        fn.restype = ctypes.c_int64
+
+        def oodle(src, outsz):
+            buf = ctypes.create_string_buffer(outsz)
+            n = fn(ctypes.c_char_p(src), ctypes.c_int64(len(src)), buf,
+                   ctypes.c_int64(outsz), 0, 0, 0, None, None, None, None, None, None, 3)
+            if n <= 0:
+                raise RuntimeError('oodle failed')
+            return buf.raw[:n]
+
+    # Source set = EXACTLY extract's job list, including every dlc*.rpf in a pack (the Cayo
+    # lesson: mpheist4 ships dlc.rpf + dlc1.rpf + dlc2.rpf; taking only dlc.rpf silently
+    # dropped 7.2 GB). A view whose source set differs from extract's would certify the
+    # wrong universe.
+    names = [os.path.basename(d) for d in dlc]
+    jobs = [(os.path.join(a.game, n), '00_base') for n in base]
+    jobs += [(p, '10_update') for p in upd]
+    for i, d in enumerate(dlc):
+        found = sorted((f for f in os.listdir(d)
+                        if f.lower().startswith('dlc') and f.lower().endswith('.rpf')
+                        and os.path.isfile(os.path.join(d, f))),
+                       key=lambda f: (len(f), f.lower()))
+        if not found:
+            print(f'  ! {names[i]}: no dlc*.rpf found in {d} - this pack registers NOTHING')
+            continue
+        for f in found:
+            jobs.append((os.path.join(d, f),
+                         os.path.join('20_dlc', '%03d_%s' % (i + 1, names[i]))))
+    if a.only:
+        avail = sorted({os.path.basename(j[0]) for j in jobs})
+        jobs = [j for j in jobs if os.path.basename(j[0]).lower() == a.only.lower()]
+        if not jobs:
+            print(f'STOP --only {a.only!r} matched NO archive. Available ({len(avail)}): '
+                  + ', '.join(avail[:24]) + (' …' if len(avail) > 24 else ''))
+            return 2
+
+    os.makedirs(a.out, exist_ok=True)
+    man_path = os.path.join(a.out, 'VIEW_MANIFEST.jsonl')
+    sum_path = os.path.join(a.out, 'VIEW_SUMMARY.json')
+    stats, per_ext, per_slot = {}, {}, {}
+    total = 0
+    arch_failed = []
+    with open(man_path, 'w', encoding='utf-8') as mf:
+        def emit(rec):
+            nonlocal total
+            total += 1
+            per_ext[rec['ext']] = per_ext.get(rec['ext'], 0) + 1
+            per_slot[rec['slot']] = per_slot.get(rec['slot'], 0) + 1
+            mf.write(json.dumps(rec) + '\n')
+
+        for path, slot in jobs:
+            base_n = os.path.basename(path)
+            try:
+                r = Rpf(path, keys, tables, aes_key=aes_key)
+                r.read_toc()
+                if not r.sane():
+                    raise ValueError('TOC did not decode (wrong keys?)')
+            except Exception as ex:
+                arch_failed.append(f'{slot}/{base_n}: {type(ex).__name__}: {ex}')
+                print(f'  FAIL {slot}/{base_n}: {ex}')
+                continue
+            before = total
+            _view_walk(r, oodle, emit, slot, base_n, 0, a.max_depth, stats)
+            del r
+            print(f'  {slot}/{base_n}: {total - before:,} files  (cumulative {total:,})',
+                  flush=True)
+
+    failures = stats.get('failures', [])
+    summary = {
+        'game': a.game, 'title': title, 'exe': exe,
+        'created': datetime.now().isoformat(timespec='seconds'),
+        # The install fingerprint ties every downstream consumer of this manifest (names
+        # derivation in `export`, categorization, specimen picks) to the exact install
+        # state it was read from - a stat-level stamp, cheap to re-check, loud when the
+        # game updates underneath a stored manifest.
+        'installFingerprint': _install_fingerprint(a.game),
+        'jobs': len(jobs),
+        'archivesRead': len(jobs) - len(arch_failed),
+        'archivesFailed': arch_failed,
+        'filesTotal': total,
+        'perSlot': per_slot,
+        'perExt': dict(sorted(per_ext.items(), key=lambda kv: -kv[1])),
+        'nestedOpened': stats.get('nestedOpened', 0),
+        'nestedFailed': stats.get('nestedFailed', 0),
+        'nestedSkippedDepth': stats.get('nestedSkippedDepth', 0),
+        'treeFallback': stats.get('treeFallback', 0),
+        'maxDepthSeen': stats.get('maxDepthSeen', 0),
+        'failures': failures,
+        'elapsedSec': round(time.time() - t0, 1),
+    }
+    with open(sum_path, 'w', encoding='utf-8') as f:
+        json.dump(summary, f, indent=1)
+    print(f'\nwrote {man_path}\n      {sum_path}')
+    print(f'files    : {total:,} across {summary["archivesRead"]} top-level archives '
+          f'({summary["nestedOpened"]:,} nested opened, max depth {summary["maxDepthSeen"]}) '
+          f'in {summary["elapsedSec"]}s')
+    ex_top = ', '.join(f'{k or "(none)"} {v:,}' for k, v in list(summary['perExt'].items())[:12])
+    print(f'top exts : {ex_top}')
+    bad = len(arch_failed) + summary['nestedFailed'] + summary['nestedSkippedDepth']
+    if bad:
+        # ⛔ The exit code must carry the verdict: a register with holes exiting 0 is exactly
+        # the "ok":true-on-a-failed-batch defect this project has already paid for.
+        print(f'!! INCOMPLETE VIEW: {len(arch_failed)} top-level archive(s) failed, '
+              f'{summary["nestedFailed"]} nested failed, {summary["nestedSkippedDepth"]} '
+              f'skipped at the depth cap - every one itemized in the summary')
+        for line in (arch_failed + failures)[:20]:
+            print(f'   {line}')
+        return 1
+    print('OK       : every archive opened, every entry registered - 0 skipped')
+    return 0
+
+
+# ------------------------------------------------------------------ export (targeted lane)
+def _view_jobs(game):
+    """The view/export source universe - the same archive set the view walks, enumerated
+    quietly (incl. every dlc*.rpf in a pack - the Cayo rule)."""
+    base, upd, dlc = find_sources(game)
+    dnames = [os.path.basename(d) for d in dlc]
+    jobs = [(os.path.join(game, n), '00_base') for n in base]
+    jobs += [(p, '10_update') for p in upd]
+    for i, d in enumerate(dlc):
+        found = sorted((f for f in os.listdir(d)
+                        if f.lower().startswith('dlc') and f.lower().endswith('.rpf')
+                        and os.path.isfile(os.path.join(d, f))),
+                       key=lambda f: (len(f), f.lower()))
+        for f in found:
+            jobs.append((os.path.join(d, f),
+                         os.path.join('20_dlc', '%03d_%s' % (i + 1, dnames[i]))))
+    return jobs
+
+
+def _install_fingerprint(game):
+    """Stat-level stamp of the install: exe + every source archive's (relpath, size,
+    mtime). Milliseconds to compute, no TOC reads - enough to catch a game update or a
+    swapped install underneath a stored view manifest. Not a content hash by design:
+    the point is a cheap PER-RUN check, and any real drift moves file stats."""
+    _title, exe = detect_title(game)
+    h = hashlib.sha256()
+    paths = ([os.path.join(game, exe)] if exe else []) + sorted(
+        j[0] for j in _view_jobs(game))
+    for p in paths:
+        st = os.stat(p)
+        h.update(('%s|%d|%d' % (os.path.relpath(p, game).lower(),
+                                st.st_size, st.st_mtime_ns)).encode())
+    return {'exe': exe, 'archives': len(paths) - (1 if exe else 0),
+            'statHash': h.hexdigest()}
+
+
+def _names_from_view(view_dir, game):
+    """The joaat names table, derived from the view manifest - the ONE registry - and
+    freshness-gated against the live install. Refuses loudly rather than resolving
+    names against a stale filename universe."""
+    import meta2xml
+    sum_p = os.path.join(view_dir, 'VIEW_SUMMARY.json')
+    man_p = os.path.join(view_dir, 'VIEW_MANIFEST.jsonl')
+    for p in (sum_p, man_p):
+        if not os.path.isfile(p):
+            raise SystemExit(f'STOP: no view manifest at {view_dir} - run `quarry view` first')
+    with open(sum_p, encoding='utf-8') as f:
+        s = json.load(f)
+    stamp = s.get('installFingerprint')
+    if not stamp:
+        raise SystemExit('STOP: this view manifest predates the install fingerprint - '
+                         're-run `quarry view` to refresh it')
+    if os.path.normcase(os.path.abspath(s.get('game', ''))) != \
+            os.path.normcase(os.path.abspath(game)):
+        raise SystemExit(f'STOP: view manifest was built from a DIFFERENT install '
+                         f'({s.get("game")}) - re-run `quarry view` against this one')
+    now = _install_fingerprint(game)
+    if now['statHash'] != stamp['statHash']:
+        raise SystemExit('STOP: the game install changed since the view manifest was '
+                         'built (fingerprint mismatch) - re-run `quarry view`')
+
+    def stems():
+        seen_arch = set()
+        with open(man_p, encoding='utf-8') as fh:
+            for line in fh:
+                r = json.loads(line)
+                yield r['name']
+                # nested archive BASENAMES are legitimate name material too - a ytyp's
+                # physicsDictionary can name the .rpf its bounds live in
+                # (heist_ornate_bank), and those names exist only in the archive
+                # chains, never as leaf-file records
+                arch = r['archive']
+                if arch not in seen_arch:
+                    seen_arch.add(arch)
+                    for comp in arch.split('/'):
+                        if comp.lower().endswith('.rpf'):
+                            yield comp
+    return meta2xml.load_names_from_stems(stems())
+
+
+def _resolve_entry(game, entry, keys, tables, aes_key, oodle, cache=None):
+    """One named source file, straight from the archives: entry is the reference exporter-style path
+    relative to the install (fs dirs, top .rpf, nested .rpf chain, in-archive folders,
+    leaf name). Opens ONLY the archives on that chain. -> (leaf_name, blob).
+
+    cache: an optional single-slot dict {'path':, 'rpf':} - a batch whose entries are
+    sorted by top archive then reads each multi-GB top exactly once."""
+    parts = [p for p in entry.replace('/', '\\').split('\\') if p]
+    i = next((k for k, p in enumerate(parts) if p.lower().endswith('.rpf')), None)
+    if i is None:
+        raise ValueError(f'entry has no .rpf component: {entry}')
+    top = os.path.join(game, *parts[:i + 1])
+    if cache is not None and cache.get('path') == top.lower():
+        r = cache['rpf']
+    else:
+        if not os.path.isfile(top):
+            raise FileNotFoundError(f'top archive not on disk: {top}')
+        r = Rpf(top, keys, tables, aes_key=aes_key)
+        r.read_toc()
+        if not r.sane():
+            raise ValueError(f'TOC did not decode: {top}')
+        if cache is not None:
+            cache['path'], cache['rpf'] = top.lower(), r
+    rest = parts[i + 1:]
+    while True:
+        if not rest:
+            raise FileNotFoundError(f'entry names an archive, not a file: {entry}')
+        paths = _tree_paths(r.entries)
+        if paths is None:
+            raise ValueError(f'malformed TOC tree in {r.name}')
+        j = next((k for k, p in enumerate(rest) if p.lower().endswith('.rpf')), None)
+        dirp = '/'.join(rest[:j] if j is not None else rest[:-1]).lower()
+        want = (rest[j] if j is not None else rest[-1]).lower()
+        hit = None
+        for idx, e in enumerate(r.entries):
+            if not e['dir'] and e['name'].lower() == want and paths[idx].lower() == dirp:
+                hit = e
+                break
+        if hit is None:
+            raise FileNotFoundError(f'not found in {r.name}: '
+                                    f'{"/".join(rest[:(j + 1) if j is not None else len(rest)])}')
+        blob = r.payload(hit, oodle)
+        if j is None:
+            return hit['name'], blob
+        sub = Rpf(f'{r.name}/{hit["name"]}', r.keys, r.tables, data=blob,
+                  name=hit['name'], aes_key=aes_key)
+        sub.read_toc()
+        if not sub.sane():
+            raise ValueError(f'nested TOC did not decode: {hit["name"]}')
+        r = sub
+        rest = rest[j + 1:]
+
+
+def cmd_export(a):
+    """TARGETED lane: convert exact named source files with the SAME conversion code the
+    full pipeline runs (to_interchange_xml / meta2xml.convert_bytes) - a scoped
+    invocation, not a fork. Meta lanes get their names from the view manifest,
+    freshness-gated; no pre-built corpus is read, ever."""
+    META_KINDS = ('ytyp', 'ymap', 'ymt')
+    entries = list(a.entry or [])
+    if a.list:
+        with open(a.list, encoding='utf-8') as f:
+            entries += [ln.strip() for ln in f
+                        if ln.strip() and not ln.strip().startswith('#')]
+    if not entries:
+        print('STOP: nothing to export - pass --entry (repeatable) and/or --list')
+        return 2
+
+    keys = tables = aes_key = None
+    try:
+        import keyderive
+        raw_k, raw_t = keyderive.acquire(a.game, a.keys, getattr(a, 'magic', None))
+        keys, tables = ngcrypto.keys_from_bytes(raw_k), ngcrypto.tables_from_bytes(raw_t)
+    except Exception as e:
+        print(f'keys     : UNAVAILABLE - {e} - NG archive TOCs would be unreadable')
+        return 2
+    try:
+        import keyderive
+        aes_key = keyderive.acquire_aes(a.game)
+    except Exception:
+        aes_key = None
+
+    dll = oodle_dll(a.game, getattr(a, 'oodle', None))
+    oodle = None
+    if dll:
+        import ctypes
+        lib = ctypes.CDLL(dll)
+        fn = lib.OodleLZ_Decompress
+        fn.restype = ctypes.c_int64
+
+        def oodle(src, outsz):
+            buf = ctypes.create_string_buffer(outsz)
+            n = fn(ctypes.c_char_p(src), ctypes.c_int64(len(src)), buf,
+                   ctypes.c_int64(outsz), 0, 0, 0, None, None, None, None, None, None, 3)
+            if n <= 0:
+                raise RuntimeError('oodle failed')
+            return buf.raw[:n]
+
+    names = None
+    NAMES_KINDS = META_KINDS + ('ydd',)   # ydd entry names resolve from the same table
+    if any(type_of(os.path.basename(e)) in NAMES_KINDS for e in entries):
+        if not a.view:
+            print('STOP: ytyp/ymap/ymt/ydd entries need --view <folder holding '
+                  'VIEW_MANIFEST.jsonl> - the names source')
+            return 2
+        print('names    : deriving the joaat table from the view manifest '
+              '(freshness-gated) ...')
+        names = _names_from_view(a.view, a.game)
+        print(f'names    : {len(names):,} distinct asset names')
+
+    os.makedirs(a.out, exist_ok=True)
+    import meta2xml
+    ok = kept_binary = failed = 0
+    stats = {}
+    arch_cache = {}
+    for eidx, entry in enumerate(entries, 1):
+        # --split: each entry lands in its own numbered subfolder, so a batch that
+        # includes several VERSIONS of the same filename (base + update + dlc patches)
+        # cannot silently overwrite itself in a flat --out.
+        out_dir = a.out
+        if getattr(a, 'split', False):
+            out_dir = os.path.join(a.out, '%04d' % eidx)
+            os.makedirs(out_dir, exist_ok=True)
+        try:
+            name, blob = _resolve_entry(a.game, entry, keys, tables, aes_key, oodle,
+                                        cache=arch_cache)
+            kind = type_of(name)
+            if kind in META_KINDS:
+                if kind == 'ymt' and blob[:4] in (b'PSIN', b'RBF0'):
+                    # parity with the meta pass: a PSO/RBF .ymt is a DIFFERENT container,
+                    # counted and kept binary - never failed, never guessed
+                    with open(os.path.join(out_dir, name), 'wb') as fh:
+                        fh.write(blob)
+                    kept_binary += 1
+                    print(f'  {name}: {blob[:4].decode()} container - kept binary '
+                          '(counted; not META)')
+                    continue
+                stem = name[:-(len(kind) + 1)]
+                xml, got_kind, w = meta2xml.convert_bytes(blob, stem, names)
+                out_p = os.path.join(out_dir, f'{stem}.{got_kind}.xml')
+                with open(out_p, 'w', encoding='utf-8') as fh:
+                    fh.write(xml)
+                for _k, _n in w.warn.items():
+                    stats[_k] = stats.get(_k, 0) + _n
+                ok += 1
+                print(f'  {entry} -> {os.path.basename(out_p)}')
+            else:
+                conv = to_interchange_xml(name, blob, getattr(a, 'textures', 'both'),
+                                          stats, names=names)
+                if conv is None:
+                    with open(os.path.join(out_dir, name), 'wb') as fh:
+                        fh.write(blob)
+                    kept_binary += 1
+                    print(f'  {name}: no converter for .{kind} yet - kept binary, '
+                          'never dropped')
+                    continue
+                xml_name, xml_bytes, extras = conv
+                with open(os.path.join(out_dir, xml_name), 'wb') as fh:
+                    fh.write(xml_bytes)
+                for rel, payload in (extras or []):
+                    dst = os.path.join(out_dir, rel.replace('/', os.sep))
+                    d = os.path.dirname(dst)
+                    if d:
+                        os.makedirs(d, exist_ok=True)
+                    with open(dst, 'wb') as fh:
+                        fh.write(payload)
+                ok += 1
+                print(f'  {entry} -> {xml_name}'
+                      + (f' (+{len(extras)} sidecar file(s))' if extras else ''))
+        except SystemExit:
+            raise
+        except Exception as ex:
+            failed += 1
+            print(f'  FAIL {entry}: {type(ex).__name__}: {ex}')
+
+    print(f'\nexport: {ok} converted, {kept_binary} kept binary (counted), '
+          f'{failed} failed, of {len(entries)} requested')
+    if stats:
+        for k, n in sorted(stats.items(), key=lambda kv: -kv[1])[:10]:
+            print(f'  {n:7,}x  {k}')
+    return 0 if failed == 0 else 1
+
+
 def cmd_init(a):
     title, exe = detect_title(a.game)
     base, upd, dlc = find_sources(a.game)
@@ -3291,6 +3798,47 @@ def main():
                        help='how deep to descend into nested .rpf (default 2; the game keeps '
                             'nearly all map assets one level down)')
         p.set_defaults(fn=fn)
+
+    pv = sub.add_parser('view', help='THE MANIFEST: register every file in every archive by '
+                                     'reading TOCs only - nothing extracted, ~0 disk. Writes '
+                                     'VIEW_MANIFEST.jsonl + VIEW_SUMMARY.json into --out')
+    pv.add_argument('--game', required=True)
+    pv.add_argument('--out', required=True, help='directory for the manifest files')
+    pv.add_argument('--keys')
+    pv.add_argument('--magic', help='override the bundled game-gated key blob')
+    pv.add_argument('--oodle', help='path to your own oo2core_*_win64.dll (nested-archive '
+                                    'payloads only; leaves are never inflated)')
+    pv.add_argument('--only', help='limit to one archive basename, e.g. x64a.rpf (debug)')
+    pv.add_argument('--max-depth', type=int, default=0, dest='max_depth',
+                    help='nested-archive descent limit; default 0 = unlimited (hard cycle guard '
+                         'at 16). extract stops at 2 - the view must see everything, so it '
+                         'does not')
+    pv.set_defaults(fn=cmd_view)
+
+    pe = sub.add_parser('export', help='TARGETED export: convert exact named source '
+                                       'file(s) straight from the archives with the same '
+                                       'conversion code the full pipeline runs. Meta '
+                                       'lanes derive names from the view manifest, '
+                                       'freshness-gated')
+    pe.add_argument('--game', required=True)
+    pe.add_argument('--out', required=True, help='flat output folder')
+    pe.add_argument('--entry', action='append',
+                    help='path relative to the install, e.g. '
+                         'x64c.rpf\\levels\\gta5\\_prologue\\plg_01.rpf\\plg_01.ymap '
+                         '(repeatable)')
+    pe.add_argument('--list', help='file with one entry path per line (# comments ok)')
+    pe.add_argument('--view', help='folder holding VIEW_MANIFEST.jsonl + '
+                                   'VIEW_SUMMARY.json - the names source, required for '
+                                   'ytyp/ymap/ymt entries')
+    pe.add_argument('--textures', choices=('both', 'png', 'dds', 'none'), default='both')
+    pe.add_argument('--split', action='store_true',
+                    help='write each entry into its own numbered subfolder of --out - '
+                         'required when a batch carries several versions of the same '
+                         'filename, which would otherwise overwrite each other')
+    pe.add_argument('--keys')
+    pe.add_argument('--magic', help='override the bundled game-gated key blob')
+    pe.add_argument('--oodle')
+    pe.set_defaults(fn=cmd_export)
 
     # `resolve` reads only the project folder, so it needs no --game and no keys
     pr = sub.add_parser('resolve', help='flatten the precedence tree into _resolved/ - the FLAT '

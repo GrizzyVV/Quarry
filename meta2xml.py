@@ -69,6 +69,12 @@ SCHEMA_NAMES = (
     # CMapTypes / archetypes
     "CMapTypes", "CBaseArchetypeDef", "CTimeArchetypeDef", "CMloArchetypeDef", "archetypes",
     "extensions", "dependencies", "compositeEntityTypes",
+    # compositeEntityTypes vocabulary (2026-08-06): every one verified against the
+    # des_jewel_cab4 record's own stored hashes before use - no guessed names.
+    "CCompositeEntityType", "Animations", "CCompEntityAnims", "CCompEntityEffectsData",
+    "StartModel", "EndModel", "StartImapFile", "EndImapFile", "PtFxAssetName",
+    "AnimDict", "AnimName", "AnimatedModel", "punchInPhase", "punchOutPhase",
+    "effectsData", "Name",
     "lodDist", "flags", "specialAttribute", "bbMin", "bbMax", "bsCentre", "bsRadius",
     "hdTextureDist", "name", "textureDictionary", "clipDictionary", "drawableDictionary",
     "physicsDictionary", "assetType", "assetName",
@@ -379,6 +385,12 @@ T_ENUM_U8 = 0x60
 # returns the bytes UNINTERPRETED, because splitting them needs sibling fields that value() cannot
 # see and inventing a split at this layer would be a guess wearing a decoder's clothes.
 T_DATAPTR = 0x59
+# 0x40 = INLINE FIXED-LENGTH CHAR ARRAY: `refKey` bytes stored in the struct itself,
+# NUL-padded, no pointer. Identified 2026-08-06 from CCompositeEntityType's own member
+# table (Name / StartModel / EndModel, all type 0x40 refKey 64, at struct offsets
+# 0/136/200) - it was the source of every `unhandled type 0x40` warning (9 per sweep),
+# i.e. three real strings silently returning None on every composite record.
+T_CHARARRAY = 0x40
 PRIM = {
     0x01: (1, "?"), 0x10: (1, "b"), 0x11: (1, "B"), 0x12: (2, "h"), 0x13: (2, "H"),
     0x14: (4, "i"), 0x15: (4, "I"), 0x21: (4, "f"), 0x33: (12, "3f"), 0x34: (16, "4f"),
@@ -456,6 +468,9 @@ class Walker:
                 sz, f = PRIM[ed["type"]]
                 return [struct.unpack_from("<" + f, buf, o + i * sz)[0]
                         for i in range(e["refKey"])]
+            if t == T_CHARARRAY:
+                raw = bytes(buf[o:o + e["refKey"]])
+                return raw.split(b"\x00", 1)[0].decode("latin-1")
             if t == T_STRUCT:
                 return self.struct(e["refKey"], buf, o)
             if t == T_DATAPTR:
@@ -812,8 +827,11 @@ def archetype_xml(a):
     L.append(_txt("assetType", a.get("assetType"), "   "))
     L.append(_txt("assetName", a.get("assetName"), "   "))
     L += extensions_xml(a.get("extensions") or [], "   ")
-    L.append(_val("padding0", pick(a, "padding0", 0), "   "))
-    L.append(_val("padding1", pick(a, "padding1", 0), "   "))
+    # padding0/padding1 are NOT emitted: measured against the 2026-08-05 oracle set,
+    # ZERO archetype Items carry them (they were exporter-synthesised by an OLDER the reference exporter
+    # build - the stale-oracle reproducibility sample caught exactly this drift).
+    # CExtensionDefLightEffect keeps its padding1/2/3 - that is a different struct,
+    # measured 12/12 against the same oracles.
     kind = pick(a, "type", "CBaseArchetypeDef")
     if kind == "CTimeArchetypeDef":
         # measured: every CTimeArchetypeDef in the corpus (3,980 items) carries timeFlags,
@@ -1091,17 +1109,63 @@ def mlo_xml(a):
 
 
 def ytyp_dropped_from(root, w=None):
-    """compositeEntityTypes only. `extensions` and `dependencies` are populated in 0 of 930 real
-    ytyp binaries (census 2026-08-03) and 0 of the 1,707 reference exports, so their hardcoded
-    empty form is HONEST; compositeEntityTypes is populated in 35 of those 930 (37 records, all
-    des_* destruction sets) and was being written empty regardless."""
-    n = container_records(root.get("compositeEntityTypes"))
-    if n and w is not None:
-        w.warn["DROPPED ytyp compositeEntityTypes (emitter does not serialise it)"] += n
-    return {"compositeEntityTypes": n} if n else {}
+    """`extensions` and `dependencies` are populated in 0 of 930 real ytyp binaries
+    (census 2026-08-03) and 0 of the 1,707 reference exports, so their hardcoded empty
+    form is HONEST. compositeEntityTypes is SERIALISED since 2026-08-06 (composite_xml,
+    oracle-shaped off des_jewel_cab4) - nothing left to count here; the renderer itself
+    markers any sub-shape it has no oracle witness for (populated effectsData)."""
+    _ = (root, w)
+    return {}
 
 
-def ytyp_xml(name, archetypes, dropped=None):
+def composite_xml(items):
+    """<compositeEntityTypes> - shape read off the des_jewel_cab4 oracle (2026-08-06):
+    Name/StartModel/EndModel are inline char-arrays (walker type 0x40, mixed case
+    preserved); empty strings spell as self-closing elements; effectsData has NO
+    populated oracle witness, so a non-empty one emits the omission marker rather than
+    an invented shape."""
+    f, g, h = "  ", "   ", "    "
+    L = [' <compositeEntityTypes itemType="CCompositeEntityType">']
+    for _kind, c in items:
+        L.append(f + "<Item>")
+        L.append(_txt("Name", c.get("Name"), g))
+        L.append(_val("lodDist", pick(c, "lodDist", 0), g))
+        L.append(_val("flags", pick(c, "flags", 0), g))
+        L.append(_val("specialAttribute", pick(c, "specialAttribute", 0), g))
+        L.append(_vec("bbMin", c.get("bbMin"), g))
+        L.append(_vec("bbMax", c.get("bbMax"), g))
+        L.append(_vec("bsCentre", c.get("bsCentre"), g))
+        L.append(_val("bsRadius", pick(c, "bsRadius", 0), g))
+        L.append(_txt("StartModel", c.get("StartModel"), g))
+        L.append(_txt("EndModel", c.get("EndModel"), g))
+        L.append(_txt("StartImapFile", c.get("StartImapFile"), g))
+        L.append(_txt("EndImapFile", c.get("EndImapFile"), g))
+        L.append(_txt("PtFxAssetName", c.get("PtFxAssetName"), g))
+        anims = c.get("Animations") or []
+        if anims:
+            L.append(g + '<Animations itemType="CCompEntityAnims">')
+            for _ak, a in anims:
+                L.append(h + "<Item>")
+                L.append(_txt("AnimDict", a.get("AnimDict"), h + " "))
+                L.append(_txt("AnimName", a.get("AnimName"), h + " "))
+                L.append(_txt("AnimatedModel", a.get("AnimatedModel"), h + " "))
+                L.append(_val("punchInPhase", pick(a, "punchInPhase", 0), h + " "))
+                L.append(_val("punchOutPhase", pick(a, "punchOutPhase", 0), h + " "))
+                fx = a.get("effectsData") or []
+                if fx:
+                    L += _omitted("compositeEntityTypes/effectsData", len(fx), h + " ")
+                else:
+                    L.append(h + ' <effectsData itemType="CCompEntityEffectsData" />')
+                L.append(h + "</Item>")
+            L.append(g + "</Animations>")
+        else:
+            L.append(g + '<Animations itemType="CCompEntityAnims" />')
+        L.append(f + "</Item>")
+    L.append(" </compositeEntityTypes>")
+    return L
+
+
+def ytyp_xml(name, archetypes, dropped=None, composite=None):
     L = ['<?xml version="1.0" encoding="UTF-8"?>', "<CMapTypes>", " <extensions />"]
     if archetypes:
         L.append(" <archetypes>")
@@ -1112,14 +1176,10 @@ def ytyp_xml(name, archetypes, dropped=None):
         L.append(" <archetypes />")
     L.append(_txt("name", name, " "))
     L.append(" <dependencies />")
-    # Same class of defect as the ymap containers: this used to be the empty form UNCONDITIONALLY,
-    # so the 35 des_* ytyp that really carry composite entity types (des_shipsink alone is 1,872
-    # of its reference export's 3,277 lines) emitted an empty element no harness could see -
-    # parse_ytyp never looks at this container. Empty in the binary -> empty element; content in
-    # the binary -> omit + marker, so the loss is visible and counted.
-    n = (dropped or {}).get("compositeEntityTypes", 0)
-    L += (_omitted("compositeEntityTypes", n) if n
-          else [' <compositeEntityTypes itemType="CCompositeEntityType" />'])
+    if composite:
+        L += composite_xml(composite)
+    else:
+        L.append(' <compositeEntityTypes itemType="CCompositeEntityType" />')
     L.append("</CMapTypes>")
     return "\n".join(L) + "\n"
 
@@ -1147,7 +1207,7 @@ def entity_xml(e, ind="  "):
     L.append(_val("ambientOcclusionMultiplier", pick(e, "ambientOcclusionMultiplier", 255), f))
     L.append(_val("artificialAmbientOcclusion", pick(e, "artificialAmbientOcclusion", 255), f))
     L.append(_val("tintValue", pick(e, "tintValue", 0), f))
-    L.append(_val("padding0", pick(e, "padding0", 0), f))
+    # padding0 NOT emitted - zero CEntityDef Items in the 2026-08-05 oracle set carry it
     L.append("%s</Item>" % ind)
     return L
 
@@ -2388,7 +2448,8 @@ def convert_bytes(blob, stem, names=None):
     root_name, root = w.root()
     if root_name == "CMapTypes":
         return (ytyp_xml(root.get("name") or stem, archetypes_from(root),
-                         ytyp_dropped_from(root, w)), "ytyp", w)
+                         ytyp_dropped_from(root, w),
+                         composite=root.get("compositeEntityTypes")), "ytyp", w)
     if root_name == "CMapData":
         return (ymap_xml(root.get("name") or stem, entities_from(root), ymap_meta_from(root),
                          ymap_dropped_from(root, w), ymap_containers_from(root),
@@ -2434,27 +2495,69 @@ def load_names(*roots):
     first-writer-wins answer would be a coin flip emitted with full confidence, while
     hash_XXXXXXXX is honestly unresolved and the ymap<->ytyp join is hash-to-hash regardless.
     """
+    def stems():
+        for root in roots:
+            if not root or not os.path.isdir(root):
+                continue
+            for _dirpath, _dirs, files in os.walk(root):
+                for f in files:
+                    yield f
+    return load_names_from_stems(stems())
+
+
+def load_names_from_stems(filenames):
+    """The ONE implementation of the names-table rules, whatever supplies the filenames
+    (an extracted tree via load_names, or the whole-game view manifest via `quarry
+    export` - same rules by construction, so the two sources cannot drift):
+      - stem = filename up to the first '.', lowercased
+      - QUARRY-generated names (X__embedded, X~N) may NOT enter the table
+      - a joaat collision between two DISTINCT real names resolves to NEITHER
+    """
     names, collisions, synth_hashes = {}, {}, {}
-    for root in roots:
-        if not root or not os.path.isdir(root):
+    for f in filenames:
+        stem = f.split(".")[0]
+        if not stem:
             continue
-        for dirpath, _dirs, files in os.walk(root):
-            for f in files:
-                stem = f.split(".")[0]
-                if not stem:
-                    continue
-                low = stem.lower()
-                if low.endswith("__embedded") or _ALT_SUFFIX.search(low):
-                    synth_hashes.setdefault(joaat(low), low)
-                    continue
-                h = joaat(low)
-                prev = names.get(h)
-                if prev is None:
-                    names[h] = low
-                elif prev != low:
-                    collisions.setdefault(h, set()).update((prev, low))
+        low = stem.lower()
+        if low.endswith("__embedded") or _ALT_SUFFIX.search(low):
+            synth_hashes.setdefault(joaat(low), low)
+            continue
+        h = joaat(low)
+        prev = names.get(h)
+        if prev is None:
+            names[h] = low
+        elif prev != low:
+            collisions.setdefault(h, set()).update((prev, low))
     for h in collisions:
         names.pop(h, None)
+    # DERIVED CANDIDATES (2026-08-06, measured by the names research pass: they resolve
+    # 62 of the 70 REAL name gaps vs the oracle set, with 0 false-positive parity hits
+    # even at 10M-candidate scale). Rules, each from an oracle-resolved witness family:
+    #   stem + "_lod"                       (slod stand-in -> its lod source)
+    #   strip _slod_children/_dslod_children -> base + "_lod" / "_N_lod" / "_NN_lod"
+    #   stem minus its first "_" token      (DLC prefix: hei_x -> x)
+    #   stem + "_s2a".."_s2j"               (sub-lod letter family)
+    # A derived name NEVER displaces a real stem, a real collision, or a synth hash.
+    real_stems = list(names.values())
+    blocked = set(collisions) | set(synth_hashes)
+
+    def _cand(c):
+        h = joaat(c)
+        if h not in names and h not in blocked:
+            names[h] = c
+    for s in real_stems:
+        _cand(s + "_lod")
+        for suf in ("_slod_children", "_dslod_children"):
+            if s.endswith(suf):
+                b = s[:-len(suf)]
+                _cand(b + "_lod")
+                for n in range(100):
+                    _cand("%s_%d_lod" % (b, n))
+                    _cand("%s_%02d_lod" % (b, n))
+        if "_" in s:
+            _cand(s.split("_", 1)[1])
+        for c in "abcdefghij":
+            _cand(s + "_s2" + c)
     if collisions:
         print("names    : %d joaat COLLISION(S) between distinct asset names - left UNRESOLVED "
               "rather than guessed:" % len(collisions))
