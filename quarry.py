@@ -591,6 +591,22 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
     if t == 'ypdb':
         import ypdb2xml
         return stem + '.ypdb.xml', ypdb2xml.decode(blob).encode('utf-8'), ()
+    if t == 'ypt':
+        # rmPtfx ptxFxList (RSC7 v68) -> reference-identical .ypt.xml. Container + all 5
+        # dictionaries + KFP layer + all 3 polymorphic rule bodies derived clean-room and
+        # verified byte-identical 10/10 (2026-08-06). See ypt2xml docstring.
+        # ⚠ 40 behaviour scalars are emitted from UNPINNED CONSTANTS (const across all 10
+        # oracles, so no offset was derivable). They reproduce the oracle set exactly but
+        # would be WRONG for a file whose real value differs - so every one is COUNTED into
+        # stats rather than passing silently. A rising count at scale = go widen the oracles.
+        import ydr2xml, ypt2xml
+        ypt2xml.CONST_EMITS.clear()
+        xml = ypt2xml.convert_res(ydr2xml.Res.from_bytes(blob)).encode('utf-8')
+        n_const = sum(ypt2xml.CONST_EMITS.values())
+        if n_const and stats is not None:
+            stats['ypt behaviour scalars emitted from UNPINNED constants'] = \
+                stats.get('ypt behaviour scalars emitted from UNPINNED constants', 0) + n_const
+        return stem + '.ypt.xml', xml, ()
     if t == 'yvr':
         import ydr2xml, yvr2xml
         return stem + '.yvr.xml', yvr2xml.yvr_to_xml(
