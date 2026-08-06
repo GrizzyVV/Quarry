@@ -565,6 +565,14 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
         sidecars = () if textures == 'none' else ytd2xml.sidecars(
             texs, stem, want_png=(textures != 'dds'), want_dds=(textures != 'png'))
         return (stem + '.ytd.xml', ytd2xml.to_xml(texs).encode('utf-8'), sidecars)
+    if t == 'yvr':
+        import ydr2xml, yvr2xml
+        return stem + '.yvr.xml', yvr2xml.yvr_to_xml(
+            ydr2xml.Res.from_bytes(blob)).encode('utf-8'), ()
+    if t == 'ywr':
+        import ydr2xml, ywr2xml
+        return stem + '.ywr.xml', ywr2xml.ywr_to_xml(
+            ydr2xml.Res.from_bytes(blob)).encode('utf-8'), ()
     if t == 'ymf' or (blob[:4] == b'PSIN'):
         # PSO ('PSIN') container -> reference-identical XML via the generic pso2xml
         # (schema-driven from the file's own PSCH; 38/38 ymf byte-identical, 2026-08-06).
