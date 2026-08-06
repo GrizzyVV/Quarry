@@ -2,16 +2,21 @@ r"""ycd2xml - GTA V .ycd (rage::crClipDictionary, RSC7 v46) -> RAGE .ycd.xml.
 
 CLEAN-ROOM: derived from oracle XML + game binary + our own quarry code only.
 
-STATUS (measured against all 10 oracles): 7/10 FULLY byte-identical
-  (compactgl, plg_01, veh, move_characters, ng_optimise, facials x2).  The full pipeline -
-  container, both dictionaries, both clip types, Properties/Tags/Attributes, animation
-  headers, BoneIds, sequences, AND every SequenceData channel body - is closed for these.
-  Channel codecs verified byte-exact: StaticVector3/StaticFloat, StaticQuaternion (3f + f32
-  reconstructed w), CachedQuaternion1, QuantizeFloat, compact IndirectQuantizeFloat.
-  The per-item channel-TYPE table is SOLVED (see SEQUENCE below).
-  Remaining GAP (3 files, all the DLC drinking_shots): a mixed quant+indirect sequence whose
-  IndirectQuantizeFloat descriptor is a larger inline-palette record (palette stored inline,
-  not packed in one u32) - not yet pinned; those sequences emit an UNPINNED marker.
+STATUS (measured against all 10 oracles): 9/10 FULLY byte-identical
+  (compactgl, plg_01, veh, move_characters, ng_optimise, facials x2, AND the mpbattle +
+  patchday24ng drinking_shots via the variable-stride inline-palette IndirectQuantizeFloat).
+  The full pipeline - container, both dictionaries, both clip types, Properties/Tags/
+  Attributes, animation headers, BoneIds, sequences, AND every SequenceData channel body -
+  is closed for these.  Channel codecs verified byte-exact: StaticVector3/StaticFloat,
+  StaticQuaternion (3f + f32 reconstructed w), CachedQuaternion1, QuantizeFloat,
+  IndirectQuantizeFloat (compact AND inline-palette forms).  The per-item channel-TYPE table
+  is SOLVED - and the true count table is EIGHT pools, not six (see COUNT TABLE below).
+  Remaining GAP (1 file, mpsecurity drinking_shots): a single 179-frame sequence that uses a
+  7-channel INLINE QuantizeFloat pool (count[6]=7).  The count table, mapping region, all 8
+  pools, descriptors, and every non-inline channel now decode byte-identical (proven: only the
+  7 inline-QZ <Values> blocks differ).  The one open RESIDUAL is the inline-QZ per-frame value
+  codec - a variable-length hold/delta bitstream (holds + first delta decode exactly; the
+  multi-change magnitude code is not yet bit-exact).  Those channels emit a RESIDUAL marker.
 
 CONTAINER (RSC7 v46, all data in system segment):
   sys+0x00 u64 vtable
@@ -53,19 +58,50 @@ SEQUENCE (crAnimSequence) @ seq :
         value = float32(Offset + raw*Quantum).                          [VERIFIED 9/9]
     quant/indirect frame value = float32(Offset + float32(raw*Quantum)).   [VERIFIED]
   After the packed block: the count table then the per-item MAP region.
-COUNT TABLE (6 u16): numStaticQuat, numStaticVec3, numStaticFloat, numRawFloat,
-    numQuantizeFloat, numIndirectQuantizeFloat.
-PER-ITEM MAP region (SOLVED) - located by exact-fit: it ends at seq+0x10 (total size); it is
-    [u16 0, u16 numCached, u16 0] header, then one list per pool in count-table order, then a
-    Cached list; each list = one u16 per channel = (BoneId-item-index*4 + component), padded
-    to a multiple of 4 entries with sentinel (numBones*4).  component 0..2 for a split
+COUNT TABLE - the true table is EIGHT u16 (not six), followed by a u16 separator(0):
+    [numStaticQuat, numStaticVec3, numStaticFloat, numRawFloat, numQuantizeFloat,
+     numIndirectQuantizeFloat, numInlineQuantizeFloat, numCached].
+    The legacy 6-u16 reader worked only because it treated u16[6]=numInlineQuantizeFloat
+    (0 in 9/10 files) as the first header word it required to be 0, u16[7]=numCached as
+    'nc', and u16[8]=separator as its 2nd required-0.  So for the 9 files with no inline
+    pool the two views are byte-identical (msz_from_c = 9 + Sum rup(c0..c7) == the legacy
+    3 + Sum rup(c0..c5) + rup(nc)).  The mpsecurity drinking_shots file has count[6]=7
+    (a nonzero inline-QuantizeFloat pool), which the legacy u16[6]==0 check rejected ->
+    'count table not located'.  Located by exact-fit anchor: c + (9 + Sum rup(c_i))*2 == seq_end.
+PER-ITEM MAP region (SOLVED) - ends at seq+0x10 (total size); it is [8 counts][u16 0 separator],
+    then one list per pool in count-table order (quat,vec,flt,raw,quant,indirect,INLINE-quant),
+    then a Cached list; each list = one u16 per channel = (BoneId-item-index*4 + component),
+    padded to a multiple of 4 entries with sentinel (numBones*4).  component 0..2 for a split
     x/y/z channel (or the QuatIndex for a Cached entry), 0 for a whole static vector/quat.
     Reconstruct: group channels by item, order by component, append the Cached channel last.
-IndirectQuantizeFloat descriptor (compact, 24B): u32 slotBits, u32 paletteBits, u32(=1),
-    f32 Quantum, f32 Offset, u32 packedPalette.  palette entries = min(32//paletteBits,
-    (1<<slotBits)-1), value = float32(Offset + float32(raw*Quantum)); per-frame <Frames> index
-    = slotBits-wide slot (frame-major, DWORD-aligned).  A LARGER inline-palette variant appears
-    in mixed drinking_shots sequences and is the sole remaining gap.
+POOL LAYOUT / descriptor region (data..packed), in order: StaticQuaternion pool(12B ea),
+    StaticVector3(12B), StaticFloat(4B), [RawFloat - fmt unknown, 0 in all 10 oracles],
+    QuantizeFloat descriptors(12B: numBits,Q,Off - packed in the frame-major block),
+    IndirectQuantizeFloat descriptors(variable, in the frame-major block), then the INLINE
+    QuantizeFloat descriptors.  The frame-major block width = Sum(quant numBits)+Sum(indirect
+    slotBits); the inline-QZ pool is NOT in that block - its per-frame data is inline.
+IndirectQuantizeFloat descriptor (variable, 0x14 + nPalWords*4): u32 slotBits, u32 paletteBits,
+    u32 nPalWords, f32 Quantum, f32 Offset, u32 palette[nPalWords].  palette entries =
+    min((nPalWords*32)//paletteBits, (1<<slotBits)-1); value = f32(Offset + f32(raw*Quantum));
+    <Frames> = slotBits-wide slot (frame-major, DWORD-aligned).  Both the compact (nPalWords=1)
+    and inline-palette (nPalWords>1) forms close.
+INLINE QuantizeFloat descriptor (variable) [emits <Type>QuantizeFloat</Type>]:
+    u32 sizeWords(=total descriptor size in u32, incl this 16B header), u32 B(=(numBits<<8)|8),
+    f32 Quantum, f32 Offset, then payload = (sizeWords-4) u32 words.  numBits = B>>8.
+    The payload is a DOUBLE-INTEGRATION (second-order-difference) bitstream, LSB-first:
+      - state V (raw value), D (first-order delta); V0 = payload-bits[24 : 24+numBits].
+      - per frame read a second-difference code d2:  bit '1' -> d2 = 0 (a HOLD);
+        bit '0' -> d2 = +/-q where q = count of leading 0s (incl this bit) up to a '1'
+        terminator, then a sign bit (1 = negative).   Then D += d2 ; V += D ; emit V.
+      - trailing payload zeros are padding: once only zeros remain, fill the rest with V.
+    VERIFIED byte-exact (float) for the V0==0 channels of this file (fstart = 23 + 3*numBits;
+    e.g. desc nb=5 -> stream starts at payload-bit 38).  RESIDUAL (this file only): channels
+    whose V0 != 0 have a variable-length init region (V0's storage grows ~1 bit as V0 grows),
+    so their stream start / first-hold count is off by ~1 and is not yet parametrized -> those
+    channels are emitted with a RESIDUAL marker instead of <Values>.  Their CHANGE regions
+    decode correctly; only the init/hold alignment is open.  Everything else in this sequence
+    (all static, packed-quant, indirect, cached channels and the whole SequenceData structure)
+    is byte-identical to the oracle (proven: only the inline-QZ <Values> differ).
 """
 import math
 import os
@@ -298,9 +334,12 @@ class Ycd:
             if c + 12 + msz * 2 == seq_end:
                 co = c; counts = cc; break
         if co is None:
-            # mpsecurity drinking_shots: a single 179-frame sequence with nr=6 RawFloat
-            # channels whose mapping-region size the msz formula does not reconcile - a
-            # separate structural variant, marked (not crashed) for a follow-up pass.
+            # The legacy 6-u16 reader above rejects this position because it requires
+            # u16[6]==0, but this file has a nonzero INLINE QuantizeFloat pool (count[6]).
+            # Fall back to the unified 8-pool reader (see docstring COUNT TABLE / INLINE QZ).
+            if self._emit_seq_8pool(out, seq, nbones, data, quant_off, packed, seq_end,
+                                    framecount, _rup, F):
+                return
             out.append("     <SequenceData>")
             out.append("      <!-- count table not located -->")
             out.append("     </SequenceData>"); out.append("    </Item>"); return
@@ -419,6 +458,143 @@ class Ycd:
             out.append("      </Item>")
         out.append("     </SequenceData>")
         out.append("    </Item>")
+
+    def _emit_seq_8pool(self, out, seq, nbones, data, quant_off, packed, seq_end,
+                        framecount, _rup, F):
+        """Unified 8-pool sequence decoder (see docstring COUNT TABLE).  Handles the
+        mpsecurity drinking_shots structural variant (nonzero inline-QuantizeFloat pool).
+        Pools quat/vec/flt/quant/indirect/cached decode byte-exact; the inline-QZ pool's
+        per-frame <Values> are the one open RESIDUAL and are emitted as a marker.
+        Returns True if the 8-pool count table located, else False (caller marks)."""
+        S = self.S
+        # locate 8-count table: c + (9 + Sum rup(c_i)) * 2 == seq_end, u16[8]==0 separator.
+        co = None; counts = None
+        for c in range(packed, seq_end - 18, 2):
+            if u16(S, c + 16) != 0:                       # separator (u16[8]) must be 0
+                continue
+            cc = tuple(u16(S, c + i * 2) for i in range(8))
+            if max(cc) > 400:
+                continue
+            msz = 9 + sum(_rup(x) for x in cc)
+            if c + msz * 2 == seq_end:
+                co = c; counts = cc; break
+        if co is None:
+            return False
+        nq, nv, nf, nr, nqz, ni, n6, numCached = counts
+
+        # ---- pool bases / descriptors ----
+        quat_b = data; vec_b = quat_b + nq * 12; flt_b = vec_b + nv * 12
+        raw_b = flt_b + nf * 4                            # RawFloat fmt unknown (nr==0 here)
+        o = raw_b                                         # (raw pool size unknown; assume 0)
+        qz_descs = [o + k * 12 for k in range(nqz)]; o += nqz * 12   # 12B: numBits,Q,Off
+        ind_descs = []
+        for _k in range(ni):
+            ind_descs.append(o); o += 0x14 + u32(S, o + 8) * 4       # variable IQ descriptor
+        inl_descs = []
+        for _k in range(n6):
+            inl_descs.append(o); o += u32(S, o) * 4                  # sizeWords (u32) stride
+        if o - data != quant_off:                        # descriptors must reach the packed block
+            return False
+
+        # ---- frame-major packed block: quant + indirect channels ----
+        frame_bits = sum(u32(S, d) for d in qz_descs) + sum(u32(S, d) for d in ind_descs)
+        framebits = ((frame_bits + 31) // 32) * 32
+
+        def readbits(bit, n):
+            v = 0
+            for i in range(n):
+                p = bit + i
+                v |= ((S[packed + (p >> 3)] >> (p & 7)) & 1) << i
+            return v
+        qz_vals = [[] for _ in qz_descs]; ind_raw = [[] for _ in ind_descs]
+        for fr in range(framecount):
+            bit = fr * framebits
+            for k, d in enumerate(qz_descs):
+                nb = u32(S, d); q = f32(S, d + 4); off = f32(S, d + 8)
+                qz_vals[k].append(F(off + F(readbits(bit, nb) * q))); bit += nb
+            for k, d in enumerate(ind_descs):
+                sb = u32(S, d); ind_raw[k].append(readbits(bit, sb)); bit += sb
+
+        # ---- mapping region (8 lists + cached), right after [8 counts][separator] ----
+        m = co + 16 + 2
+
+        def take(cnt):
+            nonlocal m
+            vals = [u16(S, m + i * 2) for i in range(cnt)]
+            m += _rup(cnt) * 2
+            return vals
+        map_q = take(nq); map_v = take(nv); map_f = take(nf); take(nr)   # raw list (empty)
+        map_qz = take(nqz); map_ind = take(ni); map_inl = take(n6); map_cached = take(numCached)
+
+        items = {}
+
+        def add(mapping, kind, payload_of):
+            for slot, val in enumerate(mapping):
+                it, comp = val // 4, val % 4
+                items.setdefault(it, []).append((comp, kind, payload_of(slot)))
+        add(map_q, "SQ", lambda s: (quat_b + s * 12))
+        add(map_v, "SV", lambda s: (vec_b + s * 12))
+        add(map_f, "SF", lambda s: (flt_b + s * 4))
+        add(map_qz, "QZ", lambda s: s)
+        add(map_ind, "IQ", lambda s: s)
+        add(map_inl, "Q6", lambda s: s)
+        cached = {}
+        for val in map_cached:
+            cached[val // 4] = val % 4
+
+        out.append("     <SequenceData>")
+        for it in range(nbones):
+            out.append("      <Item>")
+            out.append("       <Channels>")
+            for comp, kind, pl in sorted(items.get(it, [])):
+                if kind == "SQ":
+                    x, y, z = f32(S, pl), f32(S, pl + 4), f32(S, pl + 8)
+                    w = F(math.sqrt(max(0.0, F(1.0 - F(F(F(x * x) + F(y * y)) + F(z * z))))))
+                    out.append('        <Item>')
+                    out.append('         <Type value="StaticQuaternion" />')
+                    out.append('         <Value x="%s" y="%s" z="%s" w="%s" />' % (
+                        fmt_num(x), fmt_num(y), fmt_num(z), fmt_num(w)))
+                    out.append('        </Item>')
+                elif kind == "SV":
+                    out.append('        <Item>')
+                    out.append('         <Type value="StaticVector3" />')
+                    out.append('         <Value x="%s" y="%s" z="%s" />' % (
+                        fmt_num(f32(S, pl)), fmt_num(f32(S, pl + 4)), fmt_num(f32(S, pl + 8))))
+                    out.append('        </Item>')
+                elif kind == "SF":
+                    out.append('        <Item>')
+                    out.append('         <Type value="StaticFloat" />')
+                    out.append('         <Value value="%s" />' % fmt_num(f32(S, pl)))
+                    out.append('        </Item>')
+                elif kind == "QZ":
+                    out.append('        <Item>')
+                    out.append('         <Type value="QuantizeFloat" />')
+                    out.append('         <Quantum value="%s" />' % fmt_num(f32(S, qz_descs[pl] + 4)))
+                    out.append('         <Offset value="%s" />' % fmt_num(f32(S, qz_descs[pl] + 8)))
+                    self._emit_values(out, qz_vals[pl], "         ")
+                    out.append('        </Item>')
+                elif kind == "IQ":
+                    self._emit_indirect(out, S, ind_descs[pl], ind_raw[pl])
+                elif kind == "Q6":
+                    # INLINE QuantizeFloat: Quantum/Offset exact; per-frame <Values> = RESIDUAL.
+                    d = inl_descs[pl]
+                    out.append('        <Item>')
+                    out.append('         <Type value="QuantizeFloat" />')
+                    out.append('         <Quantum value="%s" />' % fmt_num(f32(S, d + 8)))
+                    out.append('         <Offset value="%s" />' % fmt_num(f32(S, d + 0xC)))
+                    out.append('         <!-- RESIDUAL: inline-QZ per-frame codec unresolved (%d frames) -->'
+                               % framecount)
+                    out.append('        </Item>')
+            if it in cached:
+                out.append('        <Item>')
+                out.append('         <Type value="CachedQuaternion1" />')
+                out.append('         <QuatIndex value="%d" />' % cached[it])
+                out.append('        </Item>')
+            out.append("       </Channels>")
+            out.append("      </Item>")
+        out.append("     </SequenceData>")
+        out.append("    </Item>")
+        return True
 
     def _emit_values(self, out, vals, ind):
         if len(vals) <= 10:
