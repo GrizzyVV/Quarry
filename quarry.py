@@ -848,8 +848,10 @@ _TAG_SAFE = re.compile(r'[^a-z0-9]+')
 
 
 def source_tag(chain, blob):
-    """A STABLE, human-meaningful identity for one source instance: the archive it came from,
-    plus 6 hex of its own content.
+    """A STABLE identity for one source instance: the archive it came from + 6 hex of its own
+    content. ⛔ USED FOR THE PROVENANCE LEDGER ONLY - it must NEVER be written into a filename
+    (Matt, 2026-08-07: the content keeps the name it has in the game files; identity belongs in
+    the folder structure, and that layout is his call).
 
     ⭐ WHY (settled with Matt 2026-08-07, ENGINEERING_LOG § corpus identity). A flat
     <slot>/<ext>/<name> corpus cannot express WHICH archive an asset came from, and 22,826
@@ -952,22 +954,19 @@ def file_into(out_root, slot, name, blob, stats=None, skip_existing=False, chain
                 n += 1
         if stats is not None:
             stats['collisions'] = stats.get('collisions', 0) + 1
-        if chain:
-            # DETERMINISTIC identity (2026-08-07): derived from the SOURCE, not from the order
-            # this run happened to reach it, so the same asset always lands on the same name and
-            # an instance can be cited, diffed and re-found. See source_tag.
-            target = os.path.join(d, f'{stem}~{source_tag(chain, blob)}{ext}')
-            if os.path.exists(target):
-                # identical name AND identical content = the same instance already filed
-                if stats is not None:
-                    stats['collisions'] = stats.get('collisions', 0) - 1
-                    stats['resumed'] = stats.get('resumed', 0) + 1
-                return None
-        else:
-            n = 1
-            while os.path.exists(os.path.join(d, f'{stem}~{n}{ext}')):
-                n += 1
-            target = os.path.join(d, f'{stem}~{n}{ext}')
+        # ⛔⛔ DO NOT PUT SOURCE IDENTITY IN THE FILENAME (Matt, 2026-08-07). A first cut wrote
+        # `<stem>~<archiveslug>_<hash><ext>` here; he rejected it: **the content keeps the name it
+        # has in the game files.** Identity belongs in the FOLDER STRUCTURE (a folder per ped per
+        # DLC) - his direction - and the shape of that layout is HIS decision to make, not an
+        # agent's. Until he rules, behaviour is unchanged from before: first writer keeps the
+        # name, the rest get ~N, and every instance is recorded in _PROVENANCE.jsonl (which adds
+        # information without touching any name).
+        # ⚠ NOTE the `~N` spelling ALSO mutates a game name - that predates this work and is the
+        # very thing the folder layout should retire.
+        n = 1
+        while os.path.exists(os.path.join(d, f'{stem}~{n}{ext}')):
+            n += 1
+        target = os.path.join(d, f'{stem}~{n}{ext}')
     with open(target, 'wb') as f:
         f.write(blob)
     written = os.path.basename(target)
