@@ -218,6 +218,26 @@ SCHEMA_NAMES = (
 )
 SCHEMA_BY_HASH = {joaat_case(n): n for n in SCHEMA_NAMES}
 
+# ⭐ THE MAP-LANE VOCABULARY IS SHARED WITH META (2026-08-07, Phase 5 Stage A).
+# A PSIN-container .ymap/.ytyp holds the SAME schema structs as its RSC7-META twin - CMapTypes,
+# archetypes, CBaseArchetypeDef, textureDictionary, extensions ... - but pso2xml's vocabulary was
+# built from the ymf/pso/ymt corpus and had none of them, so those files emitted
+# `<hash_018A3B1B>` where the oracle spells `<archetypes>`. MEASURED on the first stratified
+# spot-diff: 5 of 8 DIFFs were nothing but this.
+# Importing is SAFE by the §6y rule that already governs SCHEMA_NAMES: these are SCHEMA
+# struct/field names, each joaat_case-verified to hash to the slot the binary stores, and the reference exporter
+# resolves schema names GLOBALLY - a string it spells in any file it spells everywhere - so an
+# import can never make us print a name where the reference exporter prints hash_. (Contrast per-file CONTENT names,
+# which stay forbidden - see the `exportcamera` refusal.) meta2xml's table is itself
+# oracle-witnessed, so this shares one vocabulary rather than forking a second copy.
+# setdefault: pso2xml's own entries WIN on the (measured-zero) chance of a hash collision.
+try:
+    import meta2xml as _m2x
+    for _n in _m2x.SCHEMA_NAMES:
+        SCHEMA_BY_HASH.setdefault(_m2x.joaat_case(_n), _n)
+except Exception:                                   # standalone use without the sibling module
+    pass
+
 
 def schema_name(h):
     return SCHEMA_BY_HASH.get(h, "hash_%08X" % h)
@@ -703,7 +723,13 @@ class Emitter:
                 # own id gives the item's polymorphic type. No itemType attr; each <Item> carries
                 # type="StructName" (firingpatterns Infos; .cut pCutsceneObjects/EventLists).
                 if count == 0:
-                    return ["%s<%s />" % (ind, name)]
+                    # ⭐ EMPTY carries an EMPTY itemType (2026-08-07): with zero items there is no
+                    # polymorphic type to name, and the reference exporter writes the attribute anyway, blank. Only
+                    # the map-lane PSO files exercise this - MEASURED: `itemType=""` appears 46
+                    # times across the oracle set and in exactly 5 files, all PSIN ymap/ytyp
+                    # (cs1_railwyc ×21, cs1_railwyc_long_0 ×9, cs1_railwyc.ytyp ×22 ... ), and
+                    # NEVER in the 50 ymf/pso/ymt oracles that already pass byte-identical.
+                    return ['%s<%s itemType="" />' % (ind, name)]
                 bidx, boff = self.p.metaptr(ptr)
                 bdata = self.p.block_data(bidx)
                 out = ["%s<%s>" % (ind, name)]

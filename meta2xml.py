@@ -194,6 +194,13 @@ SCHEMA_NAMES = (
     # entries: joaat_case(name) == the stored nameHash for all nine. Nothing is guessed here.
     "containerLods", "boxOccluders", "occludeModels", "physicsDictionaries", "instancedData",
     "carGenerators", "LODLightsSOA", "DistantLODLightsSOA",   # timeCycleModifiers: above
+    # `LODLights` (0x4F0ED451) - the PSO-container ymap's own array, distinct from the SOA form
+    # above. Added 2026-08-07 under the §6y rule and BOTH halves of it hold: it is spelled in an
+    # oracle (`<LODLights itemType="CLODLight" />`, ymap/00_base/id2_17_strm_0.ymap.pso.xml) AND
+    # joaat_case reproduces the exact hash the binary stores. ⚠ Its siblings `txdRelationships` /
+    # `CTxdRelationship` / `DistantLODLights` hash-match too, but NO oracle spells them, so they
+    # stay OUT - a hash match alone is guess-and-check, not a witness.
+    "LODLights",
     # ...and the STRUCT + FIELD names INSIDE those containers, which is what the emitter needs
     # to write them instead of dropping them. Knowing the container name only told it whether
     # content existed; without these every field decoded as `hash_XXXXXXXX` and no faithful
