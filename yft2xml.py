@@ -437,9 +437,33 @@ _PHYS_LOD_SLOT, _LOD1_SLOT, _CLOTH_ARR = 0xF0, 0x10, 0x60
 
 
 def _lod1_base(r):
-    """Physics LOD1 = deref(deref(fragroot+0xF0)+0x10). Named UNPINNED offsets carry WAL §6m tags."""
-    _, ph = r.deref(_yU(r, _PHYS_LOD_SLOT), _LOD1_SLOT + 4)
-    _, l1 = r.deref(_yU(r, ph + _LOD1_SLOT), 0x200)
+    """Physics LOD1 = deref(deref(fragroot+0xF0)+0x10), or None when fragroot+0xF0 is NULL - the
+    MEASURED "this fragment has no physics" shape. Named UNPINNED offsets carry WAL §6m tags.
+
+    ⛔⛔ THIS USED TO RETURN A SILENT 0, and it cost the yft lane 1,290 files (95% of all its
+    failures). `Res.deref` answers (None, 0) for a pointer it cannot resolve, and both lines here
+    threw the buffer away - so a fragment with NO physics group returned system offset 0 and
+    `_emit_physics` walked the FRAGMENT ROOT as if it were a phys-LOD struct. It never read as a
+    decode failure because exactly one dword in that region is non-zero: fragroot+0x4C is
+    0xFFFFFFFF in 870/870 fragments measured (including ones that DO have physics and convert
+    fine). Its second byte tripped `_bound_header_lines`' zero-lane guard, which then reported
+    `BoundsError: archetype: header byte +0x4d = 0xff` - a message naming a bound that does not
+    exist. One identical value across 1,290 files is the signature of a constant, not a field.
+    ⭐ The guard itself was right and stays: +0x4D is genuinely never non-zero in a REAL bound
+    (8,444 bounds across 916 yft + 1,200 ybn, all zero-lanes clean). The caller was wrong.
+    ⚠ Deliberate asymmetry: only a LITERAL NULL counts as absence - that is the only shape
+    measured (1,072/1,072 refused files read exactly 0x00000000). Any OTHER unresolvable pointer
+    now raises, so a real decode failure stays loud instead of silently walking offset 0."""
+    p = _yU(r, _PHYS_LOD_SLOT)
+    if p == 0:                                  # MEASURED absence, not a decode failure
+        return None
+    buf, ph = r.deref(p, _LOD1_SLOT + 4)
+    if buf is None:
+        raise ValueError("physics LOD group pointer 0x%08x does not resolve" % p)
+    q = _yU(r, ph + _LOD1_SLOT)
+    buf, l1 = r.deref(q, 0x200)
+    if buf is None:
+        raise ValueError("physics LOD1 pointer 0x%08x does not resolve" % q)
     return l1
 
 
@@ -566,6 +590,13 @@ def _emit_children(r, l1):
 
 def _emit_physics(r):
     l1 = _lod1_base(r)
+    if l1 is None:
+        # MEASURED: fragroot+0xF0 == 0 -> no phys-LOD group -> the reference export omits
+        # <Physics> ENTIRELY (the file keeps Name/BoundingSphere/Unknown*/Gravity/Buoyancy/
+        # Drawable/BoneTransforms/Lights and nothing else). 4 of the 77 yft oracles are this
+        # shape and all 4 have fragroot+0xF0 == 0, while every oracle that HAS <Physics> carries
+        # a live tagged pointer there - a 1:1 correlation with no exceptions.
+        return []
     L = [" <Physics>", "  <LOD1>"]
     L.append('   <Unknown14 value="%s" />' % _F(_yf(r, l1 + 0x14)))
     L.append('   <Unknown18 value="%s" />' % _F(_yf(r, l1 + 0x18)))
