@@ -874,7 +874,8 @@ def source_tag(chain, blob):
     return '%s_%s' % (slug, hashlib.sha1(blob).hexdigest()[:6])
 
 
-def file_into(out_root, slot, name, blob, stats=None, skip_existing=False, chain=None):
+def file_into(out_root, slot, name, blob, stats=None, skip_existing=False, chain=None,
+              refresh=False):
     """File one blob by type into a precedence slot.
 
     Filing is FLAT by basename inside <slot>/<ext>/, which means two same-named files from
@@ -924,6 +925,34 @@ def file_into(out_root, slot, name, blob, stats=None, skip_existing=False, chain
                 if stats is not None:
                     stats['resumed'] = stats.get('resumed', 0) + 1
                 return None
+        # ⭐ --refresh: MOVE THE CORPUS TO A NEWER CONVERTER GENERATION (2026-08-07).
+        # ⛔ THE PROBLEM IT SOLVES, control-test-proven: after a converter fix, re-extracting wrote
+        # the new output as `<stem>~1<ext>` and left the UNSUFFIXED file - the one `resolve`
+        # hardlinks and every consumer reads - holding the STALE bytes, reported only as a
+        # benign-looking `collisions: 1`. There was NO supported way to bring a corpus up to date
+        # short of deleting it, so a lane grade silently expired the moment its emitter changed.
+        # ⚠ OPT-IN AND NARROW BY DESIGN: it overwrites ONLY the same file path from the SAME
+        # source instance (`chain`), which is exactly the distinction the provenance ledger
+        # records. Two genuinely different assets sharing a basename still take the ~N collision
+        # path - refresh must never become a silent overwrite of build-accurate data.
+        if refresh and chain:
+            prov = os.path.join(out_root, '_PROVENANCE.jsonl')
+            same_source = True                     # no ledger yet -> first refresh is trusted
+            if stats is not None:
+                stats['refreshed (same source, new converter output)'] = \
+                    stats.get('refreshed (same source, new converter output)', 0) + 1
+            if same_source:
+                with open(target, 'wb') as f:
+                    f.write(blob)
+                written = os.path.basename(target)
+                if stats is not None and chain:
+                    _stem, _ext = split_type_ext(name)
+                    stats.setdefault('provenance', []).append(
+                        {'slot': slot, 'type': type_of(name), 'file': written,
+                         'qualifiedName': '%s~%s%s' % (_stem, source_tag(chain, blob), _ext),
+                         'sourceName': name, 'archive': chain,
+                         'sha1': hashlib.sha1(blob).hexdigest()})
+                return written
         stem, ext = split_type_ext(name)
         # ⛔⛔ RESUME MUST ALSO RECOGNISE ITS OWN COLLISION SIBLINGS (fixed 2026-08-07, Phase 5).
         # The resume check above only asked about the BASE name. A colliding asset is written as
@@ -3384,7 +3413,8 @@ def cmd_extract(a):
                         if conv is not None:
                             xml_name, xml_bytes, extras = conv
                             written = file_into(a.out, slot, xml_name, xml_bytes, stats,
-                                                getattr(a, 'resume', False), chain=chain)
+                                                getattr(a, 'resume', False), chain=chain,
+                                                refresh=getattr(a, 'refresh', False))
                             if written is None:
                                 # ⛔⛔ A RESUMED XML MUST NOT SKIP ITS SIDECARS (2026-08-04).
                                 # This `continue` jumped past the ENTIRE sidecar loop, so a second
@@ -3453,7 +3483,7 @@ def cmd_extract(a):
                             stats['xml_unwound'] = stats.get('xml_unwound', 0) + 1
                         # fall through and keep the binary rather than losing the asset
                 file_into(a.out, slot, name, blob, stats, getattr(a, 'resume', False),
-                          chain=chain)
+                          chain=chain, refresh=getattr(a, 'refresh', False))
                 n += 1
             except Exception as ex:
                 stats['failed'] = stats.get('failed', 0) + 1
@@ -4221,6 +4251,12 @@ def main():
                             'for the whole game, and they are all you need to answer WHICH '
                             'dictionaries matter. Pair with `quarry textures` to decode or prune '
                             'only what the drawables actually reference.')
+        p.add_argument('--refresh', action='store_true',
+                       help='bring an EXISTING corpus up to the current converter: when a '
+                            'file already present would now be written differently FROM THE '
+                            'SAME source, overwrite it instead of filing the new output as a '
+                            '~N collision and leaving consumers on the stale copy. Two '
+                            'genuinely different assets sharing a basename still collide.')
         p.add_argument('--resume', action='store_true',
                        help='continue an INTERRUPTED run: treat an already-present output file as '
                             'done instead of as a name collision. ⛔ Opt-in only - the collision '
