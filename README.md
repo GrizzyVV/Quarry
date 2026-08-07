@@ -1,305 +1,207 @@
 # QUARRY — RAGE archive → working project folder
 
-The companion tool to **RUDE**.
+QUARRY reads the GTA V archives **you already own** and turns them into a project folder a DCC
+can open: interchange XML for every asset type it understands, pixels on demand, laid out in
+load-order so the file that *wins* is the file the game would load.
 
-## ⛔ ZERO THIRD-PARTY TOOL AFFILIATION (maintainer's requirement, 2026-07-27 — HARD)
-**Neither QUARRY nor RUDE may be affiliated with the reference exporter in any way.** QUARRY's code never was:
-`quarry.py` and `ngcrypto.py` contain **no the reference exporter reference at all** (the word "magic" in
-`quarry.py` is the RPF7 file magic `7FPR`, unrelated). The single touchpoint was one optional helper,
-`unpack_magic.ps1`, which read the `magic` resource out of a local `the third-party exporter's core library` — **removed
-2026-07-27** to `_archive/`. QUARRY is now the reference exporter-free in code and in dependency.
+It is the asset supply line for [RUDE](https://github.com/GrizzyVV/RUDE) (Unreal ↔ FiveM), but it
+has no dependency on it — the output is plain XML and standard image files, useful to any tool.
 
-**Consequence, stated plainly: QUARRY ships no keys and no key extractor.** `ng_keys.bin` and
-`ng_tables.bin` are **entirely operator-supplied**; how an operator obtains them is outside this
-tool's scope and is not documented here. 🔴 **This leaves end-user key acquisition an OPEN PRODUCT
-QUESTION** — an operator who already has the two files is fully served; a new user is not. Do not
-close that gap by reintroducing a third-party tool dependency.
+**MIT licensed. Python 3.10+. No game data is redistributed — your own install is the only source.**
 
-| | |
-|---|---|
-| **QUARRY** | reads your own game archives → a sorted, precedence-aware project folder |
-| **RUDE** | a UE plugin that consumes that folder — contains no archive or crypto code |
+---
 
-They meet only at a **folder contract** (`_FILEBASE.json` + `00_base` / `10_update` /
-`20_dlc/NNN_name`). Neither depends on the other's internals, so the DCC stays clean-room
-and either can be replaced without touching the other.
+## ⛔ Clean room — zero third-party tool affiliation
 
-⚠ **Separate ≠ disjoint, and an unmanaged contract bites.** On 2026-07-27 QUARRY was emitting raw
-binary while RUDE's importer reads only the interchange **XML** — with nothing to announce the mismatch.
-Contract obligations, therefore: emit what RUDE actually consumes (the interchange XML), carry a
-`contractVersion` in `_FILEBASE.json` that RUDE validates (◑ not yet emitted — today the manifest
-carries `quarryVersion` only, and nothing validates it), and keep the numbered precedence tree
-meaningful (see the flat-basename collision caveat in the status table).
+**QUARRY is not affiliated with, derived from, or endorsed by any third-party GTA V tool, and no
+third-party tool source was consulted.** Every format in this repository was derived from three
+things only: the game's own binaries, XML produced by a reference exporter run over those same
+binaries (used as a black-box *oracle* — output compared, never code read), and this project's own
+measurements.
 
-**Title-aware from day one** — the same contract is meant to cover GTA V Legacy, GTA V
-Enhanced, and later RAGE titles (RDR2/RedM, GTA VI). The manifest records which.
+Where a docstring says an XML shape is "reference-identical", that is a statement about **file
+compatibility for users** — the output can be consumed by the same tools that read the reference
+format — not a statement of lineage.
+
+Key material is **never shipped**: `keyderive.py` recovers it from *your* executable at runtime.
+
+---
 
 ## Quickstart
 
-    pip install -r requirements.txt
-    python quarry.py doctor --game "<install>" --out "<project>"     # <- run this FIRST
+```bash
+python quarry.py doctor --game "<your GTA V install>"      # what's ready, what's missing
+python quarry.py view   --game "<install>" --out proj      # register every file, extract nothing
+python quarry.py extract --game "<install>" --out proj --xml \
+       --types ydr,ydd,yft,ytd,ybn,ytyp,ymap --textures none
+python quarry.py meta    --out proj --view proj --game "<install>"
+python quarry.py resolve --out proj                        # flatten to proj/_resolved
+```
 
-`doctor` is the preflight: it reports python/numpy, the texture decoders, every converter, your game
-install and its archive counts, whether key material derives from **your own** executable, Oodle,
-and whether the target volume has room for the run you intend — and it says what to do about each
-gap. Every failure it catches is one that would otherwise surface mid-extract looking like a
-different bug. Then:
+Point your consumer at `proj/_resolved`. Add pixels later, only for what you actually use:
 
-    python quarry.py extract --game "<install>" --out "<project>" --xml --textures none --types ydr,ydd,yft,ytd,ybn,ytyp,ymap,ymt
-    python quarry.py meta    --out "<project>"      # ytyp/ymap/ymt -> XML + resolve ydd entry names
-    python quarry.py resolve --out "<project>"      # flatten -> point RUDE's CorpusRoot at _resolved
-    python quarry.py textures --out "<project>"     # report which pixels are referenced
-    python quarry.py textures --out "<project>" --decode-referenced --scope "dt1_13_*"
-                                                    # DECODE only those, from your archives, no re-extract
+```bash
+python quarry.py textures --out proj --decode-referenced --game "<install>"
+```
+
+---
 
 ## Commands
 
-    quarry.py doctor  [--game "<install>"] [--out "<project>"]  # preflight; safe with no args
-    quarry.py scan    --game "<install>"                       # what's there, what encryption
-    quarry.py init    --game "<install>" --out "<project>"     # build the empty project tree
-    quarry.py extract --game "<install>" --out "<project>" --xml --types ydr,ydd,yft,ytd,ybn,ytyp,ymap,ymt
-                      [--keys <dir>] [--magic <file>] [--only x64a.rpf]
-                      [--textures both|png|dds|none] [--max-depth 2] [--resume]
-                      [--oodle "<oo2core_*_win64.dll>"]
-
-    quarry.py meta    --out "<project>"                        # ytyp/ymap/ymt -> XML + ydd names  (AFTER extract)
-    quarry.py resolve --out "<project>" [--types ydr,ytd,ytyp,ymap] [--copy]
-    quarry.py textures --out "<project>" [--prune]             # report REFERENCED pixels; --prune deletes the rest
-    quarry.py textures --out "<project>" --decode-referenced [--scope "dt1_13_*,prop_bench_*"]
-                       [--game "<install>"] [--candidates N] [--limit N] [--dds|--dds-only]
-
-⭐ **`--textures none` at extract time is the recommended flow**: the manifests (~0.1 GB) are enough
-to know which dictionaries anything references; `quarry textures` then reports exactly which
-dictionaries are referenced (and `--prune` deletes unreferenced pixels after a with-pixels extract).
-`--prune` refuses to run when it scanned no evidence, because "no references found" and "nothing
-looked" are different.
-
-### ⭐⭐ `--decode-referenced` — selective, on-demand pixels (2026-08-05)
-
-**Decodes ONLY the pixels something references, straight from your archives, into the sidecar
-layout `ImportYtd` already reads — from a manifests-only (`--textures none`) corpus, with NO
-re-extract.** This closes the gap the previous paragraph used to declare: *"Decoding ONLY the
-referenced pixels from a manifests-only run is not implemented yet."*
-
-**Why this is the right shape** (Matt's call, 2026-08-05): *"if this is to create the MM then we'll
-do option 1. If its simply to create the MI for the use in engine, we'll do option 3 (C). RUDE
-should be able to build the Material Instances as needed on import and project build."* The proof
-is on disk — the **38 generated master materials exist right now while the corpus holds zero
-pixels**, because masters are generated from the shader `.fxc` sampler vocabulary, not from image
-data. Pixels are needed only to build the `Texture2D` assets an MI binds at import time. So the
-decode is **selective and on demand**, not a 136 GB whole-game pass you pay for once and again.
-
-| | |
+| command | what it does |
 |---|---|
-| `--scope` | fnmatch patterns over the asset stem (`"dt1_13_*"`), or `@file`. **This is what makes it cheap forever** — you pay for the area you are authoring. A scope that matches nothing **refuses** (exit 2): "nothing looked" is not "nothing is referenced" |
-| `--candidates N` | a drawable names a **texture, not a dictionary**, and most names live in several. Default **0 = every candidate dictionary** (complete; RUDE's scoped lookup then picks, so no bind can be wrong). `N>0` keeps N per texture — far cheaper, and printed as the approximation it is |
-| `--limit N` | cap dictionaries per run. Safe: the run is resumable, so a capped run is partial, never wrong |
-| idempotence | re-running skips what is already there **by CONTENT** (sha256 in `_manifest/_DECODED.json`), never by byte length — that is the `af55e9f` defect class, where two distinct assets of equal size read as "already present" |
-| refusals | anything unresolvable — no source binary in the archives, a texture the source does not hold, an unmapped pixel format — is **counted by class and left absent. Never a placeholder pixel** |
+| `doctor` | preflight: interpreter, dependencies, converters, key derivation, archives, free disk |
+| `view` | **the manifest** — registers every file in every archive from TOCs alone. Nothing extracted, ~0 disk |
+| `scan` | archive inventory: how many base / update / DLC packs, and their encryption |
+| `init` | derive keys, order the DLC list, write the project skeleton |
+| `extract` | the bulk lane — convert whole types to XML, or keep binaries. `--types`, `--resume`, `--textures` |
+| `export` | **targeted** — convert exactly the named entries, straight from the archives, same converters |
+| `meta` | convert binary `ytyp`/`ymap`/`ymt` and resolve dictionary entry names. Run **after** `extract` |
+| `resolve` | flatten the precedence tree into `_resolved/` — one build-accurate file per name |
+| `textures` | the referenced-pixel lane: report, decode only what is referenced, prune the rest |
+| `regress` | the churn gate — converter output may not change unless someone records why |
+| `witness` | rebuild the topic census the churn gate reads |
 
-⛔ **It writes into the winning precedence SLOT and hardlinks forward into `_resolved`**, never into
-`_resolved` alone: `resolve` `rmtree`s `_resolved/<kind>/<stem>/` and re-materialises it from the
-slot, so a pixel that existed only in `_resolved` would be deleted by the next `resolve` — silently,
-long after the run that produced it.
+Useful flags: `--view` (resolve names from the whole-game registry), `--oodle <oo2core dll>`,
+`--split` (each targeted entry into its own numbered folder), `--textures none|dds|png|both`.
 
-⭐ Two caches make the second run cheap, both in `_manifest/`: `_TXDNAMES.json` (which dictionary
-holds which texture name — 83,779 manifests, 23 s to build, keyed on a **content fingerprint** of
-every manifest's name/size/mtime so it cannot go stale under `--prune`) and `_srcindex/<slot>.json`
-(which archive holds which source binary, built incrementally and stopping as soon as the wanted
-names are found).
+---
 
-**Measured 2026-08-05** on `F:\RUDE_Filebase_v2` (a corpus with **zero** PNGs):
-`--scope "dt1_13_build*" --candidates 1` → 3 drawables, 43 textures referenced, **43 decoded, 0
-refusals**, 43 of the 158 those 9 dictionaries contain (**27.2%**) and 0.19% of the 22,638 the full
-836-dictionary candidate set contains. 0 of 43 decoded pixels are unreferenced; 43 of 43 referenced
-textures got a copy. Second run: **0 decoded, 43 already present.** Control — one PNG poisoned to a
-**different content at identical byte length** → re-decoded, exactly 1 of 43, and restored to its
-original sha256.
-⭐ **`--resume`** continues an interrupted extract: files already present are counted and skipped
-rather than treated as collisions (added after two whole-game runs were lost to restarts-from-zero).
+## What it converts
 
-⭐ **The order is `extract` → `meta` → `resolve`.** `meta` is a second pass on purpose: a ytyp stores
-its names as one-way joaat hashes, and the reverse table is built by hashing the asset FILENAMES the
-archives yield — during extraction most of those files have not landed yet, so converting inline
-would resolve far fewer names.
+Every type below is **wired into the pipeline** and reproduces reference exports byte-for-byte on
+the positions covered by the conformance suite.
 
-    ytd2xml.py <file.ytd | dir> --out "<dir>" [--png]     # one type, standalone
-    ydr2xml.py <file.ydr> --out "<dir>"
-    yft2xml.py <file.yft> --out "<dir>" [--extras]        # fragment + skeleton/physics/child sidecars
-    ydd2xml.py <file.ydd> --out "<dir>" [--project <fb>]  # dictionary; --project resolves entry names
-    meta2xml.py --convert <paths> --out "<dir>"           # ytyp/ymap/ymt, standalone
-    meta2xml.py --roundtrip --census --corpus <dir>       # emitter proof + enum surfaces (or QUARRY_CORPUS)
-    meta_write.py --selftest --root <filebase>            # META WRITER gate: write(read(x)) == x
+| domain | types |
+|---|---|
+| map & placement | `ymap` `ytyp` `ymf` (+ PSO- and RBF-container variants) |
+| geometry & collision | `ydr` `ydd` `yft` `ybn` `ybd` |
+| textures | `ytd` (+ `.dds` / `.png` sidecars, mip chains intact) |
+| animation & motion | `ycd` `ypt` `mrf` `yed` `ypdb` |
+| navigation & routes | `ynv` `ynd` `yvr` `ywr` |
+| audio & shaders & data | `rel` `fxc` `pso` `ymt` `yld` `yfd` |
+| raw lanes | any type without a converter is kept **byte-exact**, counted, never dropped |
 
-⭐ **`resolve` is what makes the folder openable by RUDE.** RUDE reads a **FLAT** corpus
-(`ImportMapArea` globs `<root>/ytyp/*.xml`, `<root>/ymap/<prefix>*.xml`, and looks up
-`<root>/ydr/<assetName>.ydr.xml`), while extraction writes numbered precedence slots — so without
-this step the plugin cannot open a project folder at all. `resolve` walks the slots in ascending
-load order and materialises `_resolved/<type>/` with ONE build-accurate file per name; point RUDE's
-`CorpusRoot` there. Hardlinks by default, so it costs almost no extra disk (`--copy` for a
-cross-volume destination). Resolving belongs to QUARRY because QUARRY is what knows load order.
+Containers are detected by **magic, not by extension** — a `PSIN` or `RBF0` file named `.ymap` is
+routed to the right reader, so a mislabelled file cannot be emitted under the wrong schema.
 
-⭐ **`--keys` is OPTIONAL** — with an installed copy of the game, QUARRY derives its own key material.
-⭐ **`--xml` emits what RUDE's importer already reads.** Verified end-to-end 2026-07-27: a no-`--keys`
-run over `x64i.rpf` produced 3,479 `.ydr.xml` with **0 conversion failures**, and RUDE's `ImportYdr`
-consumed them — including `dt1_13_build1` (a 5 MB downtown building: 14 geometries, 31,285 verts,
-35,858 tris, 5 textures bound, all 14 shader presets resolved from `joaat_shaders.json`).
+---
 
-⚠ **Use `--types`.** Nested archives are descended into by default, and an unfiltered full run is
-**~376,800 files**. Map authoring wants `ydr,ydd,yft,ytd,ybn,ytyp,ymap,ymt`.
+## How correctness is established
 
-⭐ **Embedded texture dictionaries** (33.9% of drawables and 25.9% of fragments carry one): for any
-`X.ydr.xml` — and, since 2026-07-31, any `X.yft.xml` — the sibling `X__embedded.ytd.xml` holds X's
-own textures, pixels in `X__embedded/`. The `__embedded`
-infix (double underscore, NOT a dot) is load-bearing — the stem becomes a UE package-path segment
-and a dot is illegal there — and it cannot collide with a real dictionary name.
+This is the part that matters, and it is deliberately unglamorous.
 
-⭐ **Since 2026-08-06 those pixels are ALSO written to `X/`** — because `X.ydr.xml` / `X.yft.xml` /
-`X.ydd.xml` each carry their own inline `<ShaderGroup><TextureDictionary>` whose `<FileName>`
-entries are bare `<tex>.dds`, so `X/` is the folder those names resolve against and nothing was
-filling it: **every drawable with embedded textures advertised pixel files that did not exist
-beside it.** 13 oracle sidecars graded MISSING for exactly this (the bytes in `X__embedded/` were
-already byte-identical). `X__embedded/` is kept, not moved — `manifest_source_name`, the
-`quarry textures` decode-later lane and RUDE's in-engine-proven `ImportYtd` pairing all key off it.
-⚠ So embedded pixel bytes are written **twice** whenever pixels are asked for at extract/export
-time; it is zero cost on the whole-game path (`--textures none` + `quarry textures`, which fills
-only `X__embedded/`). The clean end state is one copy plus an explicit pixel-folder argument —
-that is a RUDE-side call, and until it is made the two lanes disagree about what a complete `X/` is.
+**1 — Byte-identical or it doesn't count.** A conversion passes only if it matches a reference
+export **byte for byte**, with exactly one sanctioned normalization: newline convention. Float
+spelling, field order, whitespace, a dropped element — all defects.
 
-## ⚠ Plan for disk before a whole-game run — MEASURED, not guessed
+**2 — The comparator must be able to fail.** `tools/grade.py selftest` mutates a known-good file
+five ways and requires the diff to redden on all five, and to stay green on the two sanctioned
+cases. A gate that has never failed is unproven.
 
-| Artifact | measured on `x64i.rpf` | whole-game estimate |
-|---|---|---|
-| `ydr.xml` | 1.56 GB / 3,479 files (avg 469 KB) | **~38 GB** (~84,000 ydr) |
-| ytd `.dds` | 1.62 GB / 7,148 textures | ~23 GB |
-| ytd `.png` | 2.35 GB / 7,148 textures | ~33 GB |
-| `ytyp.xml` + `ymap.xml` | 0.01 GB | negligible |
+**3 — Conformance is measured, not asserted.** The current suite grades **318 positions**:
+**316 pass byte-identical**. Texture sidecars are graded separately: **241/241**. Every non-pass is
+named, with its cause, below.
 
-So `--types ydr,ytd,ytyp,ymap --textures both` over the whole game is **~94 GB**. Use `--textures`
-to pick: **`png`** is what `ImportYtd` actually loads, **`dds`** is the lossless repackage, `both`
-(default) writes each. A map-only run (`--types ydr,ytyp,ymap`) is ~38 GB and gives full placement
-coverage — textures can be added per-area afterwards.
+**4 — Oracles are a lower bound, so invariants run at corpus scale.** Passing the suite does not
+prove correctness for the other 384,000 files. The tool therefore also checks properties the
+*format itself* must obey across everything it emits — a parse must consume the file exactly, frame
+budgets must close, XML must be well-formed with the expected root. This is not theoretical: it
+caught an animation decoder that was padding-filling undecodable data and returning plausible
+numbers. Ten of ten oracles passed either way; only the corpus-scale check saw it.
 
-⚠ `resolve` **hardlinks**, so `_resolved/` costs almost nothing on disk — but `du`-style tools that
-follow links will double-count it. A "11 GB" project folder measured that way was really ~5.5 GB.
+**5 — Uncertainty is counted, never hidden.** Where a value is fitted to observed data rather than
+proven by a rule, the emitter **counts every such emission** and the run prints it. A rising counter
+means "go widen the evidence", not "trust it". The same discipline applies to refusals: an
+undecodable channel emits a visible `<!-- RESIDUAL -->` marker rather than an invented value, and
+a file that will not decode is reported and left absent rather than written wrong.
+
+**6 — Nothing silently skips.** Every refusal class reaches the printed summary of every path that
+can produce it, and the full failure list is written to disk. A zero-work run exits non-zero: a run
+that was asked to do something and produced nothing is a failure, not an empty success.
+
+---
+
+## Known limitations — the honest list
+
+| area | status |
+|---|---|
+| `cut` cutscene names | one cosmetic string resolves as a hash. It is genuinely absent from the file, the executable, and 100% of the game's plaintext data files |
+| `carcols.ymt` | three PSO type codes still unpinned; the file converts but is not byte-identical |
+| `compositeEntityTypes/effectsData` | present in the binaries, not yet decoded; the emitter **declares the omission in the output** rather than writing a false empty element |
+| encrypted audio containers | container fully decoded; whole-file-encrypted archives are refused loudly — the cipher is not recoverable clean-room |
+| script files (`.ysc`) | excluded by maintainer policy |
+| `ypt` behaviour scalars | 40 values were constant across all available evidence, so they are emitted from constants and **counted on every emission** |
+| animation channel variants | only provably-decodable channels emit values; the rest emit residual markers |
+| degenerate archive entries | a small number of files do not inflate to their own declared page plan. They are reported, not guessed at |
+
+---
+
+## Roadmap
+
+**Now — whole-game conformance, lane by lane.** Each lane is taken to 100% against fresh reference
+exports drawn across every sub-category and DLC slot, then signed off with evidence: every file
+accounted for, no silent skips, corpus-scale invariants clean, a stratified spot-diff at 100%, and
+the regression suite unchanged.
+
+**Next — the corpus contract.** Mirror the game's own folder structure so an asset keeps the name
+the game gives it and identity lives in the layout. Measured: `(slot, archive, path, name)` is
+unique for all 384,528 files, so a mirrored tree has zero name collisions. A provenance ledger
+records, for every emitted file, which archive and which DLC it came from.
+
+**Then — pixels and interiors at scale**, followed by the remaining long-tail types.
+
+**Later — a C++ port.** The Python here is the prototype layer: the rule is *conform first, port
+second, re-verify after*. Nothing gets ported until it is proven against the oracles.
+
+---
+
+## Repository layout — what is live, and what is not
+
+Nothing here is dead weight by accident. Every file is in one of three states, and the state is
+stated rather than left for a reader to guess.
+
+**The pipeline** — `quarry.py` (CLI and dispatch), `keyderive.py` + `ngcrypto.py` (key material),
+and the converters it calls: `meta2xml` `ydr2xml` `ydd2xml` `yft2xml` `ytd2xml` `pso2xml`
+`rbf2xml` `ycd2xml` `ypt2xml` `ynv2xml` `rel2xml` `mrf2xml` `fxc2xml` `yed2xml` `yld2xml`
+`yfd2xml` `ynd2xml` `ypdb2xml` `yvr2xml` `ywr2xml`, plus the JSON name tables they load.
+
+**Standalone tools** — run on their own, deliberately not wired into the pipeline:
+
+| file | why it stands alone |
+|---|---|
+| `meta_write.py` | the META **writer** (XML → binary). The authoring direction; the read path is what the pipeline needs today. Has its own `--selftest` |
+| `awc2xml.py` | audio container decoder. Fully derived and round-trip proven on plaintext containers; deliberately unwired while the audio direction is decided |
+| `analyze_lod_hierarchy.py`, `analyze_texture_residuals.py` | measurement scripts that produced findings recorded in the converters. Kept so the measurements are reproducible |
+
+**Superseded** — kept for provenance, not called by anything:
+
+| file | superseded by |
+|---|---|
+| `pso_manifest.py` | `pso2xml.py`, which is schema-driven from the file's own PSCH section and therefore serves every PSO root rather than one hardcoded shape |
+| `oracle_pso_names.json` | `game_pso_names.json`, derived from the game's own data files rather than from reference output |
+
+Preserving superseded code costs nothing and records how a decision was reached; deleting it
+would erase the evidence trail that makes the derivations checkable.
 
 ## Dependencies
 
-QUARRY's core — RPF reading, the NG cipher, key derivation, `ydr`/`ytd` → XML, `resolve` — is
-**pure standard-library Python plus `numpy`** (the cipher needs vectorising; the scalar path hangs
-on real archives). One thing is optional and, today, load-bearing:
+`numpy` (required) · `texture2ddecoder` + `Pillow` (only for PNG decoding; DDS always works
+without them). `pip install -r requirements.txt`. Oodle-compressed entries need an `oo2core`
+DLL you already own — pass it with `--oodle`.
 
-    pip install texture2ddecoder Pillow      # required for the ytd .png sidecars
-
-⚠ **Without it the texture lane does not work**, because `ImportYtd` loads
-`<PixelFolder>/<TexName>.png`. QUARRY still writes the lossless `.dds` and **says so loudly on
-startup** rather than producing a folder that silently can't be read. 🔴 The real fix is native BC
-decode inside RUDE — then the PNG bridge and this dependency both disappear.
-
-## Why the folder is numbered
-
-The same asset name exists in the base game, in `update.rpf`, and in several DLC packs;
-the game uses the **last one in load order**. The tree encodes that, so anything reading
-it resolves the build-accurate copy by walking high → low:
-
-    00_base/             base x64*.rpf / common.rpf
-    10_update/           update.rpf — overrides base
-    20_dlc/NNN_<name>/   DLC packs, higher NNN wins
-
-Type folders (`ydr/ ytd/ ybn/ …`) are created as files land.
-
-## 🎯 Where this is going (maintainer's direction, 2026-07-27)
-
-1. ⛔ **No the reference exporter affiliation, anywhere.** Done in code (above). Key acquisition stays the
-   operator's business.
-2. 🔴 **Port to a C language.** Python was a prototyping choice; C/C++ is the target. This was
-   already intended in an earlier session and never landed. Note C++ makes the cipher *easier*, not
-   harder — the numpy vectorisation that Python needed (the scalar path hangs on real archives) is
-   just a plain loop in C++.
-3. 🔴 **Export EVERYTHING through the XML pipeline.** ⭐ This is the
-   insight that explains the wasted effort: RUDE's importer already reads the interchange XML and is proven
-   on 1,144 Cayo meshes with materials, collision, LODs and textures. QUARRY emitting raw *binary*
-   forced us to start rebuilding readers the XML pipeline already had. **Emit `*.ydr.xml`,
-   `*.ytyp.xml`, `*.ymap.xml`, `*.ytd.xml` and the existing pipeline consumes them unchanged.**
-   Helpers already built for this: `joaat_shaders.json` (216 shader presets, hash → name) and
-   `shader_param_names.json` (5,058 value-parameter names, harvested from the game's own compiled
-   shaders) — the binary stores only the joaat hash and XML needs the name.
-
-## Status
-
-| Piece | State |
-|---|---|
-| 🏆🏆 **WHOLE-GAME RUN + CENSUS — done 2026-07-27** | `extract → meta → resolve` over all 24 base + 2 update + 92 DLC archives: **101,412 files extracted, 0 archives skipped, 79,844 ydr XML + 21,568 ytyp/ymap XML, ZERO conversion failures**. `resolve` → 100,422 flat files with **22,213 overridden by a higher slot** (precedence doing real work; a naive flat extract would have silently used base-game copies of 22k assets). ⭐⭐ **Census of all 1,627,754 map entities: 71.6% import as real meshes and that is the CEILING** — 18.4% fragment + 9.9% ydd + 0.1% MLO have **no importer yet**, and only **221 (0.014%)** are a real gap (all `des_*`, from the AES nested archives). **`archetype resolved but mesh absent` = 0.** The only extraction refusal is the known Oodle-packed resource, and it now fails **loudly with its reason**. ⚠ **SNAPSHOT as of 07-27**: the fragment/ydd/MLO importer gaps counted here have since closed on the QUARRY side (ydd + yft + MLO emission, 07-28 → 07-31 rows below) — the census percentages describe that day's pipeline, not today's |
-| ⛔ **FIXED: the float formatter was a SHIPPED DEFECT** (2026-07-27) | `fmt_num` used `repr(float)`, so every non-integral value in every emitted ytyp/ymap disagreed with the reference. **Both gates were blind:** the round-trip harness re-emits reference *strings* (lossless by construction) and `verify_binary` compared with float *tolerance*. Now: **7 sig digits widening to 9 only when 7 doesn't round-trip float32, ties AWAY FROM ZERO** (needs `decimal`; `%G` rounds half-to-even), `NaN` literal. Verifier scores TEXT-exactness separately and splits the residual by float32 bits — same bits = our bug, different bits = build drift. **0 format differences remain** |
-| ◑ **MLO interiors DECODED** (2026-07-27) | `CMloArchetypeDef`/`CMloRoomDef` **100.000% over 18,084 field comparisons**; portals (4×16-byte corners, 4th float always `NaN`) and entity sets (`locations` parallel to `entities`; entities are 8-byte struct pointers) both decoded. ⚠ **VEC3 array stride is 16 bytes, not 12.** ✅ **EMITTED since 2026-07-28** — `meta2xml` writes `CMloArchetypeDef` with rooms, portals, entity sets, all 14 `CExtensionDef*` types and light instances (see the 07-28 additions table). Honest gaps (flag bit meanings, empty-`<rooms>` rendering, timecycle/ybn name coverage) tracked in the maintainer's engineering log ("MLO INTERIORS") |
-| ✅ **`doctor` — the new-user preflight** (2026-07-27) | reports python/numpy, texture decoders, every converter, the game install + archive counts, whether key material derives from the user's **own** exe, Oodle, and free disk **against the measured cost of the run they intend** — and says what to do about each gap. Safe to run with no arguments. Every line it checks was previously a silent failure that surfaced mid-extract looking like a different bug. Plus `requirements.txt` |
-| ✅✅ **KEY ACQUISITION — ONE-CLICK when the blob is present** (`keyderive.py`, 2026-07-27) | Consumes a local `resources/magic.dat` (option A) — **git-ignored, so a clone of this repo does NOT include it**; the operator supplies it (or `--keys`/`--magic`) and QUARRY opens it with the AES key found in the user's **own** exe by SHA-1 anchor. **Verified: derived keys match the published MIT SHA-1 constants AND are byte-identical to the known-good files.** Includes a from-scratch .NET `Random` (A/B'd against real `System.Random` on 7 seeds incl. both int32 boundaries), self-contained AES-256-ECB, and inflate — **no .NET, no the reference exporter, no crypto dependency**. Priority: existing key files → bundled blob. ⭐ blob is a RUNTIME INPUT: deleting it switches to option B with no code change |
-| ⛔ **the reference exporter dependency** | **SEVERED 2026-07-27** — `unpack_magic.ps1` archived; no the reference exporter reference remains in code |
-| ✅ **XML export — `ydr` DONE** (`ydr2xml.py`) | binary ydr → `*.ydr.xml` the existing RUDE importer reads unchanged. **Verified by diffing against the reference exporter's own XML for the same asset:** 3/3, 8/8, 17/17 geometry counts · 28/28 layouts · shader-preset lists identical · 27/28 vertex/index counts (the one gap is Enhanced-vs-Legacy source data, proven by a 3-way internal count cross-check). ✅ embedded `<Bounds>` emitted since 2026-07-28 (Capsule measured; ybn-oracle 183/183) — see the 07-28 additions table |
-| ✅ **XML export — `ytd` DONE** (`ytd2xml.py`) | binary ytd → `*.ytd.xml` **+ a `<stem>/` folder of `.dds` AND `.png`**, because `ImportYtd` takes the XML and the pixels as separate arguments — and **it loads the `.png`**, so DDS alone would leave the lane connected on paper and broken in practice. ✅ end-to-end: 1,455 XML / 7,100 dds / 7,100 png, all carried through `resolve`. DDS is a pure repackage (the archive's own blocks behind a 128-byte header — no decode, no dependency, no loss); `--png` also decodes but needs `texture2ddecoder`+`Pillow`. **Verified against the reference exporter's own XML for the same assets: Usage 360/360, FileName 360/360, Format 356/360** (the 4 are corpus build drift, proven by the files' own allocation fields). 1,455/1,456 real dictionaries convert. ⭐ `Usage` was **derived by measurement** over 285 agreeing rows, not from an assumed enum — and it independently confirmed the value RUDE's ytd writer had carried as "pending confirm" |
-| ✅✅ **XML export — `ytyp` / `ymap` DONE, RSC7 v2 META SOLVED** (`meta2xml.py`, `quarry.py meta`) | **The city-import blocker is closed.** ✅ **In-engine, MCP-driven:** `ImportMapArea` consumed QUARRY's own ytyp+ymap+ydr XML — 63 entities → **60 meshes imported, 0 failed, 60 instances spawned**, actors placed along a curving freeway path with textured road geometry (not stacked at origin). ✅ **`ymap` verified at 100.000% — 169,780 field comparisons, 0 mismatched, 210/210 files item-count exact, including position AND rotation.** ✅ `ytyp` scalars/enums 2,600/2,600 exact on the drift-free subset; the ~2% geometry differences are build drift (bb + sphere move together). ⭐ The unlock: **META schema hashes are CASE-SENSITIVE joaat**, while asset-name hashes in the data are lowercase. ytyp and ymap share the header byte for byte, so one walker serves both. ◑ Carried forward (not needed for reading): struct-info secondary `key` and the multi-bit `0x65` flag rendering. The header +0x40 blob turned out OPTIONAL for a writer — `meta_write.py` (07-28 row) authors with it NULL, as 180/180 community files do |
-| ✅ **XML export — `ydd` DONE** (`ydd2xml.py`, 2026-07-28) | binary ydd (pgDictionary\<gtaDrawable\>, RSC7 v165 = the drawable-family version) → `*.ydd.xml`. Reuses the ydr drawable walk via a `base` offset (refactor A/B-proven byte-identical, 200/200). **Oracle: 58/60 name-matched files structurally identical to reference exports; both residuals proven build drift. Scale gate: 14,447/14,447 converted, 0 failures, 86,138 drawables.** Entry names joaat-resolve where the table knows them, else `hash_%08X` (free downstream - dictionary joins are hash-to-hash) |
-| ✅ **XML export — `yft` visual v1 DONE** (`yft2xml.py`, 2026-07-28) | fragment (RSC7 v162) → `<Fragment><Name/><Drawable>` XML carrying the MAIN VISUAL drawable (ptr at +0x30, measured 300/300). **Oracle: 54/60 full match, 0 structural.** ⚠ v1 scope was visual-only; extras (skeleton/physics/child sidecars) wired into `extract` 2026-07-30 and embedded-texture pixels exported 2026-07-31 — see the 07-29/30 additions table. Still not emitted: breakage/cloth pieces. ⚠ Known boundary: packed CLOTH vertex nibbles refuse loudly (0x1 = 4 B solved; 0xa+0x3 pending) |
-| ✅ **`ybn` → XML — built, oracle-validated, WIRED 2026-07-29** | `ydr2xml.boundsfile_lines` (the same walk that emits embedded `<Bounds>`): 183/183 name-matched reference exports identical. It existed unwired for a long time — the lesson is recorded at the branch itself (`quarry.py`, the ybn case): a capability that exists but is not wired is indistinguishable from one that was never built. ⚠ RUDE still has no importer for a *standalone* `.ybn.xml` (embedded `<Bounds>` in ydr is what the prop lane uses) — that consumer gap is RUDE-side |
-| 🔴 **C/C++ port** | not started; Python is the prototype |
-| RPF7 container, TOC walk, entry decode | implemented |
-| **nested `.rpf` recursion** (`--max-depth`, default 2) | implemented 2026-07-26 — **required for map assets**; the base archives are mostly containers and nearly every `.ydr/.ybn/.ytyp/.ymap` lives one level down |
-| **type filter** (`--types ydr,ybn,ytyp,ymap`) | implemented 2026-07-26 — a full unfiltered run is ~376,800 files |
-| deflate | implemented |
-| Oodle (via the `oo2core` DLL in **your** install) | implemented for binary entries. ⚠ **A GTA V *Legacy* install ships no `oo2core`** — the DLL comes with *Enhanced*, so pass **`--oodle <path>`** (QUARRY also searches sibling Rockstar installs). ⛔ the **resource** path does not use Oodle at all: a resource keeps its compressed body, and the on-disk form is DEFLATE, so an Oodle-packed resource would need decompress→re-deflate. Unbuilt — such entries are reported and skipped (1 of 64 in `x64a.rpf`) |
-| project folder build, precedence sorting, manifest | implemented. ✅ **DLC order is AUTHORITATIVE (2026-07-27)** — `read_dlclist()` pulls the game's own `dlclist.xml` out of `update.rpf` (reads the TOC, inflates only that one 610 B entry) and `dlcOrderAuthoritative` is now `true`; `resolve` inherits the flag rather than restating a guess. ⚠ The old heuristic was **genuinely wrong**, not just unproven: it put `mpairraces` first where the real order starts `mpheist`. That matters because a FiveM server's DLC level decides what overrides what — an override authored against the wrong level **loses silently** |
-| ✅ **`resolve` — precedence tree → the FLAT corpus RUDE reads** (2026-07-27) | closes the layout half of the contract gap: `_resolved/<type>/`, one build-accurate file per name, hardlinked. ✅ **verified on synthetic multi-slot data**: the highest slot wins the contested name, **its pixel sidecar comes from that same slot** (never a mix of two dictionaries), unique files from every slot are carried, and `_RESOLVED.json` records the winning slot per file. ⚠ the flat layout is inherently lossy where one name repeats **within** a slot — 843 of 1,893 `x64g` ytd (clothing/ped variants across nested archives); the un-suffixed copy wins and the alternates are counted, not silently dropped. Map types are unaffected in practice (0 collisions across 3,479 `x64i` ydr) |
-| collision-safe filing | implemented 2026-07-26 — same-named files in one slot keep the first and suffix the rest, and collisions are **counted** (was a silent overwrite). ⛔ **fixed 2026-07-27:** the rename split the DOUBLE extension (`foo.ytd.xml` → `foo.ytd~1.xml`), which every consumer misses, so a "handled" collision still lost the asset; the suffix now lands on the stem (`foo~1.ytd.xml`) and a converted asset's sidecar folder follows the XML actually written |
-| ✅ **24-bit size saturation — FIXED 2026-07-27** | The TOC's `FileSize` is a **u24**, so an entry of **≥16MB cannot state its length**: it stores `0xFFFFFF`, a **saturation marker**. Read as a literal length it cut every large `+hi` HD dictionary at `0xFFFFFF−0x10` B — 7 of 1,900 in `x64g`, **50 game-wide across 12 of the 24 base archives**. The real length was **derived from the bytes**: it is carried in the 16-byte header slot at the entry's offset as a LE u32 at bytes **7, 14, 5, 2** (bit-solved against the length zlib actually consumes, 50/50; the slot's other 12 bytes are high-entropy and unexplained; the same decode on a non-saturated entry is nonsense). That is only the read WINDOW — DEFLATE self-terminates, so the body is trimmed to the stream's own end. ✅ verified: all 7 extract at their true length (17.0–41.4 MB), inflate, and convert (`ytd2xml --selftest`: **410 textures**); `x64c`'s 4 likewise (**355 textures**); **1,900/1,900 `x64g` + 1,748/1,748 `x64c`** are now complete-deflate, page-plan-exact, zero trailing bytes |
-| NG block cipher (17 rounds, A/B round structure, table-driven) | implemented |
-| per-file key selection `((hash(name) + size + 61) & 0xFFFFFFFF) % 101` | implemented — ⚠ the **uint32 mask is mandatory**; without it 6 of 24 base archives silently fail their TOC check and look like "wrong keys" |
-| resource-body integrity | implemented 2026-07-26 — bodies are validated as real DEFLATE (plain **or** NG-decrypted, whichever inflates) and an unrecognised body is **reported, never written**. Necessary because the RSC7 header is *rebuilt* from entry flags, so output always *looks* valid. ⛔ **hardened 2026-07-27:** the gate returned `d.eof or not d.unconsumed_tail`, and `unconsumed_tail` is only non-empty when `max_length` is used — so a **truncated** body satisfied the second clause and was waved through, which is exactly how the 7 saturated files were written while the run reported **zero failures**. It now requires `d.eof` **and** that the body inflate to **exactly** its RSC7 page-plan total (`sysFlags`+`gfxFlags` — the one number the rebuilt header cannot fake; exact on **4,176/4,176** resources measured across `x64a`/`x64g`), and the failure line now carries the **reason**, not just `ValueError` |
-| AES-256 ECB path | ⛔ **not available** — the AES key is not part of the NG key data, and recovering it is a separate step from the NG keys. ⚠ The earlier claim here ("only affects vehicle `*_mods.rpf`, out of scope") was **wrong on both halves** — `des_setpiece.rpf`, `des_jetsteal.rpf`, `des_heli_*` and ~30 more map set-piece archives are AES-encrypted too. They are **reported and counted as skipped**, never mis-read; closing the gap is an open item |
-| **NG key + table DATA** | **operator-supplied — QUARRY ships none** |
+---
 
 ## Keys
 
-QUARRY contains **no key material**. `--keys <dir>` expects:
+Derived on your machine from your own executable, every run. Nothing is shipped, nothing is
+downloaded. See `keyderive.py`, whose attribution to the upstream MIT-licensed `gta-toolkit`
+work is recorded in `NOTICE`.
 
-    ng_keys.bin     101 × 272 bytes  =  27,472 bytes
-    ng_tables.bin   17 × 16 × 256 × uint32  =  278,528 bytes
-
-Without them, unencrypted archives still extract and everything else works; encrypted
-archives are reported as skipped rather than silently producing garbage. The TOC sanity
-check (`entry 0 must be the root directory`) means wrong keys are detected immediately
-instead of writing corrupt files.
+---
 
 ## Boundaries
 
-- Never redistribute game data or key material. Everything QUARRY reads comes from the
-  operator's own installation, on their own machine.
-- No anti-tamper circumvention: QUARRY does not attach to, dump, or modify a running
-  game process. (`GTA5.exe` is packed — `.text` entropy 7.999 — so keys are not
-  statically recoverable from it; that route is closed by design, not oversight.)
-
-## 2026-07-28 additions (detail: the maintainer's engineering log, 07-28 sections)
-| Piece | State |
-|---|---|
-| ✅ **`ydd` → XML** (`ydd2xml.py`) | pgDictionary<gtaDrawable>, v165; oracle 58/60 identical (2 proven build-drift); whole-corpus 0 failures |
-| ✅ **`yft` → XML, visual v1** (`yft2xml.py`) | v162, main drawable @ +0x30; oracle 54/60, 0 structural; cloth vertex formats (half2/half4/sbyte4) VALUE-validated |
-| ✅ **ydr fidelity upgrades** (`ydr2xml.py`) | embedded `<Bounds>` emitted (Capsule measured; ybn-oracle 183/183, 0 format bugs) · REAL sampler names + RenderBucket (diffuse recovery 57.5→97.3%, mislabels→0) |
-| ✅ **MLO + extensions emission** (`meta2xml.py`) | rooms/portals/entity sets + all 14 CExtensionDef types + light instances; 1.96M comparisons, FMT_BUG=0 |
-| ✅ **Scenario regions → XML** (`meta2xml.py`) | CScenarioPointRegion full shape; 204/204, 5.5M comparisons, FMT_BUG=0; multi-bit flag join measured |
-| ✅✅ **RSC7 v2 META **WRITER** — standalone module** (`meta_write.py` + `writer_constants.json`; not called by `quarry.py` — its gate is its own `--selftest`, and `doctor` checks it imports) | The other direction at last: binary `ytyp`/`ymap`/scenario `ymt` can now be WRITTEN, not just read. Value-level model - every byte is re-encoded from a decoded cell, so byte identity proves the ENCODERS rather than a buffer copy. Gate: `python meta_write.py --selftest --root <filebase>` (write(read(x)) == x over random real binaries; 240/240 byte-identical from the installed location, and 2,637 files during derivation). ⭐ zlib **memLevel=9** reproduces R*'s deflate exactly. ⛔ The header `+0x40` blob is OPTIONAL - 180/180 community-authored files leave it NULL and load in game - so authoring does not need its (still unrecovered) cipher. 🔴 A from-scratch layout allocator is the remaining piece before brand-new interiors/regions can be emitted; read->edit->write works today. |
-| ✅ **sp_manifest PSO reader/patcher — standalone module** (`pso_manifest.py`; not called by `quarry.py`) | The manifest half of scenario deployment. Reads/writes the `PSIN` container for `CScenarioPointManifest` and can ADD regions (`compcache:/<resource>/<region>` + AABB) to a vanilla manifest. Gate: `python pso_manifest.py --selftest --manifest <sp_manifest.ymt>` - **a PRODUCTION manifest round-trips BYTE-IDENTICALLY** (160 regions, 54 compcache-routed, 23,270 B). ⚠ A VANILLA Rockstar manifest legitimately round-trips SMALLER: it carries `PSIG`/`STRE`/`CHKS` sections that no working community manifest has and whose formats are unrecovered - so the correct oracle is a manifest known to LOAD, not one shipped by R*. ⛔ Only ONE sp_manifest can be active server-side, so "add a region" means REBUILDING the single manifest with every region. `--dump` prints one as JSON. |
-| 📄 **Enhanced (Gen9)** | the Enhanced install OPENS with Legacy-derived keys (73/73 payloads verified); v159/v171/v5 samples banked; decode = future |
-
-## 2026-07-29/30 additions (detail: the maintainer's engineering log, 07-29/30 sections)
-| Piece | State |
-|---|---|
-| ✅ **`ybn` → XML wired into `extract`** | the already-oracle-validated emitter (183/183) is now reachable; see the Status row above |
-| ✅ **Embedded texture dictionaries exported** | 33.9% of drawables carry their own textures; each emits a sibling `X__embedded.ytd.xml` + pixels. In-engine effect: missingTextures 4,633 → 4 across downtown |
-| ✅ **Shader value params decoded + named** | 104,178 emitted, 100% named via `shader_param_names.json` — 5,058 hash→name entries harvested from the 321 `.fxc` files in the user's own `common.rpf` |
-| ✅ **`extract --resume`** | an interrupted whole-game run continues instead of restarting from zero; resumed files are counted |
-| ✅ **`textures` subcommand** (`--prune`) | report-what's-referenced + prune-what-isn't (the 86 GB problem); prune refuses to act on zero evidence. ✅ **referenced-only decode landed 2026-08-05** (`--decode-referenced`) — no longer extract-bound; see the section above |
-| ✅ **yft EXTRAS wired into `extract`** (2026-07-30) | skeleton + physics group/child join + one importable `<stem>/<group>.ydr.xml` sidecar per geometry-bearing child (the vehicle wheel lane) now come out of the pipeline, not just the standalone CLI. A refusal (unmeasured value) falls back to the visual drawable and is **counted**, never silent. Verified byte-identical to the standalone path on vehicle + prop fragments |
-| ✅ **`.ymt` in the `meta` pass** (2026-07-30) | scenario regions (`CScenarioPointRegion`) convert in the pipeline; PSO (`PSIN`) manifests are counted-skipped, not failed (see `pso_manifest.py`); `RBF0` binary-XML containers (bink_cnt_*) are likewise counted-skipped; unsupported META roots (e.g. `CStreamingRequestRecord`, the *_srl cutscene streaming lists) refuse with a typed, named error. Measured over update.rpf's 733 ymt: 62 converted, 634 PSIN, 35 RBF0, 2 CStreamingRequestRecord, 0 failed |
-| ✅ **ydd entry names resolved by `meta`** (2026-07-30) | `extract` writes `hash_%08X` (the reverse table doesn't exist yet at that point); `meta` now resolves them in place from the filename-derived table. Unresolved entries stay `hash_%08X` — the dictionary join is hash-to-hash, so nothing downstream depends on it |
-| ✅ **`resolve --types` MERGES into `_RESOLVED.json`** (2026-07-31) | a type-scoped resolve used to REWRITE the manifest from only that run's winners — after a whole-game resolve, `resolve --types ymt` replaced the ~278k-entry record with a 62-entry one (every other type's files were still on disk; the record had forgotten them, and a consumer trusting `perType` would call the corpus nearly empty). Now entries for types OUTSIDE the filter are carried forward unchanged; a run with no `--types` remains the full authoritative rewrite |
-| 🏆 **TEXTURE SIDECARS 241/241 BYTE-IDENTICAL** (2026-08-06) | the pixel files themselves, graded against the oracle for the first time (every earlier sweep ran `--textures none`). Two fixes, both measured: **(1) the stored mip-chain length.** `size(level i) = mip0Bytes >> 2i` — mip 0's byte count quartered per level with truncation, bottoming out at `… 16, 4, 1, 0`, NOT clamped at one 4×4 block. Scored over all 237 paired sidecars: block-rounded 207 · unclamped 227 · shifted-dims 233 · **this rule 237/237**. Block-rounding over-counted the tail by 27–59 B, and since that count also drives how much is READ from the archive, 30 files carried that many bytes of trailing garbage. **(2) embedded pixels also written to `X/`** — see the note above; 13 more. Falsified at scale on 30,954 non-oracle textures (x64a/x64e/x64i): 0 refusals, 0 unwitnessed shapes, 0 segment overruns. ⛔ The retracted claim it replaces: "no dimension-based formula can be correct, the length must be stored per texture" — that rested on `test2_decal.dds`, which is a **raw `.dds` shipped in `common.rpf` and copied out verbatim** (`result: raw`, dwDepth=0), not a sidecar export. Comparing it to an exporter's output compared two different producers. And grcTexture stores **no** length field: `+0x40` bits 8..27 are the UsageFlags ladder, not "allocated bytes / 256" — one dword `0x2000AC14` is carried by three different geometries |
-| ✅ **Fragment (`yft`) embedded textures exported** (2026-07-31) | the same `X__embedded.ytd.xml` + pixels contract as ydr, rebased to the fragment's MAIN drawable (children have no ShaderGroup of their own). Measured over all 6,026 base-game binary yft: **1,558 (25.9%) carry an embedded dictionary — 5,723 textures** — and sampled carriers request *only* textures that dictionary holds, i.e. exactly the fragments that imported untextured. ✅ **In-engine proven** (headless, one editor process): `v_ret_fh_shelf_04` — a fragment whose 39 texture requests are satisfiable *only* from its embedded dictionary — imports **boundTextures 42, missingTextures 0** (was 23 bound / 19 missing without the sidecars). ⚠ Existing filebases need a yft re-extract to gain them |
+- Never redistributes game data. Your install is the only source.
+- Never writes back to the archives. QUARRY reads; it does not modify your game.
+- Refuses rather than guesses. A file that cannot be decoded correctly is reported, not invented.
