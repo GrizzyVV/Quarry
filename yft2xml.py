@@ -498,7 +498,11 @@ def _bone_transforms(r, nb):
     if (p >> 28) != 5:
         return []
     _, bt = r.deref(p, 0x20 + nb * 0x30)
-    L = [' <BoneTransforms unk="0">']
+    # `unk` was hardcoded "0" - true for most fragments, which is exactly why it survived the
+    # 10-file oracle set. It is a u16 in the array header at +0x12 (derived 2026-08-07 against
+    # the wave-2 oracles). Reading it costs nothing and a wrong constant is invisible to every
+    # gate that never saw a non-zero one.
+    L = [' <BoneTransforms unk="%d">' % struct.unpack_from("<H", r.sys, bt + 0x12)[0]]
     for i in range(nb):
         b = bt + 0x20 + i * 0x30
         L.append("  <Item>")
