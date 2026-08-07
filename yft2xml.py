@@ -106,7 +106,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # _refuse is shared deliberately: ONE counter table for the whole interchange-XML lane, so
 # quarry's single ydr2xml.report_refusals(stats) call reports fragment declines too. A second
 # private table here would be a second thing to remember to surface.
-from ydr2xml import Res, drawable_lines, esc, fmt_float, read_geometries, _refuse, _bound_lines
+from ydr2xml import (Res, drawable_lines, esc, fmt_float, read_geometries, _refuse,
+                     _bound_lines, _model_group_lines, DRAWABLE_MODEL_GROUPS)
 # The 2026-08-06 byte-identical build reuses the float-text law + the yld cloth helpers.
 from meta2xml import fmt_num as _F, num_list, scalar_list
 from yld2xml import _vec4_block
@@ -528,7 +529,16 @@ def _emit_groups(r, l1):
         L.append("    <Item>")
         L.append("     <Name>%s</Name>" % esc(nm))
         L.append('     <ParentIndex value="%d" />' % r.sys[base + 0x4D])
-        L.append('     <GlassWindowIndex value="%d" />' % r.sys[base + 0x4E])
+        # ⛔ +0x4E IS THE GROUP'S FIRST-CHILD INDEX, NOT THE GLASS-WINDOW INDEX (fixed 2026-08-07).
+        # It survived because in the only 10-file-set oracles with a non-zero GlassWindowIndex
+        # (des_fib_frame 0-3, prop_dealer_win_01 0-1) group index == child index == window index,
+        # so three different offsets all read the same number. Vehicles separate them: boattrailer
+        # emitted 27..31 for groups 1..5 where the oracle says 0, and children 27..31 are exactly
+        # the ones whose GroupIndex is 1..5. Brute-forcing every u8 in group+0x00..0xBF against
+        # the oracle over 7 files / 69 groups leaves EXACTLY ONE surviving offset: +0x52.
+        # Validated over 14 files / 104 groups: +0x52 = 104 ok / 0 bad, +0x4E = 18 ok / 86 bad.
+        # (The same probe re-confirms ParentIndex @+0x4D and GlassFlags @+0x53 - both correct.)
+        L.append('     <GlassWindowIndex value="%d" />' % r.sys[base + 0x52])
         L.append('     <GlassFlags value="%d" />' % r.sys[base + 0x53])
         for nm2, off in _GROUP_F:
             L.append('     <%s value="%s" />' % (nm2, _F(_yf(r, base + off))))
@@ -557,7 +567,9 @@ def _emit_children(r, l1):
         L.append('     <InertiaTensor x="%s" y="%s" z="%s" w="%s" />' % tuple(_F(x) for x in _yv4(r, iva + ci * 16)))
         if _yU(r, base + 0xB0) != 0:                            # EventSet gated by child+0xB0 ptr
             L.append("     <EventSet />")
-        _, dbo = r.deref(_yU(r, base + 0xA0), 0x100)            # child drawable (header-only stub)
+        # 0x140, not 0x100: the model-group pointers live at +0x50..+0x68, but the window has to
+        # reach the fields the geometry reader touches beyond +0x100.
+        _, dbo = r.deref(_yU(r, base + 0xA0), 0x140)            # child drawable
         L.append("     <Drawable>")
         nm = r.cstr(_yU(r, dbo + 0xA8)) if dbo is not None else ""
         L.append("      <Name>%s</Name>" % esc(nm) if nm else "      <Name />")
@@ -582,6 +594,21 @@ def _emit_children(r, l1):
             L.append('      <%s value="%s" />' % (t, _F(vv)))
         for t, vv in zip(("FlagsHigh", "FlagsMed", "FlagsLow", "FlagsVlow"), fl):
             L.append('      <%s value="%d" />' % (t, vv))
+        # ⛔ A CHILD DRAWABLE IS NOT ALWAYS A HEADER-ONLY STUB - that claim came from the 10-file
+        # oracle set and the 31-file stratified draw killed it. Exactly ONE child per vehicle (the
+        # wheel) carries its own LOD model groups at +0x50/58/60/68: measured non-zero on 1 child
+        # of 32 (boattrailer), 1 of 19 (luiva), 1 of 23 (driftsentinel2), zero on every other.
+        # That omission was >96% of the 380-727 KB vehicle gap. No new decoding was needed - the
+        # existing ydr2xml model-group emitter reproduces the oracle block LINE-FOR-LINE
+        # (2,238 / 4,374 / 3,290 lines exact), validated 14/14 over the local oracle pairs.
+        if dbo is not None:
+            for goff, tag in DRAWABLE_MODEL_GROUPS:
+                if _yU(r, dbo + goff) == 0:
+                    continue
+                g = read_geometries(r, dbo, group_off=goff)
+                if not g:
+                    continue
+                L += ["     " + ln for ln in _model_group_lines(fmt_float, tag, g)]
         L.append("     </Drawable>")
         L.append("    </Item>")
     L.append("   </Children>")
