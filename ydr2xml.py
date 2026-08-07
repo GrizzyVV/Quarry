@@ -446,6 +446,23 @@ def sps_filename(hash32, preset):
     if _SPS is None:
         tab = _load_name_table("joaat_shaders.json", required=True)
         _SPS = {joaat(n + ".sps"): n + ".sps" for n in tab.values()}
+        # ⭐ GAME-SOURCED FILENAMES WIN (2026-08-07). The preset table above is seeded from
+        # REFERENCE EXPORTS - names transcribed from another tool's output - and covers 216
+        # presets. The game itself SHIPS the .sps files (common.rpf/shaders/db 391 +
+        # update2.rpf/common/shaders/db 26 = 415 registered in the whole-game manifest), so the
+        # string is the file's OWN NAME rather than a transcription. That is both better
+        # provenance and ~2x the coverage: emissive_alpha.sps and cloth_spec_cutout.sps are
+        # shipped by the game and were emitting hash_XXXXXXXX.sps.
+        # Additive by construction - a hash already known keeps its entry, so this can only turn
+        # a hash_ into a name, never change a name we already spelled.
+        try:
+            p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "game_sps_names.json")
+            if os.path.isfile(p):
+                with open(p, "r", encoding="utf-8") as fh:
+                    for n in json.load(fh).get("names") or ():
+                        _SPS.setdefault(joaat(n), n)
+        except Exception as ex:                    # counted, never silent
+            _refuse("sps_game_table_unreadable:%s" % type(ex).__name__, str(ex)[:80])
         osn = _load_name_table("oracle_shader_names.json", required=False) or {}
         for fn in osn.get("filenames", []):
             _SPS.setdefault(joaat(fn), fn)
@@ -891,6 +908,12 @@ def read_geometries(res, base=0, group_off=0x50):
             if _b3 is None:
                 _refuse("vertex_buffer_unresolved", "model %d geometry %d" % (mi, gi))
                 continue
+            # VertexBuffer <Flags> = u16 @ grcVertexBuffer+0x0A. It was hardcoded "0" - true for
+            # almost everything, which is why it survived: MEASURED 1,014/1,014 geometries over
+            # 249 base-game ydr read 0, while 76/76 head-morph ydr in the mppatches pack read
+            # 1024, and the oracle set splits exactly the same way (225 zeros, 2 x 1024, both
+            # micro_*). A constant that is right 93% of the time is the hardest kind of wrong.
+            vb_flags = res.u16(vb + 0x0A)
             vdata_p, fvf_p = res.u32(vb + 0x10), res.u32(vb + 0x30)
             _b4, fvf = res.deref(fvf_p, 0x10)
             if _b4 is None:
@@ -952,6 +975,7 @@ def read_geometries(res, base=0, group_off=0x50):
                 "model": mi,
                 "bbox": gb_list[gi] if gb_list and gi < len(gb_list) else None,
                 "boneids": boneids,
+                "vbflags": vb_flags,
             })
     return geos
 
@@ -1074,7 +1098,8 @@ def _model_group_lines(ff, tag, geos):
             if g.get("boneids"):
                 L.append("     <BoneIDs>%s</BoneIDs>"
                          % ", ".join(str(x) for x in g["boneids"]))
-            L += ["     <VertexBuffer>", '      <Flags value="0" />',
+            L += ["     <VertexBuffer>",
+                  '      <Flags value="%d" />' % g.get("vbflags", 0),
                   '      <Layout type="%s">' % g.get("ltype", "GTAV1")]
             for nm in g["layout"]:
                 L.append("       <%s />" % nm)
