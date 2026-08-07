@@ -894,9 +894,36 @@ def file_into(out_root, slot, name, blob, stats=None, skip_existing=False):
                 if stats is not None:
                     stats['resumed'] = stats.get('resumed', 0) + 1
                 return None
+        stem, ext = split_type_ext(name)
+        # ⛔⛔ RESUME MUST ALSO RECOGNISE ITS OWN COLLISION SIBLINGS (fixed 2026-08-07, Phase 5).
+        # The resume check above only asked about the BASE name. A colliding asset is written as
+        # <stem>~<n>, so on the next resumed run the base name existed with DIFFERENT bytes, the
+        # code fell straight to the collision path, found ~1 taken, and wrote ~2 - A BYTE-FOR-BYTE
+        # DUPLICATE OF ~1. Every resumed run then added another copy, unbounded, while the summary
+        # reported them as fresh "collisions". MEASURED: a --resume pass over an already-extracted
+        # ymap/ytyp lane produced icons~2.ytyp and ped_props~2.ytyp, sha256-identical to their ~1.
+        # The rule the base-name branch states is the right one - resume may only skip a file whose
+        # bytes we would have written anyway - it simply was not applied to the ~N namespace.
+        if skip_existing:
+            n = 1
+            while True:
+                sib = os.path.join(d, f'{stem}~{n}{ext}')
+                if not os.path.exists(sib):
+                    break
+                try:
+                    same = os.path.getsize(sib) == len(blob)
+                    if same:
+                        with open(sib, 'rb') as _f:
+                            same = _f.read() == blob
+                except OSError:
+                    same = False
+                if same:
+                    if stats is not None:
+                        stats['resumed'] = stats.get('resumed', 0) + 1
+                    return None
+                n += 1
         if stats is not None:
             stats['collisions'] = stats.get('collisions', 0) + 1
-        stem, ext = split_type_ext(name)
         n = 1
         while os.path.exists(os.path.join(d, f'{stem}~{n}{ext}')):
             n += 1
@@ -3434,7 +3461,12 @@ def cmd_extract(a):
     # 15 and an at-scale triage needs every line WITH its reason (10 missing lane files cost a
     # re-probe because the "+32 more" died with the run). Overwritten per run, kept out of git.
     if stats.get('failures') or stats.get('xml_errors'):
-        rep = os.path.join(a.out, '_EXTRACT_FAILURES.txt')
+        # ⚠ Name it per TYPE FILTER, not one fixed file: two extracts into the same project
+        # (e.g. --types ymap,ytyp then --types ybn,ydd) would otherwise have the second run
+        # CLOBBER the first run's failure list - losing disclosure is the one thing this file
+        # exists to prevent.
+        tag = (getattr(a, 'types', None) or 'all').replace(',', '-').replace(os.sep, '-')[:40]
+        rep = os.path.join(a.out, f'_EXTRACT_FAILURES_{tag}.txt')
         with open(rep, 'w', encoding='utf-8') as fh:
             for section, key in (('failed to extract', 'failures'),
                                  ('xml conversion failed (kept binary)', 'xml_errors')):
