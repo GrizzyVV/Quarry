@@ -1165,8 +1165,21 @@ def cmd_meta(a):
         print(f'no precedence slots under {out} - run `extract` first')
         return 1
 
-    print('names    : hashing every asset filename in the project for the joaat reverse table ...')
-    names = meta2xml.load_names(*[os.path.join(out, s) for s in slots])
+    if getattr(a, 'view', None):
+        # ⭐ THE_PLAN 5 (2026-08-06): ONE names authority for targeted AND at-scale. A project
+        # walk only knows the stems that were EXTRACTED, so a lane-scoped project (Stage A =
+        # ymap+ytyp without ytd/ycd/...) resolves from a smaller universe than `export` did and
+        # breaks oracle parity BY CONSTRUCTION (a ytyp's textureDictionary names ytd stems).
+        # --view resolves from the same freshness-gated view manifest export uses - identical
+        # rules, identical universe (same shared core: meta2xml.load_names_from_stems).
+        if not getattr(a, 'game', None):
+            print('STOP: --view needs --game to freshness-gate the manifest against the install')
+            return 1
+        print('names    : deriving the joaat table from the view manifest (freshness-gated) ...')
+        names = _names_from_view(a.view, a.game)
+    else:
+        print('names    : hashing every asset filename in the project for the joaat reverse table ...')
+        names = meta2xml.load_names(*[os.path.join(out, s) for s in slots])
     print(f'names    : {len(names):,} distinct asset names available')
 
     ok = fail = pso = rbf = 0
@@ -4178,6 +4191,11 @@ def main():
                                      'ydd entry names (run AFTER extract, so the joaat name table '
                                      'is complete)')
     pm.add_argument('--out', required=True, help='the project folder built by init/extract')
+    pm.add_argument('--view', help='folder holding VIEW_MANIFEST.jsonl + VIEW_SUMMARY.json - '
+                    'resolve names from the WHOLE-GAME registry (the same one `export` uses) '
+                    'instead of a walk of this project. REQUIRED for lane-scoped projects, or '
+                    'names resolve against a smaller universe than the oracles were graded under')
+    pm.add_argument('--game', help='game install - required with --view (freshness gate)')
     pm.set_defaults(fn=cmd_meta)
 
     # `doctor` must run with NOTHING configured - it is what a new user calls first, so --game is
