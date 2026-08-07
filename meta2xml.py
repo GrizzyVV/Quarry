@@ -900,7 +900,15 @@ def archetype_xml(a):
     L.append(_txt("clipDictionary", a.get("clipDictionary"), "   "))
     L.append(_txt("drawableDictionary", a.get("drawableDictionary"), "   "))
     L.append(_txt("physicsDictionary", a.get("physicsDictionary"), "   "))
-    L.append(_txt("assetType", a.get("assetType"), "   "))
+    # assetType is SIGNED when it is numeric. The module comment above already recorded that a
+    # numeric "-1" occurs and is "passed through verbatim" - but the decode hands back an
+    # UNSIGNED dword, so verbatim spelled it 4294967295 where the reference writes -1. Caught
+    # 2026-08-07 by grading the corpus against wave-2 oracles (bh1_emissive_test.ytyp, 3 rows).
+    # Symbolic values (ASSET_TYPE_*) are strings and pass through untouched.
+    _at = a.get("assetType")
+    if isinstance(_at, int) and _at > 0x7FFFFFFF:
+        _at = _at - 0x100000000
+    L.append(_txt("assetType", _at, "   "))
     L.append(_txt("assetName", a.get("assetName"), "   "))
     L += extensions_xml(a.get("extensions") or [], "   ")
     # padding0/padding1 are NOT emitted: measured against the 2026-08-05 oracle set,
