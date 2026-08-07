@@ -17,10 +17,17 @@ complete for any other consumer.
 FIELD MAP - measured, not assumed. grcTexture (0x90 bytes), offsets confirmed two ways: against
 RUDE's own in-game-validated `ExportYtdBinary` writer, and by decoding 1,199 real archive files.
     +0x00 VFT   +0x28 name*   +0x30 refcount
-    +0x40 packed: bits 0..4 = USAGE, bits 8..27 = allocated pixel bytes / 256, bits 28..31 = 2
+    +0x40 packed: bits 0..4 = USAGE, bits 5..29 = the UsageFlags symbols (USAGE_FLAG_BITS)
     +0x50 width(u16)  +0x52 height(u16)  +0x54 depth(u16)  +0x56 stride(u16)
     +0x58 format (D3DFMT enum, or a FourCC when > 0x1000000)   +0x5d mip count(u8)
     +0x70 pixel data* (graphics segment)
+⛔ THE +0x40 FIELD IS NOT A LENGTH, and this map used to say bits 8..27 held "allocated pixel
+bytes / 256". FALSIFIED 2026-08-06 on its own terms: one dword, 0x2000AC14, is carried by
+128x64 mips=8, 128x128 mips=4 AND 256x128 mips=4 textures in the oracle set - three different
+payload sizes, one value - and 9 of the 54 distinct dwords are similarly many-to-one. The bits
+are the UsageFlags ladder, which the 224/224 oracle-string agreement below independently pins.
+There is NO stored pixel-data length anywhere in grcTexture: the length is COMPUTED, and
+`level_sizes` is the computation (237/237 exact against the oracle sidecars).
 Dictionary header: +0x20 hash array*, +0x28 (count<<16)|count, +0x30 pointer array*.
 
 ⚠ The USAGE TABLE BELOW IS DERIVED FROM MEASUREMENT and covers only codes actually observed.
@@ -135,39 +142,69 @@ def describe_format(fmt):
 
 
 def level_bytes(w, h, blk, bpp):
-    """Bytes RAGE actually stores for one mip level.
-
-    ⛔ 2026-08-06 - this used to round every level up to a whole 4x4 block
-    (`max(1,(w+3)//4) * max(1,(h+3)//4) * blk`), which is the DDS *addressing* rule but NOT
-    what the archive stores. MEASURED against the oracle sidecars (the surface no sweep had
-    ever graded): a 256x256 DXT5 chain is 65536+16384+4096+1024+256+64+16+4+1 = 87381 bytes -
-    the last two levels are 4 and 1 bytes, NOT a clamped 16 each. Same for 64x64 (5461) and
-    256x128 (43690). Block-rounding over-counted the tail by 27-59 bytes, and since that count
-    also drives how much we READ out of the archive, we appended that many bytes of the
-    NEIGHBOURING texture to the end of every foliage LOD whose chain descends below 4x4
-    (30 files; their trailing bytes were real non-zero data, not padding).
-
-    ⛔⛔ AND THEN: NO DIMENSION-BASED FORMULA CAN BE CORRECT. Measured over all 235 oracle
-    sidecars - `test2_decal` and `slod_prop_tree_eucalip_01_3` are BOTH 512x512 DXT5 with 10
-    mips, yet their oracle payloads are 349552 and 349525 bytes. Identical geometry, different
-    stored length ⇒ the length is STORED PER TEXTURE, not computed. Scores over the 235:
-    block-rounded 205 · unclamped 224 · shift-dims-zero-when-0 230 · none 235.
-    So the rule below is KEPT AS-IS (the pre-existing behaviour) rather than replaced with a
-    formula that is merely less wrong: the real fix is to read the stored data length out of
-    the texture header and stop computing it. Logged as a named blocker; 30 sidecars stay DIFF
-    (we over-read their tail) and that is now VISIBLE in the sidecar grade instead of ungraded.
-    """
+    """The DDS HEADER's mip-0 size field - dwPitchOrLinearSize, the block-ROUNDED figure the
+    published DDS_HEADER struct asks for. This is the DDS *addressing* rule and it is used for
+    the header ONLY; how many bytes the archive actually STORES is `level_sizes` below, and the
+    two genuinely differ (they are the same number for every power-of-two mip 0, which is why
+    one function stood in for both until 2026-08-06). Keep them apart: dds_header is validated
+    byte-for-byte against the oracle set and must not move."""
     if blk is not None:
         return max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * blk
     return w * h * bpp
 
 
+def level_sizes(w, h, mips, blk, bpp):
+    """[bytes stored per mip level] - the STORED payload layout, level 0 first.
+
+    ⭐ THE RULE, MEASURED 2026-08-06 over all 237 oracle sidecar DDS (every .dds the reference exporter
+    wrote into a per-asset folder in `_Oracles/`, paired 1:1 with its own grcTexture header):
+
+        size(level i) = (w * h * blockBytes / 16) >> (2 * i)          [block formats]
+        size(level i) = (w * h * bytesPerPixel)  >> (2 * i)           [linear formats]
+
+    i.e. mip 0's byte count, QUARTERED per level with integer truncation - a pure byte-count
+    halving, never a per-level dimension computation. It bottoms out at ... 16, 4, 1, 0, 0
+    rather than clamping at one 4x4 block, and a level's size legitimately reaches 0.
+    (`x >> 2 >> 2 == x >> 4` exactly, so "quarter the previous level" and "shift mip 0 by 2i"
+    are the same function - there is no truncation-order ambiguity to pin.)
+
+    SCORES over those 237, all four rules run against the same headers:
+        block-rounded per level      207/237
+        unclamped, dims floored at 1 227/237
+        dims shifted, zero when 0    233/237
+        THIS (mip-0 bytes >> 2i)     237/237      <- exact, no residual, no special case
+    The last four the shift rule missed are the shapes that separate them: `slod_prop_tree_
+    cedar_02/_03/_03_b` and `slod_prop_w_r_cedar_03` (128x512 and 64x256 DXT5). Once a
+    dimension shifts to 0 the per-dimension product is 0 for every remaining level, while the
+    stored chain still carries a 1-byte level - so ANY per-dimension rule is off by exactly 1
+    there, and only the byte-count halving lands.
+
+    ⛔ RETRACTED, SAME DAY, BY THIS MEASUREMENT: the note that used to sit here claimed "NO
+    DIMENSION-BASED FORMULA CAN BE CORRECT", on the evidence that `test2_decal.dds` and
+    `slod_prop_tree_eucalip_01_3.dds` are both 512x512 DXT5 mips=10 with payloads of 349552 vs
+    349525. That comparison was invalid: `test2_decal.dds` is `common.rpf\\data\\glass\\
+    test2_decal.dds` - a .dds FILE shipped in the archive and copied out verbatim (items.json
+    `result: raw`), not a sidecar exported from a grcTexture. Its header proves it: dwDepth=0
+    and flags 0x000A1007, neither of which the oracle exporter writes. It is a DCC-authored
+    DDS following the DDS addressing rule; 349552 is exactly the block-rounded chain. Comparing
+    it to an exporter's output compared two different producers - the wrong property. Over the
+    genuine sidecars alone the stored length is fully determined by the header, as above.
+
+    ⚠ SCOPE OF THE WITNESS: every one of the 237 has power-of-two dimensions, and so does every
+    texture in x64i.rpf (13,221 measured). Exactly 1 of 555 in x64a.rpf does not (640x640).
+    For a non-power-of-two texture this rule and the block-rounded one diverge below the point
+    where a dimension stops dividing evenly, and NO oracle witness exists either way - flagged
+    here rather than special-cased. Falsification checks that DID run over those 13,776
+    non-oracle textures: the quarter chain never runs past the graphics segment and never
+    overlaps the next payload (0/13,221 and 0/555). It is also <= the block-rounded chain for
+    every shape measured, so it cannot over-read anywhere the old rule did not.
+    """
+    top = (w * h * blk) // 16 if blk is not None else w * h * bpp
+    return [top >> (2 * i) for i in range(max(1, mips))]
+
+
 def mipchain_bytes(w, h, mips, blk, bpp):
-    total = 0
-    for _ in range(max(1, mips)):
-        total += level_bytes(w, h, blk, bpp)
-        w, h = max(1, w // 2), max(1, h // 2)
-    return total
+    return sum(level_sizes(w, h, mips, blk, bpp))
 
 
 def dds_header(w, h, mips, fmt, blk, bpp):
@@ -229,6 +266,16 @@ def dds_header(w, h, mips, fmt, blk, bpp):
 TEXTURE_REFUSALS = collections.Counter()
 TEXTURE_REFUSAL_EXAMPLE = {}
 
+# Textures EMITTED under a shape `level_sizes` has no oracle witness for. Not a refusal - the
+# pixels are still written - but the one place its rule could be wrong, made countable instead
+# of left in a docstring. `level_sizes` is a pure byte-count halving, so a block texture whose
+# mip-0 dimension is not a multiple of 4 gets FEWER bytes than a whole 4x4 block grid needs,
+# and no oracle sidecar exercises that shape. MEASURED 2026-08-06 over 13,776 real textures
+# (x64a.rpf 555 + x64i.rpf 13,221): ZERO. Exactly one texture in either archive is not a power
+# of two at all (640x640) and 640 is a multiple of 4, so even it is unaffected at mip 0.
+# A rising count here is the signal to go get an oracle for that shape.
+SIZE_RULE_UNWITNESSED = collections.Counter()
+
 
 def _refuse_texture(err):
     msg = str(err)
@@ -287,6 +334,8 @@ def _read_one_texture(res, ptr_arr, i):
         mips = max(1, res.sys[tp + 0x5D])
         fmt = res.u32(tp + 0x58)
         xml_fmt, blk, bpp = describe_format(fmt)
+        if blk is not None and (w % 4 or h % 4):
+            SIZE_RULE_UNWITNESSED["mip0 dimension is not a multiple of 4"] += 1
 
         need = mipchain_bytes(w, h, mips, blk, bpp)
         pbuf, po = res.deref(res.u32(tp + 0x70), need)
@@ -296,14 +345,16 @@ def _read_one_texture(res, ptr_arr, i):
             pbuf, po = res.deref(res.u32(tp + 0x70), 1)
             if pbuf is None:
                 raise ValueError(f"texture {name!r}: pixel pointer is out of bounds")
-            avail, keep, cw, ch = len(pbuf) - po, 0, w, h
-            for lvl in range(mips):
-                sz = level_bytes(cw, ch, blk, bpp)
+            # ⛔ THE SAME per-level rule the full read uses (level_sizes), not a second one.
+            # This loop used to walk block-ROUNDED levels while `need` above was a chain sum -
+            # so a truncated texture kept a DIFFERENT amount than the untruncated path would,
+            # and the mip count it reported did not describe the bytes it emitted.
+            avail, keep = len(pbuf) - po, 0
+            for lvl, sz in enumerate(level_sizes(w, h, mips, blk, bpp)):
                 if keep + sz > avail:
                     break
                 keep += sz
                 mips = lvl + 1
-                cw, ch = max(1, cw // 2), max(1, ch // 2)
             if keep == 0:
                 raise ValueError(f"texture {name!r}: not even mip 0 fits the payload")
             need = keep

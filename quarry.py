@@ -505,6 +505,30 @@ def embedded_texture_sidecars(res, stem, textures, base=0, bases=None):
     `bases` = several drawable offsets to merge into ONE sibling dictionary, which is what a ydd
     needs: a drawable DICTIONARY holds many drawables and each may carry its own textures.
     De-duplicated by name, because entries in one dictionary routinely share a texture.
+
+    ⭐ THE PIXELS LAND IN **`<stem>/`** AS WELL AS `<stem>__embedded/` (2026-08-06), because the
+    drawable's OWN XML already names them there and nothing was writing them there.
+    X.ydr.xml / X.yft.xml / X.ydd.xml each carry an inline <ShaderGroup><TextureDictionary> whose
+    every <FileName> is a bare `<tex>.dds` - so the folder those names resolve against is `X/`,
+    the sibling of the XML. We only ever wrote `X__embedded/`, so **every drawable with embedded
+    textures advertised pixel files that did not exist beside it** - the exact defect the ydd
+    branch was fixed for in 2026-08-03, one level up. MEASURED against the oracle set: 13 sidecar
+    DDS across 4 assets (des_fib_frame 9, task_000_u 2, cs_remote_01 1, vb_05_b3rail_lod 1) were
+    graded MISSING for this and this alone - the bytes in `X__embedded/` were already
+    byte-identical to the oracle's, 9/9 on des_fib_frame. It is a placement bug, not a decode one.
+
+    ⛔ `<stem>__embedded/` IS KEPT, NOT MOVED. It is not redundant naming: `manifest_source_name`
+    reads the `__embedded` suffix to decide which BINARY a manifest was decoded from, the
+    decode-later lane (`quarry textures`) writes into `<kind>/<manifest stem>/`, and RUDE's shipped
+    ImportYtd pairing is in-engine-proven against that layout. Renaming it to satisfy a folder
+    comparison would break a working contract to fix a missing file. So the pixels are written
+    twice when pixels are asked for at all.
+    ⚠ THE COST IS REAL AND BOUNDED: embedded pixel bytes double under `--textures dds|png|both`.
+    It is zero for the whole-game path, which runs `--textures none` and fills only
+    `<stem>__embedded/` later via `quarry textures` (that lane plans from `.ytd.xml` manifests, and
+    `X/` is named by X.ydr.xml, not by any manifest - so it never populates `X/`). ⇒ the two lanes
+    now DISAGREE about what a complete `X/` looks like. Flagged, not hidden: the clean end state is
+    one copy plus a pixel-folder argument, and that is a RUDE-side decision, not a QUARRY one.
     """
     import ydr2xml
     import ytd2xml
@@ -520,8 +544,9 @@ def embedded_texture_sidecars(res, stem, textures, base=0, bases=None):
     emb_stem = stem + '__embedded'
     sidecars = [(emb_stem + '.ytd.xml', ytd2xml.to_xml(emb).encode('utf-8'))]
     if textures != 'none':
-        sidecars.extend(ytd2xml.sidecars(emb, emb_stem, want_png=(textures != 'dds'),
-                                         want_dds=(textures != 'png')))
+        want_png, want_dds = textures != 'dds', textures != 'png'
+        sidecars.extend(ytd2xml.sidecars(emb, emb_stem, want_png=want_png, want_dds=want_dds))
+        sidecars.extend(ytd2xml.sidecars(emb, stem, want_png=want_png, want_dds=want_dds))
     return sidecars
 
 
