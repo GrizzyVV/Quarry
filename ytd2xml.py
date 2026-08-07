@@ -427,9 +427,16 @@ def sidecars(textures, stem, want_png=True, want_dds=True):
         if want_dds:
             out.append((base + ".dds", t["dds"]))
         if want_png:
-            data, _why = decode_png(t)
+            data, why = decode_png(t)
             if data is not None:
                 out.append((base + ".png", data))
+            else:
+                # THE_PLAN 5.0: a dropped png left NO trace while the XML manifest advertised
+                # the file (cmd_textures counts this same event as png_decode_refused; the
+                # extract/export lane did not). Counted; rides the TEXTURE_REFUSALS report.
+                TEXTURE_REFUSALS["png_sidecar_refused"] += 1
+                TEXTURE_REFUSAL_EXAMPLE.setdefault("png_sidecar_refused",
+                                                   "%s: %s" % (t["name"], why))
     return out
 
 

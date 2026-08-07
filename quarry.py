@@ -612,9 +612,17 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
             texs, stem, want_png=(textures != 'dds'), want_dds=(textures != 'png'))
         return (stem + '.ytd.xml', ytd2xml.to_xml(texs).encode('utf-8'), sidecars)
     if t == 'ycd':
+        # ⚠ Undecoded channels emit a visible <!-- RESIDUAL/UNPINNED --> marker in the XML - but
+        # a file can carry markers and still score xml_ok, so the count must ALSO reach the
+        # printed summary (THE_PLAN 5.0; the 51,463-channel lesson: only 2,109 provably decode).
         import ydr2xml, ycd2xml
-        return stem + '.ycd.xml', ycd2xml.ycd_to_xml(
-            ydr2xml.Res.from_bytes(blob)).encode('utf-8'), ()
+        ycd2xml.RESIDUALS.clear()
+        xml = ycd2xml.ycd_to_xml(ydr2xml.Res.from_bytes(blob)).encode('utf-8')
+        if ycd2xml.RESIDUALS and stats is not None:
+            for k, n in ycd2xml.RESIDUALS.items():
+                key = 'ycd %s (marker emitted, nothing invented)' % k
+                stats[key] = stats.get(key, 0) + n
+        return stem + '.ycd.xml', xml, ()
     if t == 'yed':
         import ydr2xml, yed2xml
         return stem + '.yed.xml', yed2xml.yed_to_xml(
@@ -679,9 +687,20 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
         return (stem + '.fxc.xml', fxc2xml.convert(name, blob).encode('utf-8'),
                 fxc2xml.sidecars(name, blob))
     if t == 'mrf':
-        # MoVE network (.mrf) -> reference-identical XML.
+        # MoVE network (.mrf) -> reference-identical XML. convert_with_report, because the decoder
+        # RECORDS every UNPINNED residual and plain convert() threw the list away - the report
+        # variant had ZERO callers (THE_PLAN 5.0 audit). Counted, never dropped.
         import mrf2xml
-        return stem + '.mrf.xml', mrf2xml.convert(name, blob, names=names).encode('utf-8'), ()
+        xml, unpinned = mrf2xml.convert_with_report(name, blob, names=names)
+        if stats is not None:
+            if unpinned:
+                stats['mrf UNPINNED values emitted as markers (single-oracle gaps)'] = \
+                    stats.get('mrf UNPINNED values emitted as markers (single-oracle gaps)', 0) \
+                    + len(unpinned)
+            if mrf2xml.FALLBACK_SIDECAR_ERROR:
+                stats['mrf name sidecar unreadable - sidecar-only names degrade to hash_'] = \
+                    stats.get('mrf name sidecar unreadable - sidecar-only names degrade to hash_', 0) + 1
+        return stem + '.mrf.xml', xml.encode('utf-8'), ()
     if t == 'rel':
         # .rel audio config. RelError = an UNMEASURED family/type: a COUNTED refusal
         # (None == "no converter yet"), never a guessed export.
@@ -772,6 +791,11 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
         try:
             xml, sidecars = yft2xml.convert(res, stem, extras=True)
         except yft2xml.FragmentError as ex:
+            # ⚠ DEAD PATH (AST-verified 2026-08-06, THE_PLAN 5.0 audit): every FragmentError
+            # raise site now lives in yft2xml's superseded pre-oracle functions, unreachable
+            # from convert() - this except cannot fire. Kept per Preserve-Don't-Delete pending
+            # Matt's removal ruling. (If it ever revives, note the retry below calls
+            # convert(extras=False), which ignores `extras` and would raise identically.)
             # ⛔ COUNTED downgrade, never a silent one: an extras refusal (a value the emitter
             # has no measurement for) must not cost the map lane its visual drawable, but a
             # fallback with no counter would make "extras always work" indistinguishable from
@@ -2266,6 +2290,10 @@ def _report_decode(decoded, rewritten, unchanged, present, attempted, refusals, 
     success (that is what a broken join, a wrong install or a bad key set looks like), while a run
     that had nothing left to do is legitimately green.
     """
+    # THE_PLAN 5.0: the emitter + texture MODULE counters (ydr2xml.REFUSALS fired inside
+    # read_source_dictionary, ytd2xml.TEXTURE_REFUSALS) must print here too - the local
+    # registry below only covers this lane's own classes, not the cause classes inside them.
+    report_lane_counters({})
     if refusals:
         print(f'\nREFUSED (counted, nothing invented): {sum(refusals.values()):,}')
         for k in sorted(refusals, key=lambda k: -refusals[k]):
@@ -3016,10 +3044,57 @@ def cmd_export(a):
 
     print(f'\nexport: {ok} converted, {kept_binary} kept binary (counted), '
           f'{failed} failed, of {len(entries)} requested')
-    if stats:
-        for k, n in sorted(stats.items(), key=lambda kv: -kv[1])[:10]:
-            print(f'  {n:7,}x  {k}')
+    # ⛔ THE_PLAN 5.0 (2026-08-06): the old block here sorted raw stats - TypeError the moment a
+    # list-valued key appeared (verified) - and truncated to the top 10 with no overflow marker,
+    # so refusal classes could silently vanish. And export NEVER called report_refusals, so all
+    # ~40 emitter refusal classes were unprinted in this path. One reporter now, every path.
+    report_lane_counters(stats)
     return 0 if failed == 0 else 1
+
+
+# Keys the extract summary already prints by name - the generic reporter skips them.
+NAMED_SUMMARY_KEYS = frozenset((
+    'resumed', 'xml_unwound', 'nested_opened', 'nested_failed', 'nested_aes_skipped',
+    'nested_skipped', 'xml_ok', 'xml_failed', 'xml_sidecars', 'collisions', 'failed',
+    'yft_extras_refused',
+))
+
+
+def report_lane_counters(stats):
+    """⛔ THE_PLAN 5.0 DISCLOSURE LAW (2026-08-06): every counter ANY converter accumulates must
+    reach the PRINTED run summary of EVERY converting path - export, extract, textures. Before
+    this reporter: export never called ydr2xml.report_refusals (~40 emitter classes unprinted),
+    extract never printed the generic lane counters (rel/ypt/pso/ybd), ytd2xml's
+    TEXTURE_REFUSALS + SIZE_RULE_UNWITNESSED were read by NOTHING, and export's stats print
+    crashed on a list value. A downgrade that never reaches a human is a silent one no matter
+    how carefully it was counted."""
+    stats = stats if stats is not None else {}
+    try:
+        import ydr2xml
+        ydr2xml.report_refusals(stats)   # emitter table (ydr+ydd+yft) -> stats[emitter_*] + print
+    except Exception as ex:
+        print(f'  (emitter refusal report unavailable: {type(ex).__name__}: {ex})')
+    try:
+        import ytd2xml
+        if ytd2xml.TEXTURE_REFUSALS:
+            print('texture decode refused (counted, run totals):')
+            for k in sorted(ytd2xml.TEXTURE_REFUSALS):
+                print('    %-46s %7d   e.g. %s'
+                      % (k, ytd2xml.TEXTURE_REFUSALS[k],
+                         ytd2xml.TEXTURE_REFUSAL_EXAMPLE.get(k, '')))
+        if ytd2xml.SIZE_RULE_UNWITNESSED:
+            print('textures emitted under an ORACLE-UNWITNESSED size rule - go get an oracle:')
+            for k in sorted(ytd2xml.SIZE_RULE_UNWITNESSED):
+                print('    %-46s %7d' % (k, ytd2xml.SIZE_RULE_UNWITNESSED[k]))
+    except Exception as ex:
+        print(f'  (texture refusal report unavailable: {type(ex).__name__}: {ex})')
+    rest = {k: v for k, v in stats.items()
+            if isinstance(v, int) and v > 0
+            and k not in NAMED_SUMMARY_KEYS and not k.startswith('emitter_')}
+    if rest:
+        print(f'lane counters ({len(rest)} class(es), untruncated):')
+        for k, n in sorted(rest.items(), key=lambda kv: (-kv[1], kv[0])):
+            print(f'  {n:7,}x  {k}')
 
 
 def cmd_init(a):
@@ -3231,6 +3306,13 @@ def cmd_extract(a):
                             stats['xml_ok'] = stats.get('xml_ok', 0) + 1
                             n += 1
                             continue
+                        else:
+                            # THE_PLAN 5.0: kept-binary had NO per-class counter in extract, so
+                            # a converter lane silently unregistering (the ybn wiring lesson,
+                            # see the ybn branch comment) would leave no printed trace. Counted
+                            # per extension; prints via report_lane_counters.
+                            k = 'kept binary (no converter): .' + (type_of(name) or '?')
+                            stats[k] = stats.get(k, 0) + 1
                     except Exception as ex:
                         stats['xml_failed'] = stats.get('xml_failed', 0) + 1
                         stats.setdefault('xml_errors', []).append(f'{name}: {type(ex).__name__}: {ex}')
@@ -3291,11 +3373,12 @@ def cmd_extract(a):
         # detector wired to nothing, which is the exact defect we found in Walker.warn hours
         # earlier: raised seven classes, read one. A downgrade that never reaches a human is a
         # silent one no matter how carefully it was counted.
-        try:
-            import ydr2xml
-            ydr2xml.report_refusals(stats)
-        except Exception as ex:
-            print(f'  (refusal report unavailable: {type(ex).__name__}: {ex})')
+        # THE_PLAN 5.0: one reporter for every path - emitter table + ytd module counters +
+        # every remaining int-valued stats class, untruncated (extract previously printed the
+        # emitter table only; rel/ypt/pso/ybd/kept-binary counters were counted, never shown).
+        report_lane_counters(stats)
+        # ⚠ DEAD MECHANISM below (AST-verified 2026-08-06): FragmentError is unreachable from
+        # yft2xml.convert(), so this counter can never fire. Kept per Preserve-Don't-Delete.
         if stats.get('yft_extras_refused'):
             print(f'yft extras refused (fell back to the visual drawable, counted): '
                   f'{stats["yft_extras_refused"]}')

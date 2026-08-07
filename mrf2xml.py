@@ -111,6 +111,10 @@ import meta2xml
 
 _SIDECAR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oracle_mrf_names.json')
 _FALLBACK_NAMES = None
+# THE_PLAN 5.0: set when the sidecar could not be read/parsed - the ONE formerly-silent broad
+# except in the meta lanes. The caller (quarry.py's mrf branch) folds it into the run summary;
+# the degradation itself (sidecar-only names -> hash_XXXXXXXX) is unchanged.
+FALLBACK_SIDECAR_ERROR = None
 
 
 def fallback_names():
@@ -127,7 +131,11 @@ def fallback_names():
             for key in ('clipsets', 'parameters'):
                 for s in doc.get(key) or ():
                     out[meta2xml.joaat(s)] = s
-        except Exception:
+        except Exception as ex:
+            # Counted, not silent (was a bare `out = {}`): a corrupt sidecar degraded the
+            # sidecar-only names to hash_XXXXXXXX for the WHOLE process with zero evidence.
+            global FALLBACK_SIDECAR_ERROR
+            FALLBACK_SIDECAR_ERROR = '%s: %s' % (type(ex).__name__, ex)
             out = {}
         _FALLBACK_NAMES = out
     return _FALLBACK_NAMES

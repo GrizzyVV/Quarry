@@ -113,7 +113,14 @@ def to_xml(res, names=None):
     L = ['<?xml version="1.0" encoding="UTF-8"?>', "<DrawableDictionary>"]
     n_ok = 0
     for h, off in entry_offsets(res):
-        nm = names.get(h) or "hash_%08X" % h
+        nm = names.get(h)
+        if nm is None and names:
+            # THE_PLAN 5.0: a SUPPLIED names table missing this entry hash had no counter
+            # anywhere - the only uncounted hash_ emission in the drawable family. Guarded on
+            # `names` so extract's names-come-later pass (resolution happens in cmd_meta,
+            # which discloses its own remainder) does not flood the table.
+            _refuse("ydd_entry_name_unresolved", "0x%08X" % h)
+        nm = nm or "hash_%08X" % h
         body = drawable_lines(res, nm, base=off)
         L.append(" <Item>")
         L.extend(" " + ln for ln in body)

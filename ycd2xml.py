@@ -117,6 +117,12 @@ sys.path.insert(0, r"B:\ClaudeCode_Projects\_UEFiveMTool\quarry")
 from ydr2xml import Res                 # noqa: E402  (RSC7 container reader)
 from meta2xml import fmt_num, esc, joaat  # noqa: E402
 
+# THE_PLAN 5.0 (2026-08-06): every RESIDUAL/UNPINNED marker written into the XML is ALSO
+# counted here, because a file full of markers still converts "ok" - the caller (quarry.py's
+# ycd branch) clears this per file and folds it into the printed run summary. Without this,
+# the markers were visible only to someone reading the emitted XML text.
+RESIDUALS = {}
+
 
 def u8(S, o):  return S[o]
 def u16(S, o): return struct.unpack_from("<H", S, o)[0]
@@ -347,6 +353,7 @@ class Ycd:
                 return
             out.append("     <SequenceData>")
             out.append("      <!-- count table not located -->")
+            RESIDUALS["count_table_not_located"] = RESIDUALS.get("count_table_not_located", 0) + 1
             out.append("     </SequenceData>"); out.append("    </Item>"); return
         nq, nv, nf, nr, nqz, ni = counts
 
@@ -375,6 +382,8 @@ class Ycd:
         if overrun or o - data != quant_off:
             out.append("     <SequenceData>")
             out.append("      <!-- UNPINNED: indirect descriptors do not reach quant_off -->")
+            RESIDUALS["indirect_descriptors_unpinned"] = \
+                RESIDUALS.get("indirect_descriptors_unpinned", 0) + 1
             out.append("     </SequenceData>"); out.append("    </Item>"); return
 
         # ---- decode the packed frame block (quant + indirect channels, frame-major) ----
@@ -602,6 +611,8 @@ class Ycd:
                     if inl_vals[pl] is None:
                         # frame budget did not close -> an inline variant this decoder has
                         # not proven.  Emit a RESIDUAL marker, never invented values.
+                        RESIDUALS["inline_quantize_undecoded"] = \
+                            RESIDUALS.get("inline_quantize_undecoded", 0) + 1
                         out.append('         <!-- RESIDUAL: inline QuantizeFloat variant '
                                    'B=%#010x sizeWords=%d not decoded -->' % (u32(S, d + 4), u32(S, d)))
                     else:
