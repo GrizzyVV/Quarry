@@ -101,6 +101,15 @@ SCHEMA_NAMES = (
     "CExtensionDefLightShaft", "CExtensionDefParticleEffect", "CExtensionDefProcObject",
     "CExtensionDefSpawnPoint", "CExtensionDefSpawnPointOverride",
     "CExtensionDefWindDisturbance", "CLightAttrDef",
+    # ⭐ Cloth custom-bounds (2026-08-07): the ONE extension type that is not a C-prefixed class
+    # name, which is why it stayed `hash_32818195` and refused 22 ymap conversions. Preimage from
+    # the GAME's own plaintext data (common.rpf :: data/cloth/global_cloth_custombounds.xml -
+    # its ROOT ELEMENT is the class name); the element-struct name is confirmed by the oracle's
+    # itemType attribute. Both joaat_case-verified: 0x32818195 / 0x656F0305. Member names below
+    # each self-verify against the hashes the 22 carriers store in their own schema blocks.
+    "rage__phVerletClothCustomBounds", "rage__phCapsuleBoundDef",
+    "CollisionData", "OwnerName", "Rotation", "Position", "Normal",
+    "CapsuleRadius", "CapsuleLen", "CapsuleHalfHeight", "CapsuleHalfWidth", "Flags",
     "offsetPosition", "offsetRotation",
     "enableLimitAngle", "startsLocked", "canBreak", "limitAngle", "doorTargetRatio",
     "audioHash",
@@ -1042,6 +1051,17 @@ EXT_SPECS = {
         ("timeTillPedLeaves", "val"), ("radius", "val"), ("start", "val"),
         ("end", "val"), ("flags", "txt"), ("highPri", "val"), ("extendedRange", "val"),
         ("shortRange", "val")),
+    # ⭐ The ONE extension type whose name is not a C-prefixed class: it refused 22 ymap
+    # conversions as `unknown extension type 'hash_32818195'` until 2026-08-07. The preimage came
+    # from the GAME's own plaintext data - common.rpf :: data/cloth/global_cloth_custombounds.xml,
+    # whose ROOT ELEMENT is the class name - and joaat_case() reproduces 0x32818195 exactly. Its
+    # ten member names self-verify against the hashes the 22 carriers store in their own schema
+    # blocks. (Search note for the next hunt: the name contains no "Extension", so a
+    # pattern-scoped scan MISSES it; the exhaustive identifier sweep over the game's text files
+    # is what found it.) The element ORDER below is the game XML's own order, and the oracle
+    # confirms it byte-for-byte.
+    "rage__phVerletClothCustomBounds": (
+        ("name", "txt"), ("CollisionData", "clothbounds")),
     "CExtensionDefSpawnPointOverride": (
         ("name", "txt"), ("offsetPosition", "vec3"), ("ScenarioType", "txt"),
         ("iTimeStartOverride", "val"), ("iTimeEndOverride", "val"), ("Group", "txt"),
@@ -1067,6 +1087,16 @@ LIGHT_INSTANCE_SPEC = (
     ("shadowNearClip", "val"), ("coronaIntensity", "val"), ("coronaZBias", "val"),
     ("direction", "list"), ("tangent", "list"), ("coneInnerAngle", "val"),
     ("coneOuterAngle", "val"), ("extents", "list"), ("projectedTextureKey", "val"))
+
+
+# One capsule inside rage__phVerletClothCustomBounds/CollisionData. Field order and forms are
+# the carriers' own schema order (OwnerName STRING @0, Rotation vec4 @16, Position vec3 @32,
+# Normal vec3 @48, four f32 @64..76, Flags FLAGS @80) - identical in all 22 carriers, and the
+# order the game's global_cloth_custombounds.xml lists them in.
+CLOTH_BOUND_SPEC = (
+    ("OwnerName", "txt"), ("Rotation", "vec4"), ("Position", "vec3"), ("Normal", "vec3"),
+    ("CapsuleRadius", "val"), ("CapsuleLen", "val"), ("CapsuleHalfHeight", "val"),
+    ("CapsuleHalfWidth", "val"), ("Flags", "txt"))
 
 
 def _list_txt(tag, v, indent):
@@ -1097,6 +1127,27 @@ def _spec_fields(d, spec, f, ctx):
             L.append(_vec(tag, require(d, tag, ctx), f, "xyzw"))
         elif form == "list":
             L.append(_list_txt(tag, require(d, tag, ctx), f))
+        elif form == "clothbounds":
+            # `<CollisionData itemType="rage__phCapsuleBoundDef">` holding one `<Item>` per
+            # capsule. itemType = the element-struct hash 0x656F0305 the carriers store;
+            # joaat_case('rage__phCapsuleBoundDef') reproduces it, and the oracle
+            # (_Oracles/ymap/00_base/bh1_47_joshhse_burnt.ymap.xml, exported 2026-08-07)
+            # spells exactly that. Empty renders self-closing, the corpus-wide empty-container
+            # style used by `instances` directly below.
+            items = d.get("CollisionData") or []
+            if not items:
+                L.append('%s<CollisionData itemType="rage__phCapsuleBoundDef" />' % f)
+            else:
+                L.append('%s<CollisionData itemType="rage__phCapsuleBoundDef">' % f)
+                for li in items:
+                    # Array-of-struct items decode as (structName, fields) - the same shape the
+                    # `extensions` container itself uses, NOT the bare dict `instances` yields.
+                    li = li[1] if isinstance(li, tuple) else li
+                    L.append("%s <Item>" % f)
+                    L += _spec_fields(li, CLOTH_BOUND_SPEC, f + "  ",
+                                      "rage__phCapsuleBoundDef")
+                    L.append("%s </Item>" % f)
+                L.append("%s</CollisionData>" % f)
         elif form == "instances":
             insts = d.get("instances") or []
             if not insts:

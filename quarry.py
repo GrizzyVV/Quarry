@@ -3034,27 +3034,19 @@ def cmd_export(a):
                                         cache=arch_cache)
             kind = type_of(name)
             if kind in META_KINDS:
-                if kind == 'ymt' and blob[:4] == b'PSIN':
-                    # a PSIN .ymt is a PSO container, not META - route it through the
-                    # generic pso2xml lane (firingpatterns / naOcclusion), same as ymf.
-                    # the reference exporter names it <stem>.ymt.pso.xml.
-                    conv = to_interchange_xml(name, blob,
-                                              getattr(a, 'textures', 'both'),
-                                              stats, names=names)
-                    if conv is not None:
-                        xml_name, xml_bytes, _extras = conv
-                        with open(os.path.join(out_dir, xml_name), 'wb') as fh:
-                            fh.write(xml_bytes)
-                        ok += 1
-                        print(f'  {entry} -> {xml_name}')
-                        continue
-                    with open(os.path.join(out_dir, name), 'wb') as fh:
-                        fh.write(blob)
-                    kept_binary += 1
-                    continue
-                if kind == 'ymt' and blob[:4] == b'RBF0':
-                    # an RBF0 .ymt is the old binary-XML container, not META - route it
-                    # through rbf2xml. the reference exporter names it <stem>.ymt.rbf.xml.
+                # ⛔⛔ THE CONTAINER DECIDES, NOT THE EXTENSION (fixed 2026-08-07, Phase 5
+                # Stage A). This used to test `kind == 'ymt'` before rerouting PSIN/RBF0, so a
+                # PSIN .ymap or .ytyp fell through to the META reader and died with "not an RSC7
+                # container" - while `extract` converted the same files perfectly, because it
+                # calls to_interchange_xml, whose check is container-first. That is a
+                # TARGETED-vs-AT-SCALE DIVERGENCE in the one guarantee THE_PLAN 2.5.3/5.5 exists
+                # to prove, and no oracle could catch it: the 315-position sweep contains no PSIN
+                # ymap/ytyp. Found only because the AES-binary fix made those files readable and
+                # a targeted re-export of them failed. meta2xml's own docstring already states
+                # the rule this now follows: "Kind comes from the ROOT STRUCT, not the file
+                # extension, so a mislabelled file cannot be emitted as the wrong schema."
+                # the reference exporter names them <stem>.<ext>.pso.xml / <stem>.<ext>.rbf.xml.
+                if blob[:4] in (b'PSIN', b'RBF0'):
                     conv = to_interchange_xml(name, blob,
                                               getattr(a, 'textures', 'both'),
                                               stats, names=names)

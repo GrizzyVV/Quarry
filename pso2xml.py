@@ -584,6 +584,16 @@ class Emitter:
         if t == 0x03:                              # i16
             v = struct.unpack_from(">h", buf, o)[0]
             return ['%s<%s value="%d" />' % (ind, name, v)]
+        if t == 0x04:                              # u16 (2 bytes)
+            # PINNED 2026-08-07 (Phase 5 Stage A) from the game's own binaries: the only carriers
+            # are CDistantLODLight numStreetLights @0x28 / category @0x2A, whose 2-byte WIDTH is
+            # proven by member adjacency (differing garbage in the tail padding). Signedness is
+            # taken from the RSC7-META TWIN of the same struct (identical struct hash 793441F4,
+            # identical offsets) where the member is META 0x13 = u16 and the reference exporter's existing oracle
+            # spells its nonzero values as positive decimals - i.e. an oracle-witnessed
+            # cross-container equivalence, not a guess.
+            v = struct.unpack_from(">H", buf, o)[0]
+            return ['%s<%s value="%d" />' % (ind, name, v)]
         if t == 0x05:                              # signed int32
             v = struct.unpack_from(">i", buf, o)[0]
             return ['%s<%s value="%d" />' % (ind, name, v)]
@@ -605,7 +615,14 @@ class Emitter:
             x, y, z = struct.unpack_from(">3f", buf, o)
             return ['%s<%s x="%s" y="%s" z="%s" />'
                     % (ind, name, fmt_num(x), fmt_num(y), fmt_num(z))]
-        if t == 0x15:                              # vec4
+        if t == 0x0a or t == 0x15:                 # vec4 / quaternion
+            # 0x0a PINNED 2026-08-07: every instance sits in a 16-byte slot (CEntityDef.rotation,
+            # CExtensionDefParticleEffect.offsetRotation, CCompEntityEffectsData.fxOffsetRot);
+            # 26 of 36 are exactly (0,0,0,1) and all 10 non-trivial values are UNIT quaternions
+            # (|q|^2 within 2.2e-7 of 1.0) - a 4th component that is padding could not do that.
+            # The META twin of the same struct (hash CE501483, same offset 0x30) declares it as
+            # META 0x34 = 4xf32 and the reference exporter's oracle spells it <rotation x y z w />. Shares the 0x15
+            # renderer exactly as 0x09/0x14 share the vec3 one.
             x, y, z, w = struct.unpack_from(">4f", buf, o)
             return ['%s<%s x="%s" y="%s" z="%s" w="%s" />'
                     % (ind, name, fmt_num(x), fmt_num(y), fmt_num(z), fmt_num(w))]
