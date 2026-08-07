@@ -905,11 +905,21 @@ def archetype_xml(a):
     # UNSIGNED dword, so verbatim spelled it 4294967295 where the reference writes -1. Caught
     # 2026-08-07 by grading the corpus against wave-2 oracles (bh1_emissive_test.ytyp, 3 rows).
     # Symbolic values (ASSET_TYPE_*) are strings and pass through untouched.
+    # ⛔ ABSENT IS NOT EMPTY. Some CBaseArchetypeDef carry no assetType/assetName at all - the
+    # keys are simply not in the struct - and the reference OMITS both elements. We emitted
+    # `<assetType />` `<assetName />`, which is a FORGED EMPTY: it reads as "provided, and empty"
+    # to a consumer that cannot tell the difference. Same defect family as the ymap containers,
+    # and the same trap as the MLO fields: the projection in archetype_from sets every key with
+    # .get(), so absence arrives here as None and only None can distinguish it.
+    # Measured on des_gassign (1 archetype) and sp_flightschool_props (7): the decode has neither
+    # key and the oracle writes neither element - 0 occurrences of each.
     _at = a.get("assetType")
-    if isinstance(_at, int) and _at > 0x7FFFFFFF:
-        _at = _at - 0x100000000
-    L.append(_txt("assetType", _at, "   "))
-    L.append(_txt("assetName", a.get("assetName"), "   "))
+    if _at is not None:
+        if isinstance(_at, int) and _at > 0x7FFFFFFF:
+            _at = _at - 0x100000000
+        L.append(_txt("assetType", _at, "   "))
+    if a.get("assetName") is not None:
+        L.append(_txt("assetName", a.get("assetName"), "   "))
     L += extensions_xml(a.get("extensions") or [], "   ")
     # padding0/padding1 are NOT emitted: measured against the 2026-08-05 oracle set,
     # ZERO archetype Items carry them (they were exporter-synthesised by an OLDER the reference exporter
