@@ -436,7 +436,7 @@ T_ENUM_U8 = 0x60
 # 0x59 = RAW BYTE-BUFFER POINTER. Eight bytes in the record: {u32 metaPOINTER, u32 zero}. The
 # descriptor carries NO count, and none is needed - the payload fills its target block exactly, so
 # the LENGTH COMES FROM THE BLOCK TABLE and nothing is inferred.
-# MEASURED over every ytyp/ymap/ymt binary in B:/RUDE_Filebase_Full (9,270 files, 2026-08-04):
+# MEASURED over every ytyp/ymap/ymt binary in the whole-game filebase (9,270 files, 2026-08-04):
 # type 0x59 is declared in exactly ONE place in the whole corpus - OccludeModel.verts, in 183 ymap
 # - and across all 1,702 records: block length == the sibling `dataSize` 1,702/1,702, the target
 # block's own struct hash is 0x00000011 (= the u8 primitive) 1,702/1,702, the metaPOINTER's byte
@@ -820,7 +820,7 @@ def num_list(tag, vals, indent):
 
     WHY A SECOND FUNCTION INSTEAD OF REUSING scalar_list: scalar_list spells every value
     `str(int(x))`. Two of CLODLight's eight members are float32 arrays, and they are genuinely
-    fractional - MEASURED over all 625 lodlights-family ymap in B:/RUDE_Filebase_Full
+    fractional - MEASURED over all 625 lodlights-family ymap in the whole-game filebase
     (2026-08-04): 29,663 of 311,414 falloff / falloffExponent values, 9.5%, across 313 files, are
     non-integral. Reusing scalar_list would have truncated every one of them to an integer and
     still produced well-formed XML - the exact profile of a loss no gate sees. scalar_list is
@@ -1362,7 +1362,7 @@ def entity_xml(e, ind="  "):
 # even when the binary held 11 of them and the Walker had decoded all 11: "the binary has none",
 # "we dropped it" and "we never decoded it" all rendered as the same self-closing element, and not
 # one counter fired.
-# MEASURED over ALL 7,563 ymap binaries in B:/RUDE_Filebase_Full (2026-08-03, 0 decode errors,
+# MEASURED over ALL 7,563 ymap binaries in the whole-game filebase (2026-08-03, 0 decode errors,
 # counts taken from the decoded root through container_records):
 #   physicsDictionaries 4,715 files /  33,266   instancedData         386 /  66,481
 #   carGenerators         700 files /  18,295   timeCycleModifiers    390 /   4,733
@@ -1456,7 +1456,7 @@ def _omitted(container, n, ind=" "):
     """The marker that replaces a container this emitter cannot write faithfully.
 
     An XML COMMENT is deliberate: UE's own parser culls comments before tokenising
-    (`B:/UE_5.7/Engine/Source/Runtime/XmlParser/Private/XmlFile.cpp:190-241`, "Cull any text
+    (`Unreal's XmlFile.cpp (XmlParser), Cull-any-text-node logic`, "Cull any text
     inside of comments" -> WhiteOut), so the marker is invisible to FindChildNode - the element
     is genuinely ABSENT for a consumer - while a human reading the file is told what was lost and
     how much. Never emit "--" inside it; that is illegal in an XML comment.
@@ -1514,7 +1514,7 @@ def container_records(v):
 #
 # !! WHAT IS STILL DEGRADED, AND IT IS NOT SMALL. T_HASH fields hold a one-way lowercase joaat and
 # resolve only against the names the user's own extraction yields, so where the reference spells a
-# string this writes `hash_XXXXXXXX`. MEASURED over all 8,076 ymap in B:/RUDE_Filebase_Full:
+# string this writes `hash_XXXXXXXX`. MEASURED over all 8,076 ymap in the whole-game filebase:
 #   physicsDictionaries entries  10,828 / 34,225 unresolved (32%)   - ybn dictionaries not extracted
 #   timeCycleModifiers name       5,283 /  5,288 unresolved (99.9%) - timecycle names live in
 #                                 timecycle_mods_*.xml, which is NOT an archive filename, so this
@@ -1526,7 +1526,7 @@ def container_records(v):
 #
 # HOW THIS WAS VERIFIED, because `quarry.py regress` CANNOT SEE THIS LANE (its fixture project
 # holds zero ytyp/ymap/ymt binaries, so a green regress run says nothing about meta2xml). Four
-# measurements, all over B:/RUDE_Filebase_Full, 2026-08-04:
+# measurements, all over the whole-game filebase, 2026-08-04:
 #  1. RECORD COUNTS. Every ymap decoded -> expected count per container off the value model; the
 #     emitted XML then re-read with a stock ElementTree iterparse (an independent reader keyed on
 #     the FULL element path, so a field written at the wrong depth counts as a different path and
@@ -1657,7 +1657,7 @@ def boxoccluders_xml(v, ind=" "):
 # CONTAINER_EMITTERS commentary); the single missing fact was how the reference spells `<verts>`
 # as text, and the file above this one refused to guess it. Matt supplied five reference ymap
 # exports that carry the container -
-#   B:/ClaudeCode_Projects/_UEFiveMTool/warning_this_is_everything/_processed/ymap/
+#   the (retired) pre-plan reference export set, ymap/
 #     apa_ss1_occl_00 (10 items), apa_ss1_occl_03 (10), bh1_occl_00 (10),
 #     bkr_id1_occl_02 (6), hei_bh1_occl_00 (10)
 # - and the spelling is READ OFF ALL 46 ITEMS, not off one:
@@ -1824,7 +1824,7 @@ def instanceddata_xml(v, ind=" "):
     are always present.
 
     PropInstanceList is written EMPTY, never guessed: it holds zero items in all 11,052 reference
-    exports AND no ymap binary in B:/RUDE_Filebase_Full even registers a
+    exports AND no ymap binary in the whole-game filebase even registers a
     rage__fwPropInstanceListDef in its schema table, so there is no oracle for its Item shape. If
     one ever decodes non-empty, ymap_dropped_from raises the marker for it rather than letting
     this write an invented element - a wrong shape is invisible, an omission is not."""
@@ -1853,7 +1853,7 @@ def instanceddata_xml(v, ind=" "):
 # thing to repeat, not to be embarrassed by. What was already true when it was still dropped:
 # 0x59 is a raw byte-buffer pointer, the Walker returns the bytes, and `unhandled type 0x59` no
 # longer fires. What the bytes
-# MEAN is measured too, over all 1,702 records in 183 ymap of B:/RUDE_Filebase_Full, 0 exceptions:
+# MEAN is measured too, over all 1,702 records in 183 ymap of the whole-game filebase, 0 exceptions:
 #
 #   payload := numVertsInBytes bytes of VERTICES, then 3*(numTris & 0x7FFF) bytes of INDICES
 #   * len(payload) == dataSize                                      1,702/1,702
@@ -1935,7 +1935,7 @@ def container_has_content(cname, v):
     records, takes the empty form, and has them silently rewritten to nothing / 0.
 
     !! THIS IS A LATCH, NOT A LIVE FIX, and saying so is the point - measured over all 8,076 ymap
-    in B:/RUDE_Filebase_Full (2026-08-04): ImapLink is non-empty in 0 files, and of the 266 files
+    in the whole-game filebase (2026-08-04): ImapLink is non-empty in 0 files, and of the 266 files
     whose numStreetLights/category are non-zero, 0 have an empty position array. So the two
     predicates agree on every file that exists today and this changes no output. It is here
     because the failure it prevents is silent, and because the shape of the data - not its
@@ -1965,7 +1965,7 @@ def check_occlude_models(items, w):
     """Re-assert the measured OccludeModel payload law on every file this tool ever reads.
 
     The law is written out at CONTAINER_EMITTERS and held on all 1,702 records of
-    B:/RUDE_Filebase_Full with 0 exceptions. That makes it a MEASUREMENT, and a measurement taken
+    the whole-game filebase with 0 exceptions. That makes it a MEASUREMENT, and a measurement taken
     once over one corpus is exactly the kind of claim that rots silently: the user's install is not
     this corpus, and a DLC that ever ships a >255-vertex occluder (u8 indices could not address it)
     or a 16-bit index form would satisfy every other check in this file and be noticed by nobody.
@@ -2037,7 +2037,7 @@ def ymap_dropped_from(root, w=None):
 #
 # ⛔⛔ WHY THIS LIVES HERE AND NOT IN THE GATE (#32d, 2026-08-05). The churn gate shipped the
 # ENTIRE occludeModels emitter under a green "No churn" it could not have produced: only 2 of the
-# 67 ymap in B:/RUDE_Fixtures carry an occluder and the 25-file random sample drew NEITHER, so the
+# 67 ymap in the binary fixture set carry an occluder and the 25-file random sample drew NEITHER, so the
 # baseline could not move. A random per-type sample cannot guarantee that any given CONTAINER is
 # represented, and raising --per-type does not fix it (past the population size the sample
 # re-rolls and silently demotes previously-blessed fixtures without failing).
@@ -2816,7 +2816,7 @@ def load_names(*roots):
       `X~1`         - the rename applied to a within-slot basename collision
     No META hash can legitimately mean either, so their only possible effect is a FALSE
     resolution - and `setdefault` made which one won depend on os.walk order, with no counter.
-    COST, measured over all 551,920 files in B:/RUDE_Filebase_Full (00_base+10_update+20_dlc,
+    COST, measured over all 551,920 files in the whole-game filebase (00_base+10_update+20_dlc,
     284,750 distinct stems): TWO synthetic names collide with a real asset hash -
     joaat('ch3_04_d39x__embedded') == joaat('hei_country_03_metadata_001') == F4A44F28, and
     joaat('m24_1_mp2024_01_additions_carrmp_rigging__embedded') == joaat('sm_11_bld1+hidr') ==
