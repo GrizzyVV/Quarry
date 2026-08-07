@@ -230,6 +230,13 @@ SCHEMA_NAMES = (
     "CLODLight", "timeAndStateFlags", "hash", "coneOuterAngleOrCapExt",
     "CDistantLODLight", "RGBI", "numStreetLights", "category",
     "FloatXYZ", "x", "y", "z",
+    # CMloInstanceDef's own fields beyond CEntityDef (2026-08-07, Phase 5 Stage A spot-diff):
+    # groupId/floorId were already in this table but never EMITTED; these three had no name at
+    # all and decoded as hash_53DF8649 / hash_1F837FB7 / hash_E03B0CAA. Each is joaat_case-exact
+    # for the hash its own binary stores AND is spelled by the oracle
+    # (_Oracles/ymap/20_dlc_013_mpheist/hei_cs1_railwyb_interior_cs1_14brailway4.ymap.xml) - the
+    # §6y standard, both halves. ⭐ These are INTERIOR placements: Stage C reads them.
+    "defaultEntitySets", "numExitPortals", "MLOInstflags",
     "CMapData", "CEntityDef", "CMloInstanceDef", "entities", "parent", "contentFlags",
     "streamingExtentsMin", "streamingExtentsMax", "entitiesExtentsMin", "entitiesExtentsMax",
     "archetypeName", "guid", "position", "rotation", "scaleXY", "scaleZ", "parentIndex",
@@ -1319,6 +1326,25 @@ def entity_xml(e, ind="  "):
     L.append(_val("artificialAmbientOcclusion", pick(e, "artificialAmbientOcclusion", 255), f))
     L.append(_val("tintValue", pick(e, "tintValue", 0), f))
     # padding0 NOT emitted - zero CEntityDef Items in the 2026-08-05 oracle set carry it
+    # ⭐ CMloInstanceDef adds FIVE fields after tintValue (2026-08-07). The walker decoded all
+    # five all along - groupId/floorId by name, the other three as hash_53DF8649/1F837FB7/
+    # E03B0CAA - and the emitter simply closed the Item without them, so every interior
+    # PLACEMENT in the corpus was missing its group/floor/entity-set data. Found by the Stage A
+    # stratified spot-diff (no ledger oracle covered an MLO instance); field order and forms are
+    # the oracle's. Emitted ONLY for the subclass, so a plain CEntityDef is untouched.
+    if pick(e, "type", "CEntityDef") == "CMloInstanceDef":
+        L.append(_val("groupId", pick(e, "groupId", 0), f))
+        L.append(_val("floorId", pick(e, "floorId", 0), f))
+        sets = e.get("defaultEntitySets")
+        if sets:
+            L.append("%s<defaultEntitySets>" % f)
+            for s in sets:
+                L.append("%s <Item>%s</Item>" % (f, esc(s if isinstance(s, str) else str(s))))
+            L.append("%s</defaultEntitySets>" % f)
+        else:
+            L.append("%s<defaultEntitySets />" % f)
+        L.append(_val("numExitPortals", pick(e, "numExitPortals", 0), f))
+        L.append(_val("MLOInstflags", pick(e, "MLOInstflags", 0), f))
     L.append("%s</Item>" % ind)
     return L
 
@@ -2669,6 +2695,13 @@ def entity_from(item):
         ambientOcclusionMultiplier=e.get("ambientOcclusionMultiplier"),
         artificialAmbientOcclusion=e.get("artificialAmbientOcclusion"),
         tintValue=e.get("tintValue"),
+        # CMloInstanceDef's own five fields. This projection is EXPLICIT (a whitelist), so a
+        # subclass field the Walker decoded perfectly well was dropped here before the emitter
+        # ever saw it - which is why the emitter's `pick(e,"groupId",0)` wrote 0 while the decode
+        # held 6. Carried for every entity; entity_xml emits them only for the subclass.
+        groupId=e.get("groupId"), floorId=e.get("floorId"),
+        defaultEntitySets=e.get("defaultEntitySets"),
+        numExitPortals=e.get("numExitPortals"), MLOInstflags=e.get("MLOInstflags"),
         extensions=[ext_from(i) for i in e.get("extensions") or [] if i])
 
 
@@ -2861,6 +2894,14 @@ def load_names_from_stems(filenames):
         # WRONG resolution the oracle spells as a hash (hash_7E996CAC ->
         # 'obankwindemovly008' in hei_heist_ornate_bank) - an over-resolution is a
         # parity break exactly like an under-resolution.
+        # PLAIN "_children" strip (2026-08-07): a SLOD archetype's own name is carried only by
+        # its children dictionary - `cs1_lod_08_slod2a` exists in the game ONLY as
+        # `cs1_lod_08_slod2a_children.ydd` / `.ytd`. The two rules above strip the LONGER
+        # `_slod_children` / `_dslod_children` forms and map to a `_lod` base, so a stem like
+        # `…_slod2a_children` (letter before `_children`) matched neither. Witnessed by the
+        # cs1_lod.ytyp oracle, which spells all 28 of these names.
+        if s.endswith("_children"):
+            _cand(s[:-len("_children")])
         for c in "abcdefghij":
             _cand(s + "_s2" + c)
     if collisions:
