@@ -844,7 +844,35 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
     return None
 
 
-def file_into(out_root, slot, name, blob, stats=None, skip_existing=False):
+_TAG_SAFE = re.compile(r'[^a-z0-9]+')
+
+
+def source_tag(chain, blob):
+    """A STABLE, human-meaningful identity for one source instance: the archive it came from,
+    plus 6 hex of its own content.
+
+    ⭐ WHY (settled with Matt 2026-08-07, ENGINEERING_LOG § corpus identity). A flat
+    <slot>/<ext>/<name> corpus cannot express WHICH archive an asset came from, and 22,826
+    (slot,name) groups collide - 54,282 copies. It is overwhelmingly a PED/CLOTHING shape
+    (ydd 25.8%, ytd 28.0%, vs <=0.5% in the mapping lanes): `head_000_r.ydd` exists 135 times
+    because 135 PED MODELS each ship one, and the ped is exactly what the archive encodes.
+    The old `~1, ~2 …` came from WALK ORDER, so the same asset could land on a different name
+    between runs (the resume-duplication bug made that concrete) and no name could be cited.
+
+    archive slug  -> readable: you can see which ped/pack an instance belongs to.
+    content hash  -> makes it UNIQUE and ORDER-FREE: identical bytes always produce the same
+                     tag, and two different assets from one archive still separate. (Archive
+                     alone disambiguates only 81.7%; the inner directory the view manifest
+                     records is not tracked by this walker, so content closes the rest.)
+    """
+    last = (chain or '').rstrip('/').split('/')[-1]
+    if last.lower().endswith('.rpf'):
+        last = last[:-4]
+    slug = _TAG_SAFE.sub('_', last.lower()).strip('_')[:40] or 'src'
+    return '%s_%s' % (slug, hashlib.sha1(blob).hexdigest()[:6])
+
+
+def file_into(out_root, slot, name, blob, stats=None, skip_existing=False, chain=None):
     """File one blob by type into a precedence slot.
 
     Filing is FLAT by basename inside <slot>/<ext>/, which means two same-named files from
@@ -924,13 +952,43 @@ def file_into(out_root, slot, name, blob, stats=None, skip_existing=False):
                 n += 1
         if stats is not None:
             stats['collisions'] = stats.get('collisions', 0) + 1
-        n = 1
-        while os.path.exists(os.path.join(d, f'{stem}~{n}{ext}')):
-            n += 1
-        target = os.path.join(d, f'{stem}~{n}{ext}')
+        if chain:
+            # DETERMINISTIC identity (2026-08-07): derived from the SOURCE, not from the order
+            # this run happened to reach it, so the same asset always lands on the same name and
+            # an instance can be cited, diffed and re-found. See source_tag.
+            target = os.path.join(d, f'{stem}~{source_tag(chain, blob)}{ext}')
+            if os.path.exists(target):
+                # identical name AND identical content = the same instance already filed
+                if stats is not None:
+                    stats['collisions'] = stats.get('collisions', 0) - 1
+                    stats['resumed'] = stats.get('resumed', 0) + 1
+                return None
+        else:
+            n = 1
+            while os.path.exists(os.path.join(d, f'{stem}~{n}{ext}')):
+                n += 1
+            target = os.path.join(d, f'{stem}~{n}{ext}')
     with open(target, 'wb') as f:
         f.write(blob)
-    return os.path.basename(target)
+    written = os.path.basename(target)
+    # PROVENANCE: every emitted file records where it came from, so "which DLC / which archive
+    # is this instance" is answerable programmatically instead of by inspection. Buffered in
+    # stats and written once at the end of the run (see cmd_extract) - one line per file.
+    if stats is not None and chain:
+        # ⚠ `file` is order-dependent BY DESIGN for exactly one copy: the first writer of a
+        # colliding name keeps the bare <stem><ext>, because that is the slot-internal winner the
+        # flat corpus (and RUDE's lookup) reads. Proven by control test: qualified names are
+        # identical across walk orders, but WHICH instance is unqualified is not.
+        # `qualifiedName` fixes that for citation - EVERY instance, winner included, gets the
+        # same stable source-derived identity, so an asset can be named and re-found even when
+        # its file on disk is the unqualified winner.
+        stem, ext = split_type_ext(name)
+        stats.setdefault('provenance', []).append(
+            {'slot': slot, 'type': type_of(name), 'file': written,
+             'qualifiedName': f'{stem}~{source_tag(chain, blob)}{ext}',
+             'sourceName': name, 'archive': chain,
+             'sha1': hashlib.sha1(blob).hexdigest()})
+    return written
 
 
 def split_type_ext(name):
@@ -949,7 +1007,11 @@ def split_type_ext(name):
 
 
 def walk_archive(r, oodle, depth=0, max_depth=2, stats=None, path=''):
-    """Yield (name, blob) for every FILE in this archive, DESCENDING into nested .rpf.
+    """Yield (name, blob, chain) for every FILE in this archive, DESCENDING into nested .rpf.
+
+    `chain` is the archive chain the file came from ("x64e.rpf/mp_f_freemode.rpf"). It was
+    tracked here all along for error messages and simply never handed to the caller, which is
+    why filing could not tell two same-named assets apart - see file_into's identity note.
 
     This is the difference between 624 files and the real corpus: the base archives are
     mostly containers - x64g.rpf is 2.4GB in FIVE top-level entries, all of them nested
@@ -1003,7 +1065,7 @@ def walk_archive(r, oodle, depth=0, max_depth=2, stats=None, path=''):
                 stats['nested_opened'] = stats.get('nested_opened', 0) + 1
             yield from walk_archive(sub, oodle, depth + 1, max_depth, stats, f'{path}/{name}')
             continue
-        yield name, blob
+        yield name, blob, path
 
 
 # ------------------------------------------------------------------ commands
@@ -3307,7 +3369,8 @@ def cmd_extract(a):
             skipped += 1
             continue
         n = 0
-        for name, blob in walk_archive(r, oodle, 0, max_depth, stats, os.path.basename(path)):
+        for name, blob, chain in walk_archive(r, oodle, 0, max_depth, stats,
+                                              os.path.basename(path)):
             if want is not None and type_of(name) not in want:
                 continue
             try:
@@ -3322,7 +3385,7 @@ def cmd_extract(a):
                         if conv is not None:
                             xml_name, xml_bytes, extras = conv
                             written = file_into(a.out, slot, xml_name, xml_bytes, stats,
-                                                getattr(a, 'resume', False))
+                                                getattr(a, 'resume', False), chain=chain)
                             if written is None:
                                 # ⛔⛔ A RESUMED XML MUST NOT SKIP ITS SIDECARS (2026-08-04).
                                 # This `continue` jumped past the ENTIRE sidecar loop, so a second
@@ -3390,7 +3453,8 @@ def cmd_extract(a):
                                     pass
                             stats['xml_unwound'] = stats.get('xml_unwound', 0) + 1
                         # fall through and keep the binary rather than losing the asset
-                file_into(a.out, slot, name, blob, stats, getattr(a, 'resume', False))
+                file_into(a.out, slot, name, blob, stats, getattr(a, 'resume', False),
+                          chain=chain)
                 n += 1
             except Exception as ex:
                 stats['failed'] = stats.get('failed', 0) + 1
@@ -3452,6 +3516,17 @@ def cmd_extract(a):
     # THE_PLAN 5.0: the FULL failure/error lists must survive the process - stdout truncates at
     # 15 and an at-scale triage needs every line WITH its reason (10 missing lane files cost a
     # re-probe because the "+32 more" died with the run). Overwritten per run, kept out of git.
+    # PROVENANCE LEDGER: answers "which archive/DLC is this instance from" for every emitted
+    # file. APPENDED, never rewritten, so a lane-scoped extract adds to the project's record
+    # instead of erasing the lanes extracted before it (the same clobber trap the failure file
+    # hit). One JSON object per line.
+    prov = stats.get('provenance') or []
+    if prov:
+        pfile = os.path.join(a.out, '_PROVENANCE.jsonl')
+        with open(pfile, 'a', encoding='utf-8') as fh:
+            for rec in prov:
+                fh.write(json.dumps(rec, separators=(',', ':')) + '\n')
+        print(f'provenance: +{len(prov):,} records -> {pfile}')
     if stats.get('failures') or stats.get('xml_errors'):
         # ⚠ Name it per TYPE FILTER, not one fixed file: two extracts into the same project
         # (e.g. --types ymap,ytyp then --types ybn,ydd) would otherwise have the second run
