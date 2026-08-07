@@ -364,6 +364,31 @@ class Rpf:
             raise ValueError('binary entry >=16MB: FileSize saturated at 0xFFFFFF and a binary '
                              'entry carries no page plan to recover the real length from')
         raw = self.data[off:off + size]
+        # ⛔⛔ AES-ENCRYPTED BINARY ENTRY (fixed 2026-08-07, THE_PLAN Phase 5 Stage A).
+        # The binary branch tried NG and plain only - never the archive's OWN scheme - so a
+        # flagged entry inside an AES archive could NEVER decode, no matter the key material.
+        # Same defect SHAPE as the resource branch's missing Oodle route (fcc8f14): the route
+        # existed for one entry kind and was never wired for the other.
+        # MEASURED, not assumed: the discriminator is the PAIR (archive is AES) AND (the
+        # entry's own w3 encryption flag is set) - flag alone is worthless, 32,218 flagged
+        # entries live in NG archives and decode plain/NG today. Game-wide the pair matches
+        # exactly 19 entries (10 ymf, 3 cut, 2 ymap, 2 ytyp, 2 mrf) in 15 archives.
+        # ⚠ The cipher covers COMPLETE 16-byte blocks only; the trailing <16 B stay plaintext.
+        # Truncating to a block multiple (what the TOC path does, where it is harmless) drops
+        # the deflate stream's tail and inflates SHORT - which is why the first probe read
+        # 3,605 of 3,632 B. Keeping the tail lands EXACTLY on the declared usize, verified on
+        # all 5 reachable cases with a valid PSIN/RBF0 magic in the output.
+        if self.enc == ENC_AES and e.get('gfx') and self.aes_key is not None:
+            import keyderive
+            nblk = len(raw) // 16 * 16
+            aes_dec = keyderive.aes256_ecb_decrypt(raw[:nblk], self.aes_key) + raw[nblk:]
+            got = self._inflate(aes_dec, e['usize'], oodle)
+            if got is not None:
+                if e['usize'] and len(got) != e['usize']:
+                    raise ValueError(f'AES binary entry inflated to {len(got)} B but its TOC '
+                                     f'declares {e["usize"]} B - refusing a body that '
+                                     f'disagrees with its own entry')
+                return got
         dec = self._ng(raw, e['name'], e['usize'])
         got = self._inflate(dec, e['usize'], oodle)
         if got is not None:
@@ -3405,6 +3430,17 @@ def cmd_extract(a):
         print(f'    {line}')
     if len(stats.get('failures', [])) > 15:
         print(f'    ... and {len(stats["failures"]) - 15} more')
+    # THE_PLAN 5.0: the FULL failure/error lists must survive the process - stdout truncates at
+    # 15 and an at-scale triage needs every line WITH its reason (10 missing lane files cost a
+    # re-probe because the "+32 more" died with the run). Overwritten per run, kept out of git.
+    if stats.get('failures') or stats.get('xml_errors'):
+        rep = os.path.join(a.out, '_EXTRACT_FAILURES.txt')
+        with open(rep, 'w', encoding='utf-8') as fh:
+            for section, key in (('failed to extract', 'failures'),
+                                 ('xml conversion failed (kept binary)', 'xml_errors')):
+                for line in stats.get(key, []):
+                    fh.write(f'{section}\t{line}\n')
+        print(f'full failure list -> {rep}')
     # ⛔⛔ A RUN THAT DID NOTHING IS NOT A SUCCESS (2026-08-03). This returned 0 unconditionally,
     # so `--only <typo>`, a `--types` filter that matches nothing, and a run that acquired no keys
     # and skipped every archive ALL printed a clean summary and exited 0. That is the deepest
