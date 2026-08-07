@@ -210,7 +210,7 @@ def read_manifest(path_or_bytes, strict_schema=True):
         # A NULL POINTER USED TO RESOLVE TO THE LAST BLOCK (2026-08-03). `_ptr(0)` yields block
         # index 0, and `blocks[0-1]` is Python's `blocks[-1]` - the u32-hash pool - so a zero
         # pointer silently dereferenced into unrelated data instead of being rejected.
-        # COST, measured on B:/RUDE_Filebase_Full/_resolved/ymt/sp_manifest.ymt: zeroing region[0]'s
+        # COST, measured on the whole-game filebase, _resolved/ymt/sp_manifest.ymt: zeroing region[0]'s
         # entry in the pointer pool and the 12 incidental guard bytes made the read SUCCEED and
         # hand back Region(0x9bc3ca0a, min=(-87673.6, -1.05e+36, 3.06e-17),
         # max=(-1.8e-15, 53244.6, 8.07e+32)) - a fabricated scenario volume, no error anywhere.
@@ -430,7 +430,7 @@ if __name__ == "__main__":
         # A GATE THAT CRIES WOLF GETS IGNORED (fixed 2026-08-03). This used to score every file on
         # byte identity alone, so the stock Rockstar manifest - which the header above already
         # documents as legitimately round-tripping SMALLER - printed DIFF / SELFTEST FAILED and
-        # exited 1. Measured on B:/RUDE_Filebase_Full/_resolved/ymt/sp_manifest.ymt: input carries
+        # exited 1. Measured on the whole-game filebase, _resolved/ymt/sp_manifest.ymt: input carries
         # PSIN+PMAP+PSCH+PSIG+STRF+STRE+CHKS (27,264 B), output PSIN+PMAP+PSCH+STRF (21,532 B), so
         # byte identity is impossible BY CONSTRUCTION. Cost: the only documented command for this
         # module reported the writer as broken when it was correct, which is how a REAL pso

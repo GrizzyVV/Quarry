@@ -1084,7 +1084,7 @@ def precedence_slots(out_root):
 
     ⛔ THE DLC LIST COMES FROM THE MANIFEST, NOT FROM listdir (2026-08-03). The numbered names
     encode load order ONLY if they all came from ONE extraction. This used to lexically sort
-    whatever directories existed, and B:/RUDE_Filebase_Full held 175 dirs for 92 packs - 83 left
+    whatever directories existed, and the whole-game filebase held 175 dirs for 92 packs - 83 left
     over from an earlier HEURISTIC-ordered extract, so ordinal 001 existed twice (001_mpheist AND
     001_mpairraces) and the merged sort was NEITHER ordering. Precedence silently stopped meaning
     load order while `_RESOLVED.json` kept stamping dlcOrderAuthoritative: true - i.e. the one
@@ -1305,10 +1305,10 @@ def cmd_meta(a):
     # HOW IT WAS FOUND: Layer-4 Area C measured 1,264 map entities landing as proxy cubes because
     # their ymap `archetypeName` was still `hash_XXXXXXXX` even though the real name was on disk.
     # It was not a resolver bug - all 183 of those names ARE in today's names table (checked
-    # against load_names over B:/RUDE_Filebase_Full: 183/183 present). The XML holding the hashes
+    # against load_names over the whole-game filebase: 183/183 present). The XML holding the hashes
     # was written 2026-07-27 by an emitter that dropped <extensions> entirely; today's meta2xml
     # raises `unknown extension type 'hash_32818195' - refusing to emit a guess` on the very same
-    # binary (B:/RUDE_Filebase_Full/00_base/ymap/po1_07_strm_1.ymap, 207 entities), so this run
+    # binary (the whole-game filebase, 00_base/ymap/po1_07_strm_1.ymap, 207 entities), so this run
     # cannot replace it and says nothing. COST: a downstream audit spent its budget designing a
     # plugin-side hash-recovery for entities that a re-convert would have fixed for free.
     # ⛔ NOTHING IS DELETED (preserve-don't-delete): the file is COUNTED and NAMED, and the
@@ -3674,7 +3674,7 @@ def _regress_pinned_fixtures(root):
 
     THE DEFECT (#32d, 2026-08-05): the whole `occludeModels` emitter shipped under a green
     "OK - no churn" the gate was structurally incapable of producing. Of the 67 ymap in
-    B:/RUDE_Fixtures exactly 2 carry an occluder, and the seeded 25-file sample drew NEITHER, so
+    the binary fixture set exactly 2 carry an occluder, and the seeded 25-file sample drew NEITHER, so
     the baseline could not move and nothing was blessed. The change had to be proven by hand
     instead, by swapping the emitter out at runtime.
 
