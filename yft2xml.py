@@ -721,6 +721,54 @@ def _emit_glass(r):
     return L
 
 
+def _joints_lines(r, dbase, ind):
+    """<Joints> @ drawable+0x90 — joint DOF limits (doors, rotors). NULL pointer = absent
+    (2/2 controls). Header: RotationLimits ptr @ jo+0x10 · TranslationLimits ptr @ jo+0x18 ·
+    counts u16 rot @ jo+0x30, trans @ jo+0x32 (cablecar 0/2, luiva 3/0 — both oracle-exact).
+    ROTATION item, stride 0xC0: BoneId u32 @+0x08 · Min vec3 @+0x5C · Max vec3 @+0x68
+    (luiva 3/3 field-matched incl. item2 Max.x=0.785398; the ±π fields around them are the
+    engine's default-limit lattice, not emitted). TRANSLATION item, stride 0x40: BoneId @+0x08
+    · Min vec3 @+0x20 · Max vec3 @+0x2C (contiguous, mirroring rotation's Min→Max adjacency;
+    ⚠ unseparated-from-zero until a non-zero translation Max witness exists).
+    UnknownA: zero in every witnessed rotation item — unseparated literal."""
+    tagged = _yU(r, dbase + 0x90)
+    if not (tagged & 0x0FFFFFFF):
+        return []
+    _, jo = r.deref(tagged, 0x40)
+    rot_n = struct.unpack_from("<H", r.sys, jo + 0x30)[0]
+    trans_n = struct.unpack_from("<H", r.sys, jo + 0x32)[0]
+    L = [ind + "<Joints>"]
+    if rot_n:
+        _, rp = r.deref(_yU(r, jo + 0x10), rot_n * 0xC0)
+        L.append(ind + " <RotationLimits>")
+        for i in range(rot_n):
+            b = rp + i * 0xC0
+            L.append(ind + "  <Item>")
+            L.append(ind + '   <BoneId value="%d" />' % _yU(r, b + 0x08))
+            L.append(ind + '   <UnknownA value="0" />')
+            L.append(ind + '   <Min x="%s" y="%s" z="%s" />'
+                     % tuple(_F(x) for x in _yv3(r, b + 0x5C)))
+            L.append(ind + '   <Max x="%s" y="%s" z="%s" />'
+                     % tuple(_F(x) for x in _yv3(r, b + 0x68)))
+            L.append(ind + "  </Item>")
+        L.append(ind + " </RotationLimits>")
+    if trans_n:
+        _, tp = r.deref(_yU(r, jo + 0x18), trans_n * 0x40)
+        L.append(ind + " <TranslationLimits>")
+        for i in range(trans_n):
+            b = tp + i * 0x40
+            L.append(ind + "  <Item>")
+            L.append(ind + '   <BoneId value="%d" />' % _yU(r, b + 0x08))
+            L.append(ind + '   <Min x="%s" y="%s" z="%s" />'
+                     % tuple(_F(x) for x in _yv3(r, b + 0x20)))
+            L.append(ind + '   <Max x="%s" y="%s" z="%s" />'
+                     % tuple(_F(x) for x in _yv3(r, b + 0x2C)))
+            L.append(ind + "  </Item>")
+        L.append(ind + " </TranslationLimits>")
+    L.append(ind + "</Joints>")
+    return L
+
+
 def _drawable_body(res, base, wrap):
     """drawable_lines(base) with the fragment <Matrix> (drawable+0xB0, 4x3, NaN 4th col dropped)
     spliced after <Name>, the trailing <Lights> element RELOCATED out (returned separately), and
@@ -733,6 +781,16 @@ def _drawable_body(res, base, wrap):
             raise
         _refuse("main_drawable_empty_geometry_in_child", "%s" % ex)
         body = drawable_lines(res, inner, base=base, allow_empty=True)
+    # <Joints> sits between </Skeleton> and the model groups (oracle order). Presence-gated on
+    # drawable+0x90; a joints struct with no skeleton element is an unwitnessed shape -> counted.
+    jl = _joints_lines(res, base, " ")
+    if jl:
+        for i, ln in enumerate(body):
+            if ln.strip() == "</Skeleton>":
+                body[i + 1:i + 1] = jl
+                break
+        else:
+            _refuse("joints_present_but_no_skeleton_element", inner)
     lights = [" <Lights />"]
     if body and body[-1].strip() == "<Lights />":
         lights = [body.pop()]

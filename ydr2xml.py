@@ -1004,7 +1004,13 @@ def read_bounds(res, base=0):
 
 
 BONE_FLAG_BITS = (
-    (0, "RotX"), (1, "RotY"), (2, "RotZ"), (4, "TransX"), (5, "TransY"), (6, "TransZ"),
+    # bits 3/7 (LimitRotation/LimitTranslation) added 2026-08-08: the table was derived from
+    # map-prop bones, which never carry limits, so the 47/47 ydr grade could not see the gap -
+    # cablecar's door bones (0xF7) spell "... TransZ, LimitTranslation, Unk0" in the reference.
+    # Same vocabulary yft2xml.BONE_FLAG_BITS already carries; bones with limits are also the
+    # ones the <Joints> section describes (cablecar BoneId 60963 = the LimitTranslation door).
+    (0, "RotX"), (1, "RotY"), (2, "RotZ"), (3, "LimitRotation"),
+    (4, "TransX"), (5, "TransY"), (6, "TransZ"), (7, "LimitTranslation"),
     (8, "ScaleX"), (9, "ScaleY"), (10, "ScaleZ"), (12, "Unk0"),
 )
 
