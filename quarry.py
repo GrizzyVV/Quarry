@@ -506,7 +506,16 @@ def write_manifest(out_root, game_root, title, exe, base, dlc, authoritative=Fal
 def type_of(name):
     ext = os.path.splitext(name)[1].lstrip('.').lower()
     if ext == 'xml':
-        ext = os.path.splitext(os.path.splitext(name)[0])[1].lstrip('.').lower()
+        inner = os.path.splitext(name)[0]
+        ext = os.path.splitext(inner)[1].lstrip('.').lower()
+        # A container INFIX is not the asset's type: `x.ytyp.pso.xml` / `x.ymt.rbf.xml` are a
+        # ytyp / ymt whose source container happens to be PSO/RBF (the reference exporter's own
+        # filename convention, kept). Filing them under pso/ would break the <slot>/<asset-type>/
+        # layout the grader and every consumer read (2026-08-08; zero .pso.xml/.rbf.xml existed
+        # in any corpus before this, measured before the edit).
+        if ext in ('pso', 'rbf'):
+            ext = (os.path.splitext(os.path.splitext(inner)[0])[1].lstrip('.').lower()
+                   or ext)
     return ext or 'other'
 
 

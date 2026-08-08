@@ -69,12 +69,27 @@ SCHEMA_NAMES = (
     # CMapTypes / archetypes
     "CMapTypes", "CBaseArchetypeDef", "CTimeArchetypeDef", "CMloArchetypeDef", "archetypes",
     "extensions", "dependencies", "compositeEntityTypes",
+    # CMapTypes txd-relationship container (2026-08-08): witnessed in the PSIN-container ytyps
+    # (des_hosp_ceil2 / id2_17 oracles spell them; joaat_case verified: txdRelationships =
+    # 069ADF93, CTxdRelationship = D9826A6F vs the stored hashes). Blast radius measured first:
+    # 0 emitted sweep XMLs spell either hash_ form, and the filebase holds no pso.xml yet.
+    "txdRelationships", "CTxdRelationship",
     # compositeEntityTypes vocabulary (2026-08-06): every one verified against the
     # des_jewel_cab4 record's own stored hashes before use - no guessed names.
     "CCompositeEntityType", "Animations", "CCompEntityAnims", "CCompEntityEffectsData",
     "StartModel", "EndModel", "StartImapFile", "EndImapFile", "PtFxAssetName",
     "AnimDict", "AnimName", "AnimatedModel", "punchInPhase", "punchOutPhase",
     "effectsData", "Name",
+    # CCompEntityEffectsData members (2026-08-08): all 13 verified by exact-case joaat
+    # against des_fib_ceiling's own stored member hashes (fxOffsetPos=DB2290B8,
+    # fxOffsetRot=65FAB1EA, startPhase=C0097997, endPhase=5F6709A3, ptFxIsTriggered=CCB4D20A,
+    # ptFxTag=967EF874, ptFxScale=5D68BA61, ptFxProbability=CD86F6E4, ptFxHasTint=D52DB495,
+    # ptFxTintR=4DBA91CF, ptFxTintG=016BF8E7, ptFxTintB=84A07FB2, ptFxSize=4063C8F9);
+    # fxType/boneTag were already resolving. Blast radius measured before the edit:
+    # 0/573 emitted grade_sweep XMLs spell any of the 13 hash_ forms.
+    "fxOffsetPos", "fxOffsetRot", "startPhase", "endPhase", "ptFxIsTriggered",
+    "ptFxTag", "ptFxScale", "ptFxProbability", "ptFxHasTint",
+    "ptFxTintR", "ptFxTintG", "ptFxTintB", "ptFxSize",
     "lodDist", "flags", "specialAttribute", "bbMin", "bbMax", "bsCentre", "bsRadius",
     "hdTextureDist", "name", "textureDictionary", "clipDictionary", "drawableDictionary",
     "physicsDictionary", "assetType", "assetName",
@@ -882,6 +897,18 @@ def _txt(tag, v, indent):
     return "%s<%s>%s</%s>" % (indent, tag, esc(v), tag)
 
 
+def _txt_pair(tag, v, indent):
+    """A type-0x40 INLINE char array (refKey-sized storage lives in the struct itself, so
+    the string is PRESENT even when empty): the reference spells an EMPTY one as an
+    open+close pair - `<StartModel></StartModel>` (des_gassign oracle, 2026-08-08) - while
+    a zero HASH field (0x4A) in the SAME record spells self-closing (`<PtFxAssetName />`).
+    Same absent-vs-empty family as the ymap block owner/exportedBy rule. Populated forms
+    render identically to `_txt`."""
+    if v is None or v == "":
+        return "%s<%s></%s>" % (indent, tag, tag)
+    return "%s<%s>%s</%s>" % (indent, tag, esc(v), tag)
+
+
 # ---------------------------------------------------------------- ytyp
 def archetype_xml(a):
     """One `<Item>`. `a` is a plain dict; an absent key takes the reference default, so a partial
@@ -1257,14 +1284,17 @@ def ytyp_dropped_from(root, w=None):
 def composite_xml(items):
     """<compositeEntityTypes> - shape read off the des_jewel_cab4 oracle (2026-08-06):
     Name/StartModel/EndModel are inline char-arrays (walker type 0x40, mixed case
-    preserved); empty strings spell as self-closing elements; effectsData has NO
-    populated oracle witness, so a non-empty one emits the omission marker rather than
-    an invented shape."""
+    preserved); an EMPTY 0x40 spells as an open+close pair while a zero 0x4A hash
+    field spells self-closing (the des_gassign witness pair - see `_txt_pair`).
+    Populated effectsData
+    (2026-08-08): field set + order read off the des_fib_ceiling oracle, all member
+    names joaat-verified against the stored hashes (SCHEMA_NAMES block); records
+    arrive fully decoded from the walker, so this is pure serialisation."""
     f, g, h = "  ", "   ", "    "
     L = [' <compositeEntityTypes itemType="CCompositeEntityType">']
     for _kind, c in items:
         L.append(f + "<Item>")
-        L.append(_txt("Name", c.get("Name"), g))
+        L.append(_txt_pair("Name", c.get("Name"), g))
         L.append(_val("lodDist", pick(c, "lodDist", 0), g))
         L.append(_val("flags", pick(c, "flags", 0), g))
         L.append(_val("specialAttribute", pick(c, "specialAttribute", 0), g))
@@ -1272,8 +1302,8 @@ def composite_xml(items):
         L.append(_vec("bbMax", c.get("bbMax"), g))
         L.append(_vec("bsCentre", c.get("bsCentre"), g))
         L.append(_val("bsRadius", pick(c, "bsRadius", 0), g))
-        L.append(_txt("StartModel", c.get("StartModel"), g))
-        L.append(_txt("EndModel", c.get("EndModel"), g))
+        L.append(_txt_pair("StartModel", c.get("StartModel"), g))
+        L.append(_txt_pair("EndModel", c.get("EndModel"), g))
         L.append(_txt("StartImapFile", c.get("StartImapFile"), g))
         L.append(_txt("EndImapFile", c.get("EndImapFile"), g))
         L.append(_txt("PtFxAssetName", c.get("PtFxAssetName"), g))
@@ -1282,14 +1312,37 @@ def composite_xml(items):
             L.append(g + '<Animations itemType="CCompEntityAnims">')
             for _ak, a in anims:
                 L.append(h + "<Item>")
-                L.append(_txt("AnimDict", a.get("AnimDict"), h + " "))
-                L.append(_txt("AnimName", a.get("AnimName"), h + " "))
-                L.append(_txt("AnimatedModel", a.get("AnimatedModel"), h + " "))
+                L.append(_txt_pair("AnimDict", a.get("AnimDict"), h + " "))
+                L.append(_txt_pair("AnimName", a.get("AnimName"), h + " "))
+                L.append(_txt_pair("AnimatedModel", a.get("AnimatedModel"), h + " "))
                 L.append(_val("punchInPhase", pick(a, "punchInPhase", 0), h + " "))
                 L.append(_val("punchOutPhase", pick(a, "punchOutPhase", 0), h + " "))
                 fx = a.get("effectsData") or []
                 if fx:
-                    L += _omitted("compositeEntityTypes/effectsData", len(fx), h + " ")
+                    i5, i6, i7 = h + " ", h + "  ", h + "   "
+                    L.append(i5 + '<effectsData itemType="CCompEntityEffectsData">')
+                    for _fk, r in fx:
+                        L.append(i6 + "<Item>")
+                        L.append(_val("fxType", pick(r, "fxType", 0), i7))
+                        L.append(_vec("fxOffsetPos", r.get("fxOffsetPos"), i7))
+                        L.append(_vec("fxOffsetRot", r.get("fxOffsetRot"), i7,
+                                      comps="xyzw"))
+                        L.append(_val("boneTag", pick(r, "boneTag", 0), i7))
+                        L.append(_val("startPhase", pick(r, "startPhase", 0), i7))
+                        L.append(_val("endPhase", pick(r, "endPhase", 0), i7))
+                        L.append(_val("ptFxIsTriggered",
+                                      pick(r, "ptFxIsTriggered", False), i7))
+                        L.append(_txt_pair("ptFxTag", r.get("ptFxTag"), i7))
+                        L.append(_val("ptFxScale", pick(r, "ptFxScale", 0), i7))
+                        L.append(_val("ptFxProbability",
+                                      pick(r, "ptFxProbability", 0), i7))
+                        L.append(_val("ptFxHasTint", pick(r, "ptFxHasTint", False), i7))
+                        L.append(_val("ptFxTintR", pick(r, "ptFxTintR", 0), i7))
+                        L.append(_val("ptFxTintG", pick(r, "ptFxTintG", 0), i7))
+                        L.append(_val("ptFxTintB", pick(r, "ptFxTintB", 0), i7))
+                        L.append(_vec("ptFxSize", r.get("ptFxSize"), i7))
+                        L.append(i6 + "</Item>")
+                    L.append(i5 + "</effectsData>")
                 else:
                     L.append(h + ' <effectsData itemType="CCompEntityEffectsData" />')
                 L.append(h + "</Item>")
