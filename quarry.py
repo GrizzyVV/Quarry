@@ -776,6 +776,39 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
                 stats[k] = stats.get(k, 0) + n
         ext = type_of(name) or 'pso'
         return '%s.%s.pso.xml' % (stem, ext), xml.encode('utf-8'), ()
+    if t in ('ytyp', 'ymap', 'ymt'):
+        # ⭐ THE EXTRACT/EXPORT CONVERTER SPLIT, CLOSED (2026-08-08, OPEN_ITEMS #000 / Stage C).
+        # This branch did not exist: `extract --xml` reported "no converter" for ymap/ytyp
+        # while the conformance sweep graded the SAME types byte-identical through `export` -
+        # two routes disagreeing about which lanes exist, in the one pipeline whose 2.5.3/5.5
+        # guarantee is that targeted and at-scale run the SAME code. The conversion itself is
+        # meta2xml.convert_bytes - the identical call `export` and the `meta` pass make.
+        # NAMES-GATED by design, not capability: a ytyp stores archetype/asset names as one-way
+        # joaat hashes and the reverse table is built from the whole-game filename universe
+        # (view manifest). Without it, converting here would bake hash_%08X into names the
+        # `meta` pass resolves - so extract WITHOUT --view keeps the binary for `meta`
+        # (behaviour unchanged), extract WITH --view converts inline. Container catches
+        # (PSIN/RBF0) sit ABOVE this branch - the container decides, not the extension.
+        if names is None:
+            if stats is not None:
+                k = ('meta kept binary (no names table - run `meta` after, or pass '
+                     '--view): .' + t)
+                stats[k] = stats.get(k, 0) + 1
+            return None
+        import meta2xml
+        try:
+            xml, got_kind, w = meta2xml.convert_bytes(blob, stem, names)
+        except meta2xml.UnsupportedRoot as ex:
+            # a recognised boundary, same as the `meta` pass: well-formed META, no emitter
+            # for its root - counted, kept binary, never guessed
+            if stats is not None:
+                k = 'meta kept binary (no emitter for root %s)' % ex.root_name
+                stats[k] = stats.get(k, 0) + 1
+            return None
+        for k, n in (getattr(w, 'warn', None) or {}).items():
+            if stats is not None:
+                stats[k] = stats.get(k, 0) + n
+        return '%s.%s.xml' % (stem, got_kind), xml.encode('utf-8'), ()
     if t == 'ybn':
         # ⛔ THIS BRANCH DID NOT EXIST until 2026-07-29, and its absence is the whole lesson.
         # ydr2xml.boundsfile_lines() has been BUILT AND ORACLE-VALIDATED the entire time - 183/183
@@ -850,6 +883,13 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
             sidecars = list(sidecars) + embedded_texture_sidecars(res, stem, textures,
                                                                   base=dbase)
         return stem + '.yft.xml', xml.encode('utf-8'), sidecars
+    # No branch matched: genuinely no converter for this type. The CAUSE is counted HERE so
+    # callers' generic kept-binary counters can stay cause-neutral - the META branch above
+    # returns None for a names-gated reason with its own counter, and labelling that as
+    # "no converter" in the caller was a false statement (2026-08-08).
+    if stats is not None:
+        k = 'no converter for this type yet: .' + (t or '?')
+        stats[k] = stats.get(k, 0) + 1
     return None
 
 
@@ -3632,6 +3672,17 @@ def cmd_extract(a):
     max_depth = getattr(a, 'max_depth', 2)
     print(f'max depth   : {max_depth}   (nested .rpf are descended into)')
 
+    # ⭐ --view (2026-08-08, the extract/export split fix): the whole-game names registry lets
+    # ytyp/ymap/ymt convert INLINE (to_interchange_xml META branch). Loaded ONCE up front -
+    # the freshness gate inside _names_from_view refuses a stale manifest loudly rather than
+    # resolving names against yesterday's filename universe. Without --view, those types keep
+    # their binary for the later `meta` pass, exactly as before.
+    view_names = None
+    if getattr(a, 'view', None) and getattr(a, 'xml', False):
+        print('names    : deriving the joaat table from the view manifest (freshness-gated) ...')
+        view_names = _names_from_view(a.view, a.game)
+        print(f'names    : {len(view_names):,} distinct asset names')
+
     # ⚠ ImportYtd loads <PixelFolder>/<TexName>.png, NOT the .dds - so a --xml ytd run without the
     # decoders emits a texture folder the plugin cannot read. Say so up front rather than letting it
     # look like it worked.
@@ -3688,7 +3739,8 @@ def cmd_extract(a):
                     written_path = None
                     try:
                         conv = to_interchange_xml(name, blob,
-                                                 getattr(a, 'textures', 'both'), stats)
+                                                 getattr(a, 'textures', 'both'), stats,
+                                                 names=view_names)
                         if conv is not None:
                             xml_name, xml_bytes, extras = conv
                             written = file_into(a.out, slot, xml_name, xml_bytes, stats,
@@ -3744,7 +3796,12 @@ def cmd_extract(a):
                             # a converter lane silently unregistering (the ybn wiring lesson,
                             # see the ybn branch comment) would leave no printed trace. Counted
                             # per extension; prints via report_lane_counters.
-                            k = 'kept binary (no converter): .' + (type_of(name) or '?')
+                            # ⚠ CAUSE-NEUTRAL by design (2026-08-08): to_interchange_xml counts
+                            # WHY it declined (no converter / names-gated META / rel refusal) -
+                            # this caller only knows THAT the binary was kept, and its old
+                            # "(no converter)" label became a false statement the day META
+                            # types gained a names-gated branch.
+                            k = 'kept binary: .' + (type_of(name) or '?')
                             stats[k] = stats.get(k, 0) + 1
                     except Exception as ex:
                         stats['xml_failed'] = stats.get('xml_failed', 0) + 1
@@ -4547,6 +4604,12 @@ def main():
                             'SAME source, overwrite it instead of filing the new output as a '
                             '~N collision and leaving consumers on the stale copy. Two '
                             'genuinely different assets sharing a basename still collide.')
+        p.add_argument('--view', help='folder holding VIEW_MANIFEST.jsonl + VIEW_SUMMARY.json. '
+                                      'With --xml, ytyp/ymap/ymt convert INLINE using this '
+                                      'whole-game names registry (the same one `export` and '
+                                      '`meta --view` use, freshness-gated). Without it those '
+                                      'types are kept binary for the later `meta` pass - '
+                                      'their names table needs the whole filename universe')
         p.add_argument('--resume', action='store_true',
                        help='continue an INTERRUPTED run: treat an already-present output file as '
                             'done instead of as a name collision. ⛔ Opt-in only - the collision '
