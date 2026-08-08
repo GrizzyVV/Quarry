@@ -819,15 +819,27 @@ class GeometryList(list):
     declared = 0
 
 
-def _layout_type(fields):
-    """the reference exporter's <Layout type="GTAVn"> classifies the vertex declaration. Every one of the 264
-    ydr/ydd oracle layouts is GTAV1 (full-float channels: Normal = float3, nibble 6). The fragment
-    cloth mesh is the only witnessed GTAV2: its Normal is a signed-byte4 (nibble 0xA), TexCoord0 a
-    half2 (nibble 1) and Tangent a half4 (nibble 3) - the compressed variant. Discriminator used:
-    a byte4-packed Normal (bit 3, nibble 0xA) => GTAV2, else GTAV1. This separates the whole
-    current corpus with zero GTAV1 reclassification. ⚠ UNPINNED: the full GTAV1..GTAV5 taxonomy -
-    only GTAV1 and this one GTAV2 form are witnessed; a third form would surface as a visible diff,
-    never a silent mislabel."""
+_LAYOUT_TABLE_NAMES = {
+    # <Layout type="GTAVn"> keyed on the WHOLE 64-bit grcFvf nibble TABLE - measured 2026-08-08:
+    # two declarations with IDENTICAL used-channel masks (0x59) carry different labels, so the
+    # channel heuristic cannot be the discriminator; the raw table value is.
+    0x7755555555996996: "GTAV1",   # full-float table - all 264 ydr/ydd oracle layouts
+    0x030000000199A006: "GTAV2",   # compressed cloth, byte4 Normal (plg_01/vb_34 witnesses)
+    0x0300000001996006: "GTAV3",   # compressed cloth, float3 Normal (id2_21_c_clothdca witness
+                                   #  - graded GTAV1 by the old heuristic while byte-equal in
+                                   #  every DATA byte: label-only diff, the wave-2 cloth class)
+}
+
+
+def _layout_type(nibbles, fields):
+    """the reference exporter's <Layout type="GTAVn"> classifies the vertex declaration BY ITS
+    RAW 64-bit nibble table (witnessed identities above). An unwitnessed table falls back to
+    the old channel heuristic AND IS COUNTED - a mislabel must surface in the run summary and
+    the spot-diff, never silently."""
+    name = _LAYOUT_TABLE_NAMES.get(nibbles)
+    if name:
+        return name
+    _refuse("layout_table_unwitnessed_fell_back_to_channel_heuristic", "0x%016X" % nibbles)
     for bit, _name, _tokens, _off, _size, nb in fields:
         if bit == 3 and nb == 0xA:
             return "GTAV2"
@@ -969,7 +981,7 @@ def read_geometries(res, base=0, group_off=0x50):
             geos.append({
                 "shader": shader_idx,
                 "layout": [f[1] for f in fields],
-                "ltype": _layout_type(fields),
+                "ltype": _layout_type(nibbles, fields),
                 "verts": vlines,
                 "indices": indices,
                 "model": mi,
@@ -1423,7 +1435,13 @@ def _bound_geometry_lines(res, off, ind, ctx):
     return L
 
 
-def _bound_lines(res, off, ind, tag, ctx, extra=None, depth=0):
+def _bound_lines(res, off, ind, tag, ctx, extra=None, depth=0, absent_flags_text=None):
+    """`absent_flags_text`: what CompositeFlags1/2 print when the flags ARRAY is absent
+    (fl_p == 0). None = OMIT the elements — measured on yft PHYSICS bounds, whose reference
+    omits them. The yft CLOTH custom bound (verlet+0x18) measures the OTHER way: 3/3 witness
+    oracles print <CompositeFlags1>NONE</CompositeFlags1> for every child while the flags
+    pointer is null — so that caller passes "NONE". The presence rule is CONTEXT-dependent
+    and each caller states its measured context; there is no universal default."""
     if depth > 4:
         raise BoundsError(f"{ctx}: composite nesting depth {depth} never measured")
     t = res.sys[off + 0x10]
@@ -1472,8 +1490,14 @@ def _bound_lines(res, off, ind, tag, ctx, extra=None, depth=0):
                 extra_i.append("%s<CompositeFlags2>%s</CompositeFlags2>" % (
                     ci2, _bound_flags_text(f2, BOUND_COMPOSITE_FLAG_BITS,
                                            "CompositeFlags2", ctx)))
+            elif absent_flags_text is not None:
+                extra_i.append("%s<CompositeFlags1>%s</CompositeFlags1>"
+                               % (ci2, absent_flags_text))
+                extra_i.append("%s<CompositeFlags2>%s</CompositeFlags2>"
+                               % (ci2, absent_flags_text))
             L += _bound_lines(res, ch, inner + " ", "Item", f"{ctx} child {i}",
-                              extra=extra_i, depth=depth + 1)
+                              extra=extra_i, depth=depth + 1,
+                              absent_flags_text=absent_flags_text)
         L.append("%s</Children>" % inner)
     # primitives (Sphere/Capsule/Box/Disc/Cylinder) and Cloth: header only - measured. Cloth was
     # checked the same way the primitives were, against the reference export of the same bound:

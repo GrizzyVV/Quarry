@@ -831,6 +831,20 @@ def _emit_cloths(r):
             L.append('       <UnknownC value="%s" />' % _F(ff(o + 12)))
             L.append("      </Item>")
         L.append("     </Constraints>")
+        # Cloth CUSTOM BOUNDS - a full composite phBound @ verlet+0x18, emitted by the
+        # reference as the LAST VerletCloth1 child (after Constraints). NULL pointer = the
+        # element is OMITTED entirely (id2_21-class cloths carry none). Witnesses:
+        # vb_34_hut_03_rib2 / vb_34_hut_04_rib / vb_36_hut_07_rib - the "small props ~2.6 KB
+        # short" spot-diff class was exactly this drop. Same composite emitter the archetype
+        # bound reuses; nothing cloth-specific to derive.
+        cb = u32(vc + 0x18)
+        if cb & 0x0FFFFFFF:
+            _, cbo = r.deref(cb, 0x70)
+            # absent_flags_text="NONE": the cloth bound's flags array is null in 3/3 witnesses
+            # while the reference still prints NONE per child (physics bounds omit instead -
+            # the presence rule is context-measured, see _bound_lines)
+            L += _bound_lines(r, cbo, "     ", "Bounds", "verlet cloth custom bounds",
+                              absent_flags_text="NONE")
         L.append("    </VerletCloth1>")
         L.append("   </Controller>")
         _, dbase = r.deref(u32(item + 0x18), 0xD0)              # cloth drawable == frag+0x30
