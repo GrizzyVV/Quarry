@@ -343,20 +343,19 @@ def decode_vertices(res, vdata_tagged, count, stride, fields):
                 emit_n = 4 if nb == 0xA else tokens
                 vals = []
                 for x in raw[:emit_n]:
-                    if x != x:
+                    if x != x or abs(x) == float("inf"):
+                        # ⭐ NaN AND Infinity ARE WITNESSED VERBATIM (densify oracles
+                        # 2026-08-08: gt750 TexCoord1 prints `Infinity`; polbuffalo TexCoord
+                        # prints `NaN`) — the old substitute-0-for-NaN rule was a parity
+                        # break; its boards simply carried no NaN witness. Faithful
+                        # interchange here; consumers handle non-finite UVs at import.
+                        # COUNTED so the class stays visible; Position still refuses loudly
+                        # (no witness of a non-finite Position exists).
                         if _name == "Position":
                             raise ValueError("NaN/inf in the Position channel (vertex %d)" % v)
-                        _refuse("nan_substituted_zero:" + _name)
-                        x = 0.0
-                    elif abs(x) == float("inf"):
-                        # ⭐ INFINITY IS WITNESSED VERBATIM (gt750 TexCoord1, densify oracle
-                        # 2026-08-08): the reference prints `Infinity`/`-Infinity`, so
-                        # substituting 0 here was a parity break. NaN keeps the measured
-                        # substitute-and-count behaviour (UE chokes on NaN UVs; the ydr/yft
-                        # oracle boards passed with it).
-                        if _name == "Position":
-                            raise ValueError("NaN/inf in the Position channel (vertex %d)" % v)
-                        vals.append("Infinity" if x > 0 else "-Infinity")
+                        _refuse("nonfinite_emitted_verbatim:" + _name)
+                        vals.append("NaN" if x != x else
+                                    ("Infinity" if x > 0 else "-Infinity"))
                         continue
                     vals.append(fmt_float(x))
             groups.append(" ".join(vals))

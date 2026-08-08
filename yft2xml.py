@@ -829,7 +829,9 @@ def _emit_vehicle_glass(r):
         L.append('   <CracksTextureTiling value="%s" />' % _F(_yf(r, rec + 0x64)))
         w = struct.unpack_from("<H", r.sys, rec + 0x48)[0]
         h = struct.unpack_from("<H", r.sys, rec + 0x4A)[0]
-        if w and h:
+        # dims (1,1) = the NO-ShatterMap sentinel: polbuffalo carries 12 such records and the
+        # reference omits the raster for every one (12/12), while every >1x1 record has one.
+        if w and h and (w, h) != (1, 1):
             L.append("   <ShatterMap>")
             pos = rec + 0x72 + (h - 1) * 2
             for _row in range(h):
