@@ -781,6 +781,22 @@ def _emit_physics(r):
     return L
 
 
+def _fragment_lights(r):
+    """The fragment-level light array: ptr @ fragroot+0x110, u16 count @ +0x118, the same
+    0xA8 LightAttrs records the drawable slot pair carries (m26 interior screens, 2026-08-08).
+    Returns the drawable-style placeholder when absent so callers can substitute."""
+    from ydr2xml import light_items_lines
+    p = _yU(r, 0x110)
+    n = struct.unpack_from("<H", r.sys, 0x118)[0]
+    if (p >> 28) != 5 or not n:
+        return [" <Lights />"]
+    buf, off = r.deref(p, n * 0xA8)
+    if buf is None:
+        _refuse("fragment_lights_array_unresolved", "%d lights" % n)
+        return [" <Lights />"]
+    return light_items_lines(buf, off, n)
+
+
 def _emit_vehicle_glass(r):
     """<VehicleGlassWindows> @ fragroot+0x120 — the breakable-glass manager ('HWGV'), a
     DIFFERENT array from <GlassWindows> @ +0xE0. [] when the pointer is absent.
@@ -1130,7 +1146,7 @@ def convert(res, stem, extras=None):
         L += _bone_transforms(res, nb)
         L += _emit_physics(res)
         L += _emit_vehicle_glass(res)
-        L.append(" <Lights />")
+        L += _fragment_lights(res)
         L += _emit_cloths(res)
     else:
         body, lights = _drawable_body(res, draw_base, " ")
@@ -1141,7 +1157,11 @@ def convert(res, stem, extras=None):
         L += _emit_physics(res)
         L += _emit_vehicle_glass(res)                          # oracle order: right after </Physics>
         L += _emit_glass(res)
-        L += lights                                            # fragment-level <Lights /> (last)
+        # the fragment's OWN light array (fragroot ptr @0x110, u16 count @0x118, the same
+        # 0xA8 LightAttrs records — m26 interior screens witnessed 2026-08-08) replaces the
+        # drawable's popped placeholder when present
+        fl = _fragment_lights(res)
+        L += fl if fl != [" <Lights />"] else lights
     L.append("</Fragment>")
     return "\n".join(L) + "\n", []
 

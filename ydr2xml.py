@@ -1164,6 +1164,13 @@ def lights_lines(res, base=0):
     if buf is None:
         _refuse("lights_array_unresolved", "%d lights" % n)
         return [" <Lights />"]
+    return light_items_lines(buf, off, n)
+
+
+def light_items_lines(buf, off, n):
+    """The <Lights> element for n LightAttrs records @ buf/off (stride 0xA8) — shared by the
+    drawable slot pair (+0xB0/+0xB8) and the FRAGMENT slot pair (fragroot +0x110/+0x118,
+    witnessed 2026-08-08 by the m26 interior screens)."""
     ff = fmt_num
     L = [" <Lights>"]
     for i in range(n):
