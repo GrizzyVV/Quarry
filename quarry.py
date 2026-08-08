@@ -901,7 +901,7 @@ def provenance_index(out_root):
 
 
 def file_into(out_root, slot, name, blob, stats=None, skip_existing=False, chain=None,
-              refresh=False):
+              refresh=False, subdir=None):
     """File one blob by type into a precedence slot.
 
     Filing is FLAT by basename inside <slot>/<ext>/, which means two same-named files from
@@ -911,8 +911,16 @@ def file_into(out_root, slot, name, blob, stats=None, skip_existing=False, chain
     copy, writes the loser as <stem>~<n><ext>, and is COUNTED so the run reports it.
     (Load-order precedence ACROSS slots is still what the numbered tree encodes; this only
     disambiguates within one slot.)
+
+    ⭐ `subdir` = the game's OWN in-archive folder for this leaf (per-ped-per-DLC layout,
+    Matt's determined ruling): filing becomes <slot>/<ext>/<subdir>/<name> — identity in the
+    FOLDER, the filename untouched. Same-named files of DIFFERENT peds stop colliding because
+    the game itself files them apart; a collision INSIDE one subdir still takes the ~N path
+    (same ped, same name, different bytes = still build-accurate data to keep).
     """
     d = os.path.join(out_root, slot, type_of(name))
+    if subdir:
+        d = os.path.join(d, subdir.replace('/', os.sep))
     os.makedirs(d, exist_ok=True)
     target = os.path.join(d, name)
     if os.path.exists(target):
@@ -974,7 +982,10 @@ def file_into(out_root, slot, name, blob, stats=None, skip_existing=False, chain
         #   the safe default when identity is unknown is to keep both copies, not to guess.
         if refresh and chain:
             idx = provenance_index(out_root)
-            key = (slot, type_of(name), os.path.basename(target))
+            # the ledger's `file` value carries the subdir for ped-foldered content, so the
+            # refresh key must too - a bare basename would be ambiguous across ped folders again
+            key = (slot, type_of(name),
+                   (subdir + '/' if subdir else '') + os.path.basename(target))
             prior = idx.get(key)
             same_source = prior is not None and prior == chain
             if stats is not None and not same_source:
@@ -1006,7 +1017,8 @@ def file_into(out_root, slot, name, blob, stats=None, skip_existing=False, chain
                 if stats is not None and chain:
                     _stem, _ext = split_type_ext(name)
                     stats.setdefault('provenance', []).append(
-                        {'slot': slot, 'type': type_of(name), 'file': written,
+                        {'slot': slot, 'type': type_of(name),
+                         'file': (subdir + '/' if subdir else '') + written,
                          'qualifiedName': '%s~%s%s' % (_stem, source_tag(chain, blob), _ext),
                          'sourceName': name, 'archive': chain,
                          'sha1': hashlib.sha1(blob).hexdigest()})
@@ -1070,7 +1082,8 @@ def file_into(out_root, slot, name, blob, stats=None, skip_existing=False, chain
         # its file on disk is the unqualified winner.
         stem, ext = split_type_ext(name)
         stats.setdefault('provenance', []).append(
-            {'slot': slot, 'type': type_of(name), 'file': written,
+            {'slot': slot, 'type': type_of(name),
+             'file': (subdir + '/' if subdir else '') + written,
              'qualifiedName': f'{stem}~{source_tag(chain, blob)}{ext}',
              'sourceName': name, 'archive': chain,
              'sha1': hashlib.sha1(blob).hexdigest()})
@@ -1092,8 +1105,13 @@ def split_type_ext(name):
     return stem, ext
 
 
-def walk_archive(r, oodle, depth=0, max_depth=2, stats=None, path=''):
-    """Yield (name, blob, chain) for every FILE in this archive, DESCENDING into nested .rpf.
+def walk_archive(r, oodle, depth=0, max_depth=2, stats=None, path='', nested_only=None):
+    """Yield (name, blob, chain, folder) for every FILE in this archive, DESCENDING into
+    nested .rpf.
+
+    `nested_only` = fnmatch pattern for NESTED archive names: when set, only matching nested
+    archives are descended and top-level leaves are skipped — the staged-migration scalpel
+    (regenerate ONE container class without touching the rest of a 2 GB parent archive).
 
     `chain` is the archive chain the file came from ("x64e.rpf/mp_f_freemode.rpf"). It was
     tracked here all along for error messages and simply never handed to the caller, which is
@@ -1104,10 +1122,21 @@ def walk_archive(r, oodle, depth=0, max_depth=2, stats=None, path=''):
     archives - and essentially every .ydr/.ybn/.ytyp/.ymap in the game lives at depth 2.
     A flat walk finds ZERO map assets, which is exactly what the first run produced.
     """
-    for e in r.entries:
+    # ⭐ PER-PED-PER-DLC (Matt, determined 2026-08-07, reaffirmed 2026-08-08): same-named ped
+    # files are not copies — each belongs to a particular ped, and the game says WHOSE in its
+    # own TOC: streamedpedprops-class archives file every leaf under a per-ped DIRECTORY
+    # (player_zero_p/p_ears_000.ydd). The walk therefore yields that in-archive folder so
+    # filing can MIRROR the game structure (folder identity, filenames untouched). Top-level
+    # archives' folders (data/, levels/…) are organizational, not identity — the caller only
+    # applies the folder for leaves of NESTED archives (depth ≥ 1).
+    folders = _tree_paths(r.entries) if depth >= 1 else None
+    for i, e in enumerate(r.entries):
         if e['dir']:
             continue
         name = e['name']
+        if nested_only and not name.lower().endswith('.rpf'):
+            continue        # scoped migration: leaves outside a matching container are skipped
+                            # (the filter clears once a matching nested archive is entered)
         try:
             blob = r.payload(e, oodle)
         except Exception as ex:
@@ -1149,9 +1178,15 @@ def walk_archive(r, oodle, depth=0, max_depth=2, stats=None, path=''):
                 continue
             if stats is not None:
                 stats['nested_opened'] = stats.get('nested_opened', 0) + 1
-            yield from walk_archive(sub, oodle, depth + 1, max_depth, stats, f'{path}/{name}')
+            sub_filter = nested_only
+            if nested_only:
+                import fnmatch as _fn
+                if _fn.fnmatch(name.lower(), nested_only.lower()):
+                    sub_filter = None       # matched: the whole subtree is in scope
+            yield from walk_archive(sub, oodle, depth + 1, max_depth, stats,
+                                    f'{path}/{name}', sub_filter)
             continue
-        yield name, blob, path
+        yield name, blob, path, (folders[i] if folders else '')
 
 
 # ------------------------------------------------------------------ commands
@@ -1648,15 +1683,21 @@ def _manifest_fingerprint(ref_roots):
             if not os.path.isdir(d):
                 continue
             rows = []
-            with os.scandir(d) as it:
-                for e in it:
-                    if not e.name.lower().endswith('.ytd.xml'):
+            # ⭐ RECURSIVE since the per-ped layout: manifests can live one (or more) folder
+            # levels down (<kind>/<ped>/<stem>.ytd.xml). The row key carries the relative path
+            # so a ped-folder rename changes the digest exactly like a stem rename does.
+            for dp, _dirs, fs in os.walk(d):
+                relbase = os.path.relpath(dp, d)
+                for fn in fs:
+                    if not fn.lower().endswith('.ytd.xml'):
                         continue
                     try:
-                        st = e.stat()
+                        st = os.stat(os.path.join(dp, fn))
                     except OSError:
                         continue
-                    rows.append('%s|%d|%d' % (e.name.lower(), st.st_size, int(st.st_mtime)))
+                    rel = fn if relbase == '.' else f'{relbase}/{fn}'
+                    rows.append('%s|%d|%d' % (rel.replace(os.sep, '/').lower(),
+                                              st.st_size, int(st.st_mtime)))
             rows.sort()
             n += len(rows)
             # ⚠ NORMALISE THE ROOT. Caught 2026-08-05 by watching a 23-second index rebuild that
@@ -1701,16 +1742,24 @@ def txd_name_index(ref_roots, out_root=None, verbose=True):
             d = os.path.join(root, sub)
             if not os.path.isdir(d):
                 continue
-            for fn in os.listdir(d):
-                if not fn.lower().endswith('.ytd.xml'):
-                    continue
-                try:
-                    with open(os.path.join(d, fn), encoding='utf-8', errors='replace') as fh:
-                        txt = fh.read()
-                except OSError:
-                    continue
-                dicts['%s/%s' % (sub, fn[:-len('.ytd.xml')])] = \
-                    [n.strip() for n in _XML_NAME_RE.findall(txt)]
+            # recursive: per-ped folders hold manifests one level down; the key carries the
+            # ped-relative path ("<kind>/<ped>/<stem>") so two peds' same-named dictionaries
+            # stay distinct entries instead of the last one read silently winning
+            for dp, _dirs, fs in os.walk(d):
+                relbase = os.path.relpath(dp, d)
+                for fn in fs:
+                    if not fn.lower().endswith('.ytd.xml'):
+                        continue
+                    try:
+                        with open(os.path.join(dp, fn), encoding='utf-8',
+                                  errors='replace') as fh:
+                            txt = fh.read()
+                    except OSError:
+                        continue
+                    rel = fn if relbase == '.' else \
+                        f'{relbase}/{fn}'.replace(os.sep, '/')
+                    dicts['%s/%s' % (sub, rel[:-len('.ytd.xml')])] = \
+                        [n.strip() for n in _XML_NAME_RE.findall(txt)]
     if cache:
         try:
             os.makedirs(os.path.dirname(cache), exist_ok=True)
@@ -1742,9 +1791,12 @@ def scan_txd_manifests(ref_roots, wanted, out_root=None, verbose=True):
         need = [n for n in names if n.lower() in wanted]
         if not need:
             continue
-        sub, stem = key.split('/', 1)
-        holdings['%s/%s' % (sub, stem.lower())] = {
-            'kind': sub, 'stem': stem, 'total': len(names), 'needed': need}
+        sub, rel = key.split('/', 1)
+        # per-ped layout: rel may be "<ped>/<stem>" - keep the STEM bare (it is the source-name
+        # join and the pixel-folder name) and carry the ped dir separately
+        pdir, _, stem = rel.rpartition('/')
+        holdings['%s/%s' % (sub, rel.lower())] = {
+            'kind': sub, 'stem': stem, 'dir': pdir, 'total': len(names), 'needed': need}
     return holdings, manifests
 
 
@@ -2110,11 +2162,20 @@ def fetch_from_archive(path, wants, keys, tables, aes_key, oodle):
     Only nested .rpf entries and the wanted leaves are ever inflated - the whole point of a
     targeted decode is not paying the extract's cost. Traversal order matches _index_one, so the
     blob returned for a colliding basename is the one the corpus was built from.
+
+    ⛔ A want MAY BE PATH-QUALIFIED ("<in-archive dir>/<name>", e.g. "player_zero_p/
+    p_ears_000.ydd"). A bare name is FIRST-WINS by design (the flat corpus contract) — but a
+    per-instance decode addressing a specific ped's copy through a bare name silently gets the
+    first instance instead, MEASURED 2026-08-08: all 12 ped folders received the first ped's
+    pixels, byte-identical, while the run looked perfectly healthy. Qualified wants match the
+    leaf's own TOC folder + name, so each instance decodes ITS OWN bytes.
     """
     got = {}
+    qualified = any('/' in w for w in wants)
 
     def walk(r, depth, p):
-        for e in r.entries:
+        folders = _tree_paths(r.entries) if qualified else None
+        for i, e in enumerate(r.entries):
             if e['dir']:
                 continue
             name = e['name']
@@ -2133,11 +2194,15 @@ def fetch_from_archive(path, wants, keys, tables, aes_key, oodle):
                     continue
                 walk(sub, depth + 1, f'{p}/{name}')
                 continue
-            if low in wants and low not in got:
-                try:
-                    got[low] = r.payload(e, oodle)
-                except Exception as ex:
-                    got[low] = ex
+            keys_here = [low]
+            if folders is not None and folders[i]:
+                keys_here.append(f'{folders[i]}/{name}'.lower())
+            for k in keys_here:
+                if k in wants and k not in got:
+                    try:
+                        got[k] = r.payload(e, oodle)
+                    except Exception as ex:
+                        got[k] = ex
     r0 = Rpf(path, keys, tables, aes_key=aes_key)
     r0.read_toc()
     walk(r0, 0, os.path.basename(path))
@@ -2164,7 +2229,7 @@ def _link_or_copy(src, dst):
         return None
 
 
-def _sibling_targets(out, resolved, slot, kind, stem, safe, ext, is_winner):
+def _sibling_targets(out, resolved, slot, kind, stem, safe, ext, is_winner, pdir=''):
     """Every ADDITIONAL path a decoded pixel must exist at beyond its primary slot file.
 
     ⭐ An `__embedded` manifest's pixels ALSO land in the bare drawable folder `X/` — the
@@ -2179,9 +2244,13 @@ def _sibling_targets(out, resolved, slot, kind, stem, safe, ext, is_winner):
     outs = []
     emb = stem.lower().endswith(EMBEDDED_INFIX)
     base = stem[:-len(EMBEDDED_INFIX)] if emb else None
+    pd = pdir.replace('/', os.sep) if pdir else ''
     if emb:
-        outs.append(os.path.join(out, slot, kind, base, safe + ext))
+        outs.append(os.path.join(out, slot, kind, *( [pd] if pd else [] ),
+                                 base, safe + ext))
     if is_winner and os.path.isdir(resolved):
+        # _resolved keeps its FLAT winner contract (RUDE's shipped pairing) - ped-foldered
+        # instances are never winners under the flat model, so pdir never reaches here today
         outs.append(os.path.join(resolved, kind, stem, safe + ext))
         if emb:
             outs.append(os.path.join(resolved, kind, base, safe + ext))
@@ -2354,17 +2423,20 @@ def decode_referenced(a, out, resolved, ref_roots):
     jobs, present, relinked = {}, 0, 0
     skipped_dicts = 0
 
-    def build_todo(slot, kind, stem, names, is_winner):
+    def build_todo(slot, kind, stem, names, is_winner, pdir=''):
         """One implementation of "what does this dictionary still owe" for BOTH planning modes
-        (winner-view and per-instance) — two copies would drift on the ledger/sibling rules."""
+        (winner-view and per-instance) — two copies would drift on the ledger/sibling rules.
+        `pdir` = the per-ped folder (game-mirrored) the manifest lives under, '' for flat."""
         nonlocal present, relinked
         todo = []
+        mid = ('%s/' % pdir) if pdir else ''
         for name in names:
             safe = ytd2xml.safe_name(name)
             for ext, want in (('.png', want_png), ('.dds', want_dds)):
                 if not want:
                     continue
-                rel = '%s/%s/%s/%s%s' % (slot.replace(os.sep, '/'), kind, stem, safe, ext)
+                rel = '%s/%s/%s%s/%s%s' % (slot.replace(os.sep, '/'), kind, mid, stem,
+                                           safe, ext)
                 dst = os.path.join(out, rel.replace('/', os.sep))
                 row = ledger.get(rel)
                 if row and os.path.isfile(dst) and _sha256_file(dst) == row.get('sha256'):
@@ -2373,7 +2445,7 @@ def decode_referenced(a, out, resolved, ref_roots):
                     # in the wrong folder graded MISSING on 2026-08-07 — placement is part of
                     # done, not decoration.
                     for sdst in _sibling_targets(out, resolved, slot, kind, stem, safe, ext,
-                                                 is_winner):
+                                                 is_winner, pdir):
                         if not os.path.exists(sdst):
                             if _link_or_copy(dst, sdst):
                                 relinked += 1
@@ -2384,6 +2456,11 @@ def decode_referenced(a, out, resolved, ref_roots):
     for key in sorted(holdings):
         h = holdings[key]
         kind, stem = h['kind'], h['stem']
+        if h.get('dir'):
+            # ped-foldered manifests are INSTANCE-layer: the flat winners table cannot address
+            # them, so they are planned by the per-instance pass below (--all-instances /
+            # scoped), never refused as winner-less here
+            continue
         slot = slot_of(kind, stem)
         if slot is None:
             refuse('manifest_has_no_winning_slot', '%s/%s' % (kind, stem))
@@ -2398,7 +2475,8 @@ def decode_referenced(a, out, resolved, ref_roots):
             skipped_dicts += 1
             continue
         jobs.setdefault((slot, src.lower()), {'slot': slot, 'src': src.lower(), 'kind': kind,
-                                              'stem': stem, 'todo': todo, 'winner': True})
+                                              'stem': stem, 'dir': '', 'todo': todo,
+                                              'winner': True})
 
     # ---- per-instance planning: --all-instances (embedded) / --dicts (standalone, in full) --
     # ⛔ THE WINNER PLAN ABOVE IS STRUCTURALLY BLIND to two classes, measured 2026-08-07
@@ -2417,54 +2495,64 @@ def decode_referenced(a, out, resolved, ref_roots):
                 d = os.path.join(out, slot_name, kind)
                 if not os.path.isdir(d):
                     continue
-                for fn in os.listdir(d):
-                    if not fn.lower().endswith('.ytd.xml'):
-                        continue
-                    stem = fn[:-len('.ytd.xml')]
-                    emb = stem.lower().endswith(EMBEDDED_INFIX)
-                    base = stem[:-len(EMBEDDED_INFIX)] if emb else stem
-                    if emb:
-                        if not inst_mode:
+                # recursive: the per-ped layout files manifests under <kind>/<ped>/
+                for dp, _dirs, fs in os.walk(d):
+                    relbase = os.path.relpath(dp, d)
+                    pdir = '' if relbase == '.' else relbase.replace(os.sep, '/')
+                    for fn in fs:
+                        if not fn.lower().endswith('.ytd.xml'):
                             continue
-                        # scope narrows the embedded sweep; an explicitly NAMED --dicts entry is
-                        # never scope-filtered (you asked for that dictionary by name).
-                        if scope and not _scope_match(base, fn, scope):
+                        stem = fn[:-len('.ytd.xml')]
+                        emb = stem.lower().endswith(EMBEDDED_INFIX)
+                        base = stem[:-len(EMBEDDED_INFIX)] if emb else stem
+                        if emb:
+                            if not inst_mode:
+                                continue
+                            # scope narrows the embedded sweep; an explicitly NAMED --dicts
+                            # entry is never scope-filtered (you asked for it by name).
+                            if scope and not _scope_match(base, fn, scope):
+                                continue
+                        elif not (dict_pats and any(fnmatch.fnmatch(stem.lower(), p)
+                                                    for p in dict_pats)):
                             continue
-                    elif not (dict_pats and any(fnmatch.fnmatch(stem.lower(), p)
-                                                for p in dict_pats)):
-                        continue
-                    # ⛔ A `~N` collision stem is refused AT PLANNING, not at the archive index:
-                    # the suffix is corpus-side (file_into invented it), so no archive holds a
-                    # binary by that name — the job can never produce output, and 242 such jobs
-                    # made a COMPLETE corpus trip the zero-work guard (exit 1 with nothing left
-                    # to do). Counted, never guessed; the folder-layout ruling (OPEN_ITEMS #0)
-                    # is what retires the ~N namespace and makes these instances addressable.
-                    if re.search(r'~\d+$', base):
-                        refuse('instance_source_unattributable_collision_suffix',
-                               '%s/%s' % (kind, fn))
-                        continue
-                    src = manifest_source_name(kind, stem)
-                    if src is None:
-                        refuse('instance_source_unattributable', '%s/%s' % (kind, fn))
-                        continue
-                    try:
-                        with open(os.path.join(d, fn), encoding='utf-8',
-                                  errors='replace') as fh:
-                            names = [n.strip() for n in _XML_NAME_RE.findall(fh.read())]
-                    except OSError:
-                        refuse('instance_manifest_unreadable', '%s/%s' % (kind, fn))
-                        continue
-                    if not names:
-                        continue
-                    is_winner = winners.get('%s/%s.ytd.xml' % (kind, stem)) == slot_name
-                    todo = build_todo(slot_name, kind, stem, names, is_winner)
-                    if not todo:
-                        skipped_dicts += 1
-                        continue
-                    inst_dicts += 1
-                    jobs.setdefault((slot_name, src.lower(), stem.lower()),
-                                    {'slot': slot_name, 'src': src.lower(), 'kind': kind,
-                                     'stem': stem, 'todo': todo, 'winner': is_winner})
+                        # ⛔ A `~N` collision stem is refused AT PLANNING, not at the archive
+                        # index: the suffix is corpus-side (file_into invented it), so no
+                        # archive holds a binary by that name — the job can never produce
+                        # output, and 242 such jobs made a COMPLETE corpus trip the zero-work
+                        # guard. Counted, never guessed; the ped-folder layout is what makes
+                        # those instances addressable (they re-file WITHOUT the suffix).
+                        if re.search(r'~\d+$', base):
+                            refuse('instance_source_unattributable_collision_suffix',
+                                   '%s/%s' % (kind, fn))
+                            continue
+                        src = manifest_source_name(kind, stem)
+                        if src is None:
+                            refuse('instance_source_unattributable', '%s/%s' % (kind, fn))
+                            continue
+                        if pdir:
+                            # path-qualify: this instance's OWN entry, not the first same-named
+                            # one the walk happens to meet (the defect measured 2026-08-08)
+                            src = '%s/%s' % (pdir, src)
+                        try:
+                            with open(os.path.join(dp, fn), encoding='utf-8',
+                                      errors='replace') as fh:
+                                names = [n.strip() for n in _XML_NAME_RE.findall(fh.read())]
+                        except OSError:
+                            refuse('instance_manifest_unreadable', '%s/%s' % (kind, fn))
+                            continue
+                        if not names:
+                            continue
+                        is_winner = (not pdir and
+                                     winners.get('%s/%s.ytd.xml' % (kind, stem)) == slot_name)
+                        todo = build_todo(slot_name, kind, stem, names, is_winner, pdir)
+                        if not todo:
+                            skipped_dicts += 1
+                            continue
+                        inst_dicts += 1
+                        jobs.setdefault(
+                            (slot_name, src.lower(), pdir.lower(), stem.lower()),
+                            {'slot': slot_name, 'src': src.lower(), 'kind': kind,
+                             'stem': stem, 'dir': pdir, 'todo': todo, 'winner': is_winner})
         print(f'instance planning : {"embedded at every slot instance" if inst_mode else ""}'
               f'{" + " if inst_mode and dict_pats else ""}'
               f'{"--dicts full decode" if dict_pats else ""} -> {inst_dicts:,} additional '
@@ -2524,11 +2612,14 @@ def decode_referenced(a, out, resolved, ref_roots):
         if not archives:
             refuse('slot_has_no_archive_on_this_install', slot, len(items))
             continue
-        wants = {it['src'] for it in items}
+        # the on-disk source index is keyed by BARE name (first-wins, the flat contract);
+        # a qualified instance want resolves its ARCHIVE by tail, then fetch_from_archive
+        # matches the qualified path inside it
+        wants = {w.rsplit('/', 1)[-1] for w in {it['src'] for it in items}}
         idx = source_index(out, slot, archives, keys, tables, aes_key, oodle, wants)
         per_archive = {}
         for it in items:
-            arch = idx.get(it['src'])
+            arch = idx.get(it['src']) or idx.get(it['src'].rsplit('/', 1)[-1])
             if arch is None:
                 refuse('source_binary_not_found_in_archives', '%s (%s)' % (it['src'], slot))
                 continue
@@ -2591,7 +2682,7 @@ def decode_referenced(a, out, resolved, ref_roots):
                                    'source': it['src'], 'slot': it['slot']}
                     for sdst in _sibling_targets(out, resolved, it['slot'], it['kind'],
                                                  it['stem'], safe, ext,
-                                                 it.get('winner', True)):
+                                                 it.get('winner', True), it.get('dir', '')):
                         how = _link_or_copy(dst, sdst)
                         if how == 'link':
                             linked += 1
@@ -3572,10 +3663,14 @@ def cmd_extract(a):
             skipped += 1
             continue
         n = 0
-        for name, blob, chain in walk_archive(r, oodle, 0, max_depth, stats,
-                                              os.path.basename(path)):
+        for name, blob, chain, pedsub in walk_archive(r, oodle, 0, max_depth, stats,
+                                                      os.path.basename(path),
+                                                      getattr(a, 'nested_only', None)):
             if want is not None and type_of(name) not in want:
                 continue
+            if pedsub and stats is not None:
+                stats['filed under game folder (per-ped layout)'] = \
+                    stats.get('filed under game folder (per-ped layout)', 0) + 1
             try:
                 # ⭐ --xml: convert to the RAGE interchange XML that RUDE's importer already reads,
                 # so the pipeline is connected without any UE-side work. Binary is kept when a
@@ -3589,7 +3684,8 @@ def cmd_extract(a):
                             xml_name, xml_bytes, extras = conv
                             written = file_into(a.out, slot, xml_name, xml_bytes, stats,
                                                 getattr(a, 'resume', False), chain=chain,
-                                                refresh=getattr(a, 'refresh', False))
+                                                refresh=getattr(a, 'refresh', False),
+                                                subdir=pedsub or None)
                             if written is None:
                                 # ⛔⛔ A RESUMED XML MUST NOT SKIP ITS SIDECARS (2026-08-04).
                                 # This `continue` jumped past the ENTIRE sidecar loop, so a second
@@ -3607,7 +3703,9 @@ def cmd_extract(a):
                                     continue
                                 written = xml_name
                                 stats['resumed_sidecars'] = stats.get('resumed_sidecars', 0) + 1
-                            written_path = os.path.join(a.out, slot, type_of(name), written)
+                            written_path = os.path.join(
+                                a.out, slot, type_of(name),
+                                *( [pedsub.replace('/', os.sep)] if pedsub else [] ), written)
                             # The pixel folder must follow the XML that was ACTUALLY written: on
                             # a basename collision the XML becomes foo~1.ytd.xml, and a sidecar
                             # folder still called `foo` would hand one dictionary's XML another
@@ -3625,7 +3723,9 @@ def cmd_extract(a):
                                 # anything unrecognised untouched instead of crashing.
                                 if orig and rel.startswith(orig):
                                     rel = folder + rel[len(orig):]
-                                sidecar_into(a.out, slot, type_of(name), rel, payload)
+                                # sidecars live BESIDE their XML — under the same ped folder
+                                sidecar_into(a.out, slot, type_of(name),
+                                             (pedsub + '/' + rel) if pedsub else rel, payload)
                                 stats['xml_sidecars'] = stats.get('xml_sidecars', 0) + 1
                             stats['xml_ok'] = stats.get('xml_ok', 0) + 1
                             n += 1
@@ -3658,7 +3758,8 @@ def cmd_extract(a):
                             stats['xml_unwound'] = stats.get('xml_unwound', 0) + 1
                         # fall through and keep the binary rather than losing the asset
                 file_into(a.out, slot, name, blob, stats, getattr(a, 'resume', False),
-                          chain=chain, refresh=getattr(a, 'refresh', False))
+                          chain=chain, refresh=getattr(a, 'refresh', False),
+                          subdir=pedsub or None)
                 n += 1
             except Exception as ex:
                 stats['failed'] = stats.get('failed', 0) + 1
@@ -4404,6 +4505,11 @@ def main():
         p.add_argument('--out')
         p.add_argument('--keys')
         p.add_argument('--only', help='limit to one archive basename, e.g. x64a.rpf')
+        p.add_argument('--nested-only', dest='nested_only',
+                       help='limit to NESTED archives matching this fnmatch pattern (e.g. '
+                            '"streamedpedprops*.rpf") - the staged-migration scalpel: '
+                            'regenerate one container class without walking its 2 GB parent. '
+                            'Leaves outside a matching container are skipped entirely.')
         p.add_argument('--types', help='comma-separated types to KEEP, e.g. '
                                       'ydr,ybn,ytyp,ymap,ytd. Omit = everything (~376k files '
                                       'for a full run - you almost always want this filter)')
