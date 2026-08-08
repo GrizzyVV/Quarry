@@ -2164,6 +2164,41 @@ def _link_or_copy(src, dst):
         return None
 
 
+def _sibling_targets(out, resolved, slot, kind, stem, safe, ext, is_winner):
+    """Every ADDITIONAL path a decoded pixel must exist at beyond its primary slot file.
+
+    ⭐ An `__embedded` manifest's pixels ALSO land in the bare drawable folder `X/` — the
+    drawable's own XML advertises them there (`embedded_texture_sidecars`' dual-write contract).
+    The decode lane not doing this is what graded 14 byte-identical pixels MISSING in the
+    2026-08-07 sidecar grade: right bytes, wrong folder.
+
+    ⛔ THE `_resolved` TREE IS THE WINNER VIEW. Only the WINNING instance's pixels may be linked
+    forward — linking a non-winner instance would replace what RUDE reads with a DIFFERENT
+    asset that shares the name (w_lr_40mm: 00_base is 64x32, the patchday8ng winner 256x128).
+    """
+    outs = []
+    emb = stem.lower().endswith(EMBEDDED_INFIX)
+    base = stem[:-len(EMBEDDED_INFIX)] if emb else None
+    if emb:
+        outs.append(os.path.join(out, slot, kind, base, safe + ext))
+    if is_winner and os.path.isdir(resolved):
+        outs.append(os.path.join(resolved, kind, stem, safe + ext))
+        if emb:
+            outs.append(os.path.join(resolved, kind, base, safe + ext))
+    return outs
+
+
+def _parse_patterns(raw):
+    """Comma-separated fnmatch patterns, or @file with one per line -> lowercase list."""
+    if not raw:
+        return []
+    if raw.startswith('@'):
+        with open(raw[1:], encoding='utf-8') as f:
+            return [ln.strip().lower() for ln in f
+                    if ln.strip() and not ln.lstrip().startswith('#')]
+    return [s.strip().lower() for s in raw.split(',') if s.strip()]
+
+
 def decode_referenced(a, out, resolved, ref_roots):
     """Decode ONLY the texture pixels something references, from a MANIFESTS-ONLY corpus.
 
@@ -2318,6 +2353,34 @@ def decode_referenced(a, out, resolved, ref_roots):
 
     jobs, present, relinked = {}, 0, 0
     skipped_dicts = 0
+
+    def build_todo(slot, kind, stem, names, is_winner):
+        """One implementation of "what does this dictionary still owe" for BOTH planning modes
+        (winner-view and per-instance) — two copies would drift on the ledger/sibling rules."""
+        nonlocal present, relinked
+        todo = []
+        for name in names:
+            safe = ytd2xml.safe_name(name)
+            for ext, want in (('.png', want_png), ('.dds', want_dds)):
+                if not want:
+                    continue
+                rel = '%s/%s/%s/%s%s' % (slot.replace(os.sep, '/'), kind, stem, safe, ext)
+                dst = os.path.join(out, rel.replace('/', os.sep))
+                row = ledger.get(rel)
+                if row and os.path.isfile(dst) and _sha256_file(dst) == row.get('sha256'):
+                    present += 1
+                    # "Already present" includes every sibling placement. A byte-identical pixel
+                    # in the wrong folder graded MISSING on 2026-08-07 — placement is part of
+                    # done, not decoration.
+                    for sdst in _sibling_targets(out, resolved, slot, kind, stem, safe, ext,
+                                                 is_winner):
+                        if not os.path.exists(sdst):
+                            if _link_or_copy(dst, sdst):
+                                relinked += 1
+                    continue
+                todo.append((name, safe, ext, rel, dst))
+        return todo
+
     for key in sorted(holdings):
         h = holdings[key]
         kind, stem = h['kind'], h['stem']
@@ -2329,30 +2392,83 @@ def decode_referenced(a, out, resolved, ref_roots):
         if src is None:
             refuse('manifest_shape_unattributable_to_a_source', '%s/%s.ytd.xml' % (kind, stem))
             continue
-        todo = []
-        for name in h['needed']:
-            safe = ytd2xml.safe_name(name)
-            for ext, want in (('.png', want_png), ('.dds', want_dds)):
-                if not want:
-                    continue
-                rel = '%s/%s/%s/%s%s' % (slot.replace(os.sep, '/'), kind, stem, safe, ext)
-                dst = os.path.join(out, rel.replace('/', os.sep))
-                row = ledger.get(rel)
-                if row and os.path.isfile(dst) and _sha256_file(dst) == row.get('sha256'):
-                    present += 1
-                    # The forward link into _resolved is part of "already present". A slot pixel
-                    # RUDE cannot reach is not done.
-                    rdst = os.path.join(resolved, kind, stem, safe + ext)
-                    if os.path.isdir(resolved) and not os.path.exists(rdst):
-                        if _link_or_copy(dst, rdst):
-                            relinked += 1
-                    continue
-                todo.append((name, safe, ext, rel, dst))
+        # slot came from the winners table, so this IS the winning instance by construction.
+        todo = build_todo(slot, kind, stem, h['needed'], True)
         if not todo:
             skipped_dicts += 1
             continue
         jobs.setdefault((slot, src.lower()), {'slot': slot, 'src': src.lower(), 'kind': kind,
-                                              'stem': stem, 'todo': todo})
+                                              'stem': stem, 'todo': todo, 'winner': True})
+
+    # ---- per-instance planning: --all-instances (embedded) / --dicts (standalone, in full) --
+    # ⛔ THE WINNER PLAN ABOVE IS STRUCTURALLY BLIND to two classes, measured 2026-08-07
+    # (tools/sidecar_grade.py): a NON-WINNER slot instance's embedded pixels (its names never
+    # enter `wanted`, because references are scanned from _resolved = the winner view), and a
+    # dictionary NOTHING references (engine-referenced: waterfog). Both are planned here, each
+    # instance decoding from ITS OWN slot's archives. `--textures dds` at extract time would
+    # have written exactly this; doing it here is the no-re-extract route (Matt's Fix B ruling).
+    inst_mode = bool(getattr(a, 'all_instances', False))
+    dict_pats = _parse_patterns(getattr(a, 'dicts', None))
+    if inst_mode or dict_pats:
+        import fnmatch
+        inst_dicts = 0
+        for slot_name in precedence_slots(out):
+            for kind in TXD_BEARING_DIRS:
+                d = os.path.join(out, slot_name, kind)
+                if not os.path.isdir(d):
+                    continue
+                for fn in os.listdir(d):
+                    if not fn.lower().endswith('.ytd.xml'):
+                        continue
+                    stem = fn[:-len('.ytd.xml')]
+                    emb = stem.lower().endswith(EMBEDDED_INFIX)
+                    base = stem[:-len(EMBEDDED_INFIX)] if emb else stem
+                    if emb:
+                        if not inst_mode:
+                            continue
+                        # scope narrows the embedded sweep; an explicitly NAMED --dicts entry is
+                        # never scope-filtered (you asked for that dictionary by name).
+                        if scope and not _scope_match(base, fn, scope):
+                            continue
+                    elif not (dict_pats and any(fnmatch.fnmatch(stem.lower(), p)
+                                                for p in dict_pats)):
+                        continue
+                    # ⛔ A `~N` collision stem is refused AT PLANNING, not at the archive index:
+                    # the suffix is corpus-side (file_into invented it), so no archive holds a
+                    # binary by that name — the job can never produce output, and 242 such jobs
+                    # made a COMPLETE corpus trip the zero-work guard (exit 1 with nothing left
+                    # to do). Counted, never guessed; the folder-layout ruling (OPEN_ITEMS #0)
+                    # is what retires the ~N namespace and makes these instances addressable.
+                    if re.search(r'~\d+$', base):
+                        refuse('instance_source_unattributable_collision_suffix',
+                               '%s/%s' % (kind, fn))
+                        continue
+                    src = manifest_source_name(kind, stem)
+                    if src is None:
+                        refuse('instance_source_unattributable', '%s/%s' % (kind, fn))
+                        continue
+                    try:
+                        with open(os.path.join(d, fn), encoding='utf-8',
+                                  errors='replace') as fh:
+                            names = [n.strip() for n in _XML_NAME_RE.findall(fh.read())]
+                    except OSError:
+                        refuse('instance_manifest_unreadable', '%s/%s' % (kind, fn))
+                        continue
+                    if not names:
+                        continue
+                    is_winner = winners.get('%s/%s.ytd.xml' % (kind, stem)) == slot_name
+                    todo = build_todo(slot_name, kind, stem, names, is_winner)
+                    if not todo:
+                        skipped_dicts += 1
+                        continue
+                    inst_dicts += 1
+                    jobs.setdefault((slot_name, src.lower(), stem.lower()),
+                                    {'slot': slot_name, 'src': src.lower(), 'kind': kind,
+                                     'stem': stem, 'todo': todo, 'winner': is_winner})
+        print(f'instance planning : {"embedded at every slot instance" if inst_mode else ""}'
+              f'{" + " if inst_mode and dict_pats else ""}'
+              f'{"--dicts full decode" if dict_pats else ""} -> {inst_dicts:,} additional '
+              f'dictionaries to decode')
     limit = int(getattr(a, 'limit', 0) or 0)
     order = sorted(jobs)
     capped = len(order) > limit > 0
@@ -2473,9 +2589,10 @@ def decode_referenced(a, out, resolved, ref_roots):
                         written_bytes += len(data)
                     ledger[rel] = {'sha256': _sha256_bytes(data), 'bytes': len(data),
                                    'source': it['src'], 'slot': it['slot']}
-                    if os.path.isdir(resolved):
-                        how = _link_or_copy(dst, os.path.join(resolved, it['kind'], it['stem'],
-                                                              safe + ext))
+                    for sdst in _sibling_targets(out, resolved, it['slot'], it['kind'],
+                                                 it['stem'], safe, ext,
+                                                 it.get('winner', True)):
+                        how = _link_or_copy(dst, sdst)
                         if how == 'link':
                             linked += 1
                         elif how == 'copy':
@@ -4403,6 +4520,19 @@ def main():
     pt.add_argument('--limit', type=int, default=0,
                     help='decode at most N dictionaries this run (0 = no cap). Safe to use: the '
                          'run is resumable, so a capped run is a partial, not a wrong, corpus')
+    pt.add_argument('--all-instances', action='store_true', dest='all_instances',
+                    help='ALSO decode every EMBEDDED dictionary at every slot instance (not just '
+                         'the _resolved winner), each from its own slot\'s archives - what a '
+                         '--textures dds extract would have written. The default winner-only plan '
+                         'cannot see a non-winner instance\'s pixels at all (the 2026-08-07 '
+                         'sidecar-grade instance-axis class). Non-winner pixels are NEVER linked '
+                         'into _resolved.')
+    pt.add_argument('--dicts',
+                    help='force-decode these STANDALONE dictionaries IN FULL (every texture, not '
+                         'just referenced ones): comma-separated fnmatch patterns against the '
+                         'dictionary stem, or @file with one per line. For engine-referenced '
+                         'dictionaries no drawable names (waterfog) and oracle-graded positions. '
+                         'With --all-instances, applies at every slot instance.')
     pt.add_argument('--dds', action='store_true',
                     help='also write the lossless .dds beside the .png (doubles the disk)')
     pt.add_argument('--dds-only', action='store_true', dest='dds_only',
