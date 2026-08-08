@@ -670,11 +670,12 @@ def _emit_articulated(r, l1):
     _, bs = r.deref(p, 0x90)
     n_bodies = r.sys[bs + 0x88]
     n_joints = r.sys[bs + 0x89]
-    # nLinks = the skeleton BONE count: the witness has 13 children and 13 groups but 22
-    # ItemIndices/ItemFlags entries = its 22 BONES. A ragdoll maps each bone to its
-    # articulated body, which is exactly what these arrays are.
-    _, _db = r.deref(r.u32(DRAWABLE_SLOT), 0xD0)
-    n_links = _bone_count(r, _db)
+    # nLinks = 22, a FIXED capacity of the articulated-body struct: the inline index region
+    # spans BS+0x10..BS+0x68 = exactly 22 u32 slots, and the reference prints ALL of them.
+    # Two earlier count theories both died on a second witness (bones: fish 22 bones/22
+    # entries was a coincidence - sharkhammer has 19 bones and still 22 entries; children and
+    # groups counts likewise). No stored count field exists in BS or l1 for it (scanned).
+    n_links = 22
     idx = [str(_yU(r, bs + 0x10 + i * 4)) for i in range(n_links)]
     flg = [str(r.sys[bs + 0x8A + i]) for i in range(n_links)]
     L = ["   <ArticulatedBody>"]

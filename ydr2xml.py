@@ -341,15 +341,24 @@ def decode_vertices(res, vdata_tagged, count, stride, fields):
                 # (all 264 ydr/ydd oracle layouts are GTAV1 = float3 normals, nibble 6 - none use
                 # nibble 0xA), so widening 0xA to 4 tokens cannot touch a passing ydr/ydd file.
                 emit_n = 4 if nb == 0xA else tokens
-                clean = []
+                vals = []
                 for x in raw[:emit_n]:
-                    if x != x or abs(x) == float("inf"):
+                    if x != x:
                         if _name == "Position":
                             raise ValueError("NaN/inf in the Position channel (vertex %d)" % v)
                         _refuse("nan_substituted_zero:" + _name)
                         x = 0.0
-                    clean.append(x)
-                vals = [fmt_float(x) for x in clean]
+                    elif abs(x) == float("inf"):
+                        # ⭐ INFINITY IS WITNESSED VERBATIM (gt750 TexCoord1, densify oracle
+                        # 2026-08-08): the reference prints `Infinity`/`-Infinity`, so
+                        # substituting 0 here was a parity break. NaN keeps the measured
+                        # substitute-and-count behaviour (UE chokes on NaN UVs; the ydr/yft
+                        # oracle boards passed with it).
+                        if _name == "Position":
+                            raise ValueError("NaN/inf in the Position channel (vertex %d)" % v)
+                        vals.append("Infinity" if x > 0 else "-Infinity")
+                        continue
+                    vals.append(fmt_float(x))
             groups.append(" ".join(vals))
         lines.append("   ".join(groups))
     return lines
