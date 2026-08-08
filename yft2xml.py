@@ -582,6 +582,29 @@ def _emit_children(r, l1):
             m = _yv3(r, dbo + 0xB0 + row * 0x10) if dbo is not None else (0, 0, 0)
             L.append("       %s %s %s" % (_F(m[0]), _F(m[1]), _F(m[2])))
         L.append("      </Matrix>")
+        # <Matrices> - DERIVED 2026-08-07 (WAL §13b), on the CHILD drawable, not the main one.
+        # ptr @ dbo+0x108 GATES emission (only children that carry a block have it non-null);
+        # COUNT = u16 @ dbo+0x110; per-matrix memory stride 0x40 with 4 rows at row*0x10, 3 floats
+        # emitted per row - same shape as the child <Matrix> at dbo+0xB0.
+        # ⛔ `id` and `capacity` are LITERALS the reference writes. capacity is NOT dbo+0x112,
+        #   which reads 1 in all six oracles; id is 0 in all 53 items. Both are UNSEPARATED from a
+        #   constant - if a future oracle shows either varying, this is where to look.
+        # ⛔ STRIDE WAS THE TRAP: 0x30 reproduces 21 of 53 matrices - a clean pass on every
+        #   identity-heavy file and wrong everywhere the data is real. Only 0x40 gives 53/53.
+        #   Validated whole-rule 6/6 INCLUDING block order: boattrailer [26] cablecar [2]
+        #   raketrailer [10,1,1] seashark [5] seashark2 [1] trflat [3,1,1,1,1].
+        if dbo is not None and _yU(r, dbo + 0x108):
+            nmat = struct.unpack_from("<H", r.sys, dbo + 0x110)[0]
+            _, mp = r.deref(_yU(r, dbo + 0x108), nmat * 0x40)
+            if mp is not None:
+                L.append('      <Matrices capacity="64">')
+                for mi in range(nmat):
+                    L.append('       <Item id="0">')
+                    for row in range(4):
+                        m = _yv3(r, mp + mi * 0x40 + row * 0x10)
+                        L.append("        %s %s %s" % (_F(m[0]), _F(m[1]), _F(m[2])))
+                    L.append("       </Item>")
+                L.append("      </Matrices>")
         if dbo is not None:
             sc = _yv3(r, dbo + 0x20); sr = _yf(r, dbo + 0x2C)
             bmin = _yv3(r, dbo + 0x30); bmax = _yv3(r, dbo + 0x40)
