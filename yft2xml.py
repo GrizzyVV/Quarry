@@ -1082,7 +1082,15 @@ def convert(res, stem, extras=None):
     """-> (xml text, []). THE entry point; byte-identical vs the reference exporter oracle. `extras` is
     accepted for call-site compatibility but no longer changes output - the full fragment is always
     built. Sidecars are [] here; quarry.to_interchange_xml still appends the embedded-texture ones."""
-    res.require_version(YFT_VERSION, "Legacy fragment")
+    # v160 = the vehicle-MOD-PART stamp (tampa/torn/serrano2 wings, polbuffalo, seashark3…):
+    # SAME layout as 162 — three witnesses decode byte-identical against fresh oracles under
+    # the 162 offsets (v160_probe.py, 2026-08-08), and every accepted file's own oracle
+    # byte-compare is its per-file proof. Accepted AND COUNTED so a rising count stays visible.
+    try:
+        res.require_version(YFT_VERSION, "Legacy fragment")
+    except ValueError:
+        res.require_version(160, "Legacy fragment (v160 mod-part stamp)")
+        _refuse("fragment_v160_accepted_same_layout_as_162", stem)
     frag_name = res.cstr(res.u32(NAME_SLOT))
     if not frag_name:
         _refuse("fragment_name_absent_stem_substituted", stem)

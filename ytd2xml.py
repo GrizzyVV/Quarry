@@ -94,6 +94,9 @@ USAGE_BY_CODE = {
     20: "DIFFUSE",     # 157/157 (+192 oracle 2026-08-05)
     22: "NORMAL",      # 61/61 (+6 oracle)   <-- drives ImportYtd's normal-map handling
     23: "SPECULAR",    # 50/50 (+6 oracle)   <-- drives ImportYtd's specular handling
+    25: "TINTPALETTE",     # 8/8 oracle 2026-08-08 (densify wave: ch_prop_ch_service_locker/
+                           # pillar + m24_2 containers - the `*_pal` palette textures,
+                           # code measured 25 on the witness binary)
     26: "SKIPPROCESSING",  # 3/3 oracle 2026-08-05 (nxg_im_ground_cover LODs)
 }
 # Codes 8, 21, 24 still occur in real archives with no oracle witness yet - they emit UNKNOWN
