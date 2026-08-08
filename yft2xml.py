@@ -691,6 +691,99 @@ def _emit_physics(r):
     return L
 
 
+def _emit_vehicle_glass(r):
+    """<VehicleGlassWindows> @ fragroot+0x120 — the breakable-glass manager ('HWGV'), a
+    DIFFERENT array from <GlassWindows> @ +0xE0. [] when the pointer is absent.
+
+    Derivation (2026-08-08, value-matched 15/15 windows across cablecar+driftsentinel2):
+    manager: tag 'HWGV' · count u16 @+0x06 · totalSize u32 @+0x08 · count × (u32 ItemID,
+    u32 recordOffset) pairs @+0x0C — the reference emits windows in TABLE order.
+    record @ manager+offset: Projection f32 grid @+0x00, STORED TRANSPOSED — oracle[r][c]
+    reads from `+ c*16 + r*4` · tag 'VGWC' @+0x40 · ItemID u16 @+0x44 (self-checked vs the
+    table 15/15) · UnkUshort1 @+0x46 · ShatterMap dims u16 w @+0x48 / h @+0x4A · UnkFloat17
+    @+0x58 · UnkFloat18 @+0x5C · UnkUshort4 @+0x60 · UnkUshort5 @+0x62 · CracksTextureTiling
+    @+0x64. ShatterMap raster: u16 cumulative row-offset table @+0x72 with (h-1) entries,
+    then rows stored CONSECUTIVELY: each = u8 firstCol, u8 lastCol, data[last-first+1],
+    0xFF terminator (blob sizes reproduce the cumulative table with zero residue). Rendering:
+    cells outside [first..last] = '##', byte 0xFF = '--', else uppercase hex."""
+    p = _yU(r, 0x120)
+    if (p >> 28) != 5:
+        return []
+    _, man = r.deref(p, 0x20)
+    n = struct.unpack_from("<H", r.sys, man + 0x6)[0]
+    if n == 0:
+        return []
+    L = [" <VehicleGlassWindows>"]
+    for wi in range(n):
+        item_id = _yU(r, man + 0x0C + wi * 8)
+        rec = man + _yU(r, man + 0x10 + wi * 8)
+        rec_id = struct.unpack_from("<H", r.sys, rec + 0x44)[0]
+        if rec_id != item_id:
+            raise ValueError("vehicle glass window %d: table ItemID %d != record ItemID %d"
+                             % (wi, item_id, rec_id))
+        L.append("  <Window>")
+        L.append('   <ItemID value="%d" />' % item_id)
+        L.append('   <UnkUshort1 value="%d" />'
+                 % struct.unpack_from("<H", r.sys, rec + 0x46)[0])
+        L.append('   <UnkUshort4 value="%d" />'
+                 % struct.unpack_from("<H", r.sys, rec + 0x60)[0])
+        L.append('   <UnkUshort5 value="%d" />'
+                 % struct.unpack_from("<H", r.sys, rec + 0x62)[0])
+        L.append("   <Projection>")
+        for row in range(4):
+            vals = [_yf(r, rec + c * 16 + row * 4) for c in range(4)]
+            L.append("    %s %s %s %s" % tuple(_F(v) for v in vals))
+        L.append("   </Projection>")
+        L.append('   <UnkFloat17 value="%s" />' % _F(_yf(r, rec + 0x58)))
+        L.append('   <UnkFloat18 value="%s" />' % _F(_yf(r, rec + 0x5C)))
+        L.append('   <CracksTextureTiling value="%s" />' % _F(_yf(r, rec + 0x64)))
+        w = struct.unpack_from("<H", r.sys, rec + 0x48)[0]
+        h = struct.unpack_from("<H", r.sys, rec + 0x4A)[0]
+        if w and h:
+            L.append("   <ShatterMap>")
+            pos = rec + 0x72 + (h - 1) * 2
+            for _row in range(h):
+                # A row = strictly-rightward SPANS: (first u8, last u8, data[last-first+1]).
+                # Row boundary is EITHER an explicit 0xFF sentinel where the next `first`
+                # would sit, OR IMPLICIT: a following span whose `first` does not continue
+                # strictly rightward belongs to the NEXT row (the encoder omits the sentinel
+                # exactly when that backtrack makes the boundary unambiguous — measured:
+                # cablecar win0 rows 5/6 end at w-1 with no sentinel; win5 short rows keep
+                # theirs). Rendering: unstored gap cells BETWEEN spans = '--', cells outside
+                # every span = '##', and a STORED 0xFF byte prints as literal 'FF' (win4
+                # row4: "...EBF7FF----" — the FF is data, the run is the gap).
+                spans = []
+                prev_last = -1
+                while True:
+                    if r.sys[pos] == 0xFF:
+                        pos += 1                              # explicit row-end sentinel
+                        break
+                    first = r.sys[pos]
+                    last = r.sys[pos + 1]
+                    if first <= prev_last:
+                        break             # implicit boundary: span belongs to the next row
+                    if not (first <= last < w):
+                        raise ValueError(
+                            "vehicle glass window %d: shatter span %d..%d outside width %d"
+                            % (wi, first, last, w))
+                    spans.append((first, last,
+                                  r.sys[pos + 2:pos + 2 + (last - first + 1)]))
+                    prev_last = last
+                    pos += 2 + (last - first + 1)
+                cells = ["##"] * w
+                if spans:
+                    for c in range(spans[0][0], spans[-1][1] + 1):
+                        cells[c] = "--"
+                    for first, last, data in spans:
+                        for k, b in enumerate(data):
+                            cells[first + k] = "%02X" % b
+                L.append("    " + "".join(cells))
+            L.append("   </ShatterMap>")
+        L.append("  </Window>")
+    L.append(" </VehicleGlassWindows>")
+    return L
+
+
 def _emit_glass(r):
     """<GlassWindows> @ fragroot+0xE0 (count u8 @+0xD9, stride 0x70). [] when absent."""
     cnt = r.sys[0xD9]; p = _yU(r, 0xE0)
@@ -936,6 +1029,7 @@ def convert(res, stem, extras=None):
         # cloth: NO top-level <Drawable>; the drawable is emitted under <Cloths><Item>
         L += _bone_transforms(res, nb)
         L += _emit_physics(res)
+        L += _emit_vehicle_glass(res)
         L.append(" <Lights />")
         L += _emit_cloths(res)
     else:
@@ -945,6 +1039,7 @@ def convert(res, stem, extras=None):
         L.append(" </Drawable>")
         L += _bone_transforms(res, nb)
         L += _emit_physics(res)
+        L += _emit_vehicle_glass(res)                          # oracle order: right after </Physics>
         L += _emit_glass(res)
         L += lights                                            # fragment-level <Lights /> (last)
     L.append("</Fragment>")
