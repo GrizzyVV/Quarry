@@ -643,9 +643,11 @@ def _emit_children(r, l1):
 
 
 _ARTICULATED_JOINT_TYPES = {
-    # joint vtable u32 -> <Item type=...>. ONE witness so far (a_c_fish, all 12 joints);
-    # an unwitnessed vtable REFUSES loudly rather than guessing a DOF class.
+    # joint vtable u32 -> <Item type=...>, witnessed UNANIMOUSLY across the animal oracles
+    # (95 DOF3 + 11 DOF1 joints over 8 witnesses, animal_vtables.py 2026-08-08; both item
+    # shapes print the same field set). An unwitnessed vtable still REFUSES loudly.
     0x4062BC40: "DOF3",
+    0x4062BCB0: "DOF1",
 }
 
 
@@ -758,6 +760,23 @@ def _emit_physics(r):
     L.append("   </Transforms>")
     L += _emit_groups(r, l1)
     L += _emit_children(r, l1)
+    # UnknownData1/2 — u8 index tables (the articulated animals' last section, 2026-08-08):
+    # ptrs @ l1+0x108 / l1+0x110, counts u8 @ l1+0x118 / l1+0x119 (hen: both 69, matching its
+    # oracle arrays exactly; a file can carry either or both — presence = non-null ptr).
+    # Rendering: 10 values per line.
+    for tag, poff, coff in (("UnknownData1", 0x108, 0x118), ("UnknownData2", 0x110, 0x119)):
+        p = _yU(r, l1 + poff)
+        if (p >> 28) != 5:
+            continue
+        n = r.sys[l1 + coff]
+        if n == 0:
+            continue    # absent != empty: cormorant carries a live ptr with count 0 and the
+                        # reference omits the element entirely
+        _, arr = r.deref(p, n)
+        L.append("   <%s>" % tag)
+        for i in range(0, n, 10):
+            L.append("    " + " ".join(str(r.sys[arr + j]) for j in range(i, min(i + 10, n))))
+        L.append("   </%s>" % tag)
     L += ["  </LOD1>", " </Physics>"]
     return L
 
