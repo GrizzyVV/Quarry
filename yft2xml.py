@@ -642,6 +642,75 @@ def _emit_children(r, l1):
     return L
 
 
+_ARTICULATED_JOINT_TYPES = {
+    # joint vtable u32 -> <Item type=...>. ONE witness so far (a_c_fish, all 12 joints);
+    # an unwitnessed vtable REFUSES loudly rather than guessing a DOF class.
+    0x4062BC40: "DOF3",
+}
+
+
+def _emit_articulated(r, l1):
+    """<ArticulatedBody> @ LOD1+0x20 (NULL = absent - the a_c_fish class: animal ragdoll
+    physics). Derivation 2026-08-08 (probes artbody_*.py), single witness a_c_fish,
+    validated by whole-file byte-compare:
+    body struct BS = deref(l1+0x20): ItemIndices INLINE u32[nLinks] @ BS+0x10 · joints
+    pointer-table ptr @ BS+0x78 (u64 slots, EMIT ORDER - the item array itself is stored in a
+    DIFFERENT order and one item can sit outside the stride walk entirely) · UnknownVectors
+    ptr @ BS+0x80 (16B each) · bodies u8 @ BS+0x88 (= vector count) · joints u8 @ BS+0x89 ·
+    ItemFlags u8[nLinks] @ BS+0x8A. nLinks = ItemIndices/ItemFlags length = 22 in the witness;
+    read from the LINK count u8 @ BS+0x8A? NO - measured: the two arrays are bounded by the
+    struct layout, and the witness count equals the fragment's physics-children count, which
+    the caller supplies implicitly through the byte-compare gate.
+    Joint item: vtable u32 @+0x00 (type, table above) · Unknown10 f32 @+0x10 · FragIndex1 u8
+    @+0x16 · FragIndex2 u8 @+0x17 · Unknown20..UnknownA0 vec4 @+0x20..0xA0 (w prints as
+    stored; 0x50/0x90 carry NaN w in the witness)."""
+    p = _yU(r, l1 + 0x20)
+    if (p >> 28) != 5:
+        return []
+    _, bs = r.deref(p, 0x90)
+    n_bodies = r.sys[bs + 0x88]
+    n_joints = r.sys[bs + 0x89]
+    # nLinks = the skeleton BONE count: the witness has 13 children and 13 groups but 22
+    # ItemIndices/ItemFlags entries = its 22 BONES. A ragdoll maps each bone to its
+    # articulated body, which is exactly what these arrays are.
+    _, _db = r.deref(r.u32(DRAWABLE_SLOT), 0xD0)
+    n_links = _bone_count(r, _db)
+    idx = [str(_yU(r, bs + 0x10 + i * 4)) for i in range(n_links)]
+    flg = [str(r.sys[bs + 0x8A + i]) for i in range(n_links)]
+    L = ["   <ArticulatedBody>"]
+    L.append("    <ItemIndices>%s</ItemIndices>" % " ".join(idx))
+    L.append("    <ItemFlags>%s</ItemFlags>" % " ".join(flg))
+    L.append("    <UnknownVectors>")
+    _, vecs = r.deref(_yU(r, bs + 0x80), n_bodies * 16)
+    for i in range(n_bodies):
+        v = [_yf(r, vecs + i * 16 + c * 4) for c in range(4)]
+        L.append("     %s" % ", ".join(_F(x) for x in v))
+    L.append("    </UnknownVectors>")
+    L.append("    <Joints>")
+    _, tab = r.deref(_yU(r, bs + 0x78), n_joints * 8)
+    for i in range(n_joints):
+        _, it = r.deref(_yU(r, tab + i * 8), 0xF0)
+        vt = _yU(r, it)
+        typ = _ARTICULATED_JOINT_TYPES.get(vt)
+        if typ is None:
+            raise ValueError("articulated joint %d: UNWITNESSED vtable 0x%08X - refusing to "
+                             "guess its DOF type" % (i, vt))
+        L.append('     <Item type="%s">' % typ)
+        L.append('      <FragIndex1 value="%d" />' % r.sys[it + 0x16])
+        L.append('      <FragIndex2 value="%d" />' % r.sys[it + 0x17])
+        L.append('      <Unknown10 value="%s" />' % _F(_yf(r, it + 0x10)))
+        for tag, off in (("Unknown20", 0x20), ("Unknown30", 0x30), ("Unknown40", 0x40),
+                         ("Unknown50", 0x50), ("Unknown60", 0x60), ("Unknown70", 0x70),
+                         ("Unknown80", 0x80), ("Unknown90", 0x90), ("UnknownA0", 0xA0)):
+            v = [_yf(r, it + off + c * 4) for c in range(4)]
+            L.append('      <%s x="%s" y="%s" z="%s" w="%s" />'
+                     % ((tag,) + tuple(_F(x) for x in v)))
+        L.append("     </Item>")
+    L.append("    </Joints>")
+    L.append("   </ArticulatedBody>")
+    return L
+
+
 def _emit_physics(r):
     l1 = _lod1_base(r)
     if l1 is None:
@@ -675,6 +744,7 @@ def _emit_physics(r):
     _, bo = r.deref(_yU(r, ab + 0x20), 0x70)                    # phBound composite -> REUSE _bound_lines
     L += _bound_lines(r, bo, "    ", "Bounds", "archetype")
     L.append("   </Archetype>")
+    L += _emit_articulated(r, l1)
     _, to = r.deref(_yU(r, l1 + 0x100), 0x200); tn = _yU(r, to + 0x10)    # Transforms
     L.append("   <Transforms>")
     for i in range(tn):
