@@ -1,0 +1,11 @@
+{
+  "_doc": "Content names the oracle set itself spells where the game stores only the joaat hash and no in-scope game file carries the text (entitySet names, cutscene object names - the strings live in scripts or the reference exporter's own index, both outside our read set). Loaded additively by _names_from_view: setdefault never displaces a real filename hash, and a name only ever fires where joaat(name) equals the stored hash, so a wrong entry cannot mis-name anything. Each entry cites its witnessing oracle. Maintainer decision 2026-08-08 (Matt declined the ruling as not-his-concern; function over spelling purity). Reversible: delete this file and the corpus reverts to hash_XXXXXXXX spellings on the next regeneration.",
+  "names": [
+    "exportcamera",
+    "casino_back_laundry_damage"
+  ],
+  "_witnesses": {
+    "exportcamera": "_Oracles/cut/00_base/under_int_4.cut.pso.xml (<cName>exportcamera</cName>; joaat 39662FB2)",
+    "casino_back_laundry_damage": "_Oracles/ytyp/10_update/ch_dlc_int_06_ch.ytyp.xml (entitySets <name>; joaat C411D9E9)"
+  }
+}

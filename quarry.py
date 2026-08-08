@@ -3308,6 +3308,19 @@ def _names_from_view(view_dir, game):
         import meta2xml as _m
         for n in json.load(open(p, encoding='utf-8')).get('names', []):
             names.setdefault(_m.joaat(n), n)
+    # OVERLAY 2 (2026-08-08, maintainer call after Matt declined the ruling - function over
+    # spelling purity): general oracle-witnessed CONTENT names - strings the oracle set itself
+    # spells where the game stores only the hash and no in-scope file carries the text
+    # (entitySet names, cutscene object names; both live in scripts or the reference
+    # exporter's own index). Same self-verifying rule as above: joaat(name) must equal the
+    # stored hash or the entry is dead weight that can never fire. REVERSIBLE: delete
+    # oracle_witnessed_names.json and the corpus reverts to hash_%08X spellings on next regen.
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     'oracle_witnessed_names.json')
+    if os.path.isfile(p):
+        import meta2xml as _m
+        for n in json.load(open(p, encoding='utf-8')).get('names', []):
+            names.setdefault(_m.joaat(n), n)
     return names
 
 
