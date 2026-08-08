@@ -574,71 +574,83 @@ def _emit_children(r, l1):
         # 0x140, not 0x100: the model-group pointers live at +0x50..+0x68, but the window has to
         # reach the fields the geometry reader touches beyond +0x100.
         _, dbo = r.deref(_yU(r, base + 0xA0), 0x140)            # child drawable
-        L.append("     <Drawable>")
-        nm = r.cstr(_yU(r, dbo + 0xA8)) if dbo is not None else ""
-        L.append("      <Name>%s</Name>" % esc(nm) if nm else "      <Name />")
-        L.append("      <Matrix>")
-        for row in range(4):
-            m = _yv3(r, dbo + 0xB0 + row * 0x10) if dbo is not None else (0, 0, 0)
-            L.append("       %s %s %s" % (_F(m[0]), _F(m[1]), _F(m[2])))
-        L.append("      </Matrix>")
-        # <Matrices> - DERIVED 2026-08-07 (WAL §13b), on the CHILD drawable, not the main one.
-        # ptr @ dbo+0x108 GATES emission (only children that carry a block have it non-null);
-        # COUNT = u16 @ dbo+0x110; per-matrix memory stride 0x40 with 4 rows at row*0x10, 3 floats
-        # emitted per row - same shape as the child <Matrix> at dbo+0xB0.
-        # ⛔ `id` and `capacity` are LITERALS the reference writes. capacity is NOT dbo+0x112,
-        #   which reads 1 in all six oracles; id is 0 in all 53 items. Both are UNSEPARATED from a
-        #   constant - if a future oracle shows either varying, this is where to look.
-        # ⛔ STRIDE WAS THE TRAP: 0x30 reproduces 21 of 53 matrices - a clean pass on every
-        #   identity-heavy file and wrong everywhere the data is real. Only 0x40 gives 53/53.
-        #   Validated whole-rule 6/6 INCLUDING block order: boattrailer [26] cablecar [2]
-        #   raketrailer [10,1,1] seashark [5] seashark2 [1] trflat [3,1,1,1,1].
-        if dbo is not None and _yU(r, dbo + 0x108):
-            nmat = struct.unpack_from("<H", r.sys, dbo + 0x110)[0]
-            _, mp = r.deref(_yU(r, dbo + 0x108), nmat * 0x40)
-            if mp is not None:
-                L.append('      <Matrices capacity="64">')
-                for mi in range(nmat):
-                    L.append('       <Item id="0">')
-                    for row in range(4):
-                        m = _yv3(r, mp + mi * 0x40 + row * 0x10)
-                        L.append("        %s %s %s" % (_F(m[0]), _F(m[1]), _F(m[2])))
-                    L.append("       </Item>")
-                L.append("      </Matrices>")
-        if dbo is not None:
-            sc = _yv3(r, dbo + 0x20); sr = _yf(r, dbo + 0x2C)
-            bmin = _yv3(r, dbo + 0x30); bmax = _yv3(r, dbo + 0x40)
-            ld = struct.unpack_from("<4f", r.sys, dbo + 0x70)
-            fl = [r.sys[dbo + 0x80], r.sys[dbo + 0x84], r.sys[dbo + 0x88], r.sys[dbo + 0x8C]]
-        else:
-            sc = (0, 0, 0); sr = 0
-            bmin = bmax = (0, 0, 0); ld = (0, 0, 0, 0); fl = [0, 0, 0, 0]
-        L.append('      <BoundingSphereCenter x="%s" y="%s" z="%s" />' % tuple(_F(x) for x in sc))
-        L.append('      <BoundingSphereRadius value="%s" />' % _F(sr))
-        L.append('      <BoundingBoxMin x="%s" y="%s" z="%s" />' % tuple(_F(x) for x in bmin))
-        L.append('      <BoundingBoxMax x="%s" y="%s" z="%s" />' % tuple(_F(x) for x in bmax))
-        for t, vv in zip(("LodDistHigh", "LodDistMed", "LodDistLow", "LodDistVlow"), ld):
-            L.append('      <%s value="%s" />' % (t, _F(vv)))
-        for t, vv in zip(("FlagsHigh", "FlagsMed", "FlagsLow", "FlagsVlow"), fl):
-            L.append('      <%s value="%d" />' % (t, vv))
-        # ⛔ A CHILD DRAWABLE IS NOT ALWAYS A HEADER-ONLY STUB - that claim came from the 10-file
-        # oracle set and the 31-file stratified draw killed it. Exactly ONE child per vehicle (the
-        # wheel) carries its own LOD model groups at +0x50/58/60/68: measured non-zero on 1 child
-        # of 32 (boattrailer), 1 of 19 (luiva), 1 of 23 (driftsentinel2), zero on every other.
-        # That omission was >96% of the 380-727 KB vehicle gap. No new decoding was needed - the
-        # existing ydr2xml model-group emitter reproduces the oracle block LINE-FOR-LINE
-        # (2,238 / 4,374 / 3,290 lines exact), validated 14/14 over the local oracle pairs.
-        if dbo is not None:
-            for goff, tag in DRAWABLE_MODEL_GROUPS:
-                if _yU(r, dbo + goff) == 0:
-                    continue
-                g = read_geometries(r, dbo, group_off=goff)
-                if not g:
-                    continue
-                L += ["     " + ln for ln in _model_group_lines(fmt_float, tag, g)]
-        L.append("     </Drawable>")
+        L += _child_drawable_lines(r, dbo, "Drawable")
+        # <Drawable2> — the child's DAMAGED twin @ base+0xA8 (ch_prop_ch_monitor_01a witness,
+        # 2026-08-08: emitted right after </Drawable>, same block shape, Name empty)
+        d2 = _yU(r, base + 0xA8)
+        if (d2 >> 28) == 5:
+            _, dbo2 = r.deref(d2, 0x140)
+            L += _child_drawable_lines(r, dbo2, "Drawable2")
         L.append("    </Item>")
     L.append("   </Children>")
+    return L
+
+
+def _child_drawable_lines(r, dbo, tag):
+    L = []
+    L.append("     <%s>" % tag)
+    nm = r.cstr(_yU(r, dbo + 0xA8)) if dbo is not None else ""
+    L.append("      <Name>%s</Name>" % esc(nm) if nm else "      <Name />")
+    L.append("      <Matrix>")
+    for row in range(4):
+        m = _yv3(r, dbo + 0xB0 + row * 0x10) if dbo is not None else (0, 0, 0)
+        L.append("       %s %s %s" % (_F(m[0]), _F(m[1]), _F(m[2])))
+    L.append("      </Matrix>")
+    # <Matrices> - DERIVED 2026-08-07 (WAL §13b), on the CHILD drawable, not the main one.
+    # ptr @ dbo+0x108 GATES emission (only children that carry a block have it non-null);
+    # COUNT = u16 @ dbo+0x110; per-matrix memory stride 0x40 with 4 rows at row*0x10, 3 floats
+    # emitted per row - same shape as the child <Matrix> at dbo+0xB0.
+    # ⛔ `id` and `capacity` are LITERALS the reference writes. capacity is NOT dbo+0x112,
+    #   which reads 1 in all six oracles; id is 0 in all 53 items. Both are UNSEPARATED from a
+    #   constant - if a future oracle shows either varying, this is where to look.
+    # ⛔ STRIDE WAS THE TRAP: 0x30 reproduces 21 of 53 matrices - a clean pass on every
+    #   identity-heavy file and wrong everywhere the data is real. Only 0x40 gives 53/53.
+    #   Validated whole-rule 6/6 INCLUDING block order: boattrailer [26] cablecar [2]
+    #   raketrailer [10,1,1] seashark [5] seashark2 [1] trflat [3,1,1,1,1].
+    if dbo is not None and _yU(r, dbo + 0x108):
+        nmat = struct.unpack_from("<H", r.sys, dbo + 0x110)[0]
+        _, mp = r.deref(_yU(r, dbo + 0x108), nmat * 0x40)
+        if mp is not None:
+            L.append('      <Matrices capacity="64">')
+            for mi in range(nmat):
+                L.append('       <Item id="0">')
+                for row in range(4):
+                    m = _yv3(r, mp + mi * 0x40 + row * 0x10)
+                    L.append("        %s %s %s" % (_F(m[0]), _F(m[1]), _F(m[2])))
+                L.append("       </Item>")
+            L.append("      </Matrices>")
+    if dbo is not None:
+        sc = _yv3(r, dbo + 0x20); sr = _yf(r, dbo + 0x2C)
+        bmin = _yv3(r, dbo + 0x30); bmax = _yv3(r, dbo + 0x40)
+        ld = struct.unpack_from("<4f", r.sys, dbo + 0x70)
+        fl = [r.sys[dbo + 0x80], r.sys[dbo + 0x84], r.sys[dbo + 0x88], r.sys[dbo + 0x8C]]
+    else:
+        sc = (0, 0, 0); sr = 0
+        bmin = bmax = (0, 0, 0); ld = (0, 0, 0, 0); fl = [0, 0, 0, 0]
+    L.append('      <BoundingSphereCenter x="%s" y="%s" z="%s" />' % tuple(_F(x) for x in sc))
+    L.append('      <BoundingSphereRadius value="%s" />' % _F(sr))
+    L.append('      <BoundingBoxMin x="%s" y="%s" z="%s" />' % tuple(_F(x) for x in bmin))
+    L.append('      <BoundingBoxMax x="%s" y="%s" z="%s" />' % tuple(_F(x) for x in bmax))
+    for t, vv in zip(("LodDistHigh", "LodDistMed", "LodDistLow", "LodDistVlow"), ld):
+        L.append('      <%s value="%s" />' % (t, _F(vv)))
+    for t, vv in zip(("FlagsHigh", "FlagsMed", "FlagsLow", "FlagsVlow"), fl):
+        L.append('      <%s value="%d" />' % (t, vv))
+    # ⛔ A CHILD DRAWABLE IS NOT ALWAYS A HEADER-ONLY STUB - that claim came from the 10-file
+    # oracle set and the 31-file stratified draw killed it. Exactly ONE child per vehicle (the
+    # wheel) carries its own LOD model groups at +0x50/58/60/68: measured non-zero on 1 child
+    # of 32 (boattrailer), 1 of 19 (luiva), 1 of 23 (driftsentinel2), zero on every other.
+    # That omission was >96% of the 380-727 KB vehicle gap. No new decoding was needed - the
+    # existing ydr2xml model-group emitter reproduces the oracle block LINE-FOR-LINE
+    # (2,238 / 4,374 / 3,290 lines exact), validated 14/14 over the local oracle pairs.
+    if dbo is not None:
+        for goff, gtag in DRAWABLE_MODEL_GROUPS:
+            if _yU(r, dbo + goff) == 0:
+                continue
+            g = read_geometries(r, dbo, group_off=goff)
+            if not g:
+                continue
+            L += ["     " + ln for ln in _model_group_lines(fmt_float, gtag, g)]
+        L.append("     </%s>" % tag)
     return L
 
 
@@ -714,6 +726,28 @@ def _emit_articulated(r, l1):
     return L
 
 
+def _emit_archetype(r, tagged, tag):
+    """One physics archetype block (Name/Mass/inertia/Bounds) — shared by <Archetype>
+    (l1+0xD8) and <Archetype2> (l1+0xE0, the damaged state's)."""
+    _, ab = r.deref(tagged, 0x80)
+    L = ["   <%s>" % tag]
+    L.append("    <Name>%s</Name>" % esc(r.cstr(_yU(r, ab + 0x18))))
+    L.append('    <Mass value="%s" />' % _F(_yf(r, ab + 0x40)))
+    L.append('    <MassInv value="%s" />' % _F(_yf(r, ab + 0x44)))
+    L.append('    <Unknown48 value="%s" />' % _F(_yf(r, ab + 0x48)))
+    L.append('    <Unknown4C value="%s" />' % _F(_yf(r, ab + 0x4C)))
+    L.append('    <Unknown50 value="%s" />' % _F(_yf(r, ab + 0x50)))
+    L.append('    <Unknown54 value="%s" />' % _F(_yf(r, ab + 0x54)))
+    L.append('    <InertiaTensor x="%s" y="%s" z="%s" />'
+             % tuple(_F(x) for x in _yv3(r, ab + 0x60)))
+    L.append('    <InertiaTensorInv x="%s" y="%s" z="%s" />'
+             % tuple(_F(x) for x in _yv3(r, ab + 0x70)))
+    _, bo = r.deref(_yU(r, ab + 0x20), 0x70)        # phBound composite -> REUSE _bound_lines
+    L += _bound_lines(r, bo, "    ", "Bounds", tag.lower())
+    L.append("   </%s>" % tag)
+    return L
+
+
 def _emit_physics(r):
     l1 = _lod1_base(r)
     if l1 is None:
@@ -733,20 +767,13 @@ def _emit_physics(r):
     for nm, off in (("DampingLinearC", 0x60), ("DampingLinearV", 0x70), ("DampingLinearV2", 0x80),
                     ("DampingAngularC", 0x90), ("DampingAngularV", 0xA0), ("DampingAngularV2", 0xB0)):
         L.append('   <%s x="%s" y="%s" z="%s" />' % ((nm,) + tuple(_F(x) for x in _yv3(r, l1 + off))))
-    _, ab = r.deref(_yU(r, l1 + 0xD8), 0x80)                    # Archetype
-    L.append("   <Archetype>")
-    L.append("    <Name>%s</Name>" % esc(r.cstr(_yU(r, ab + 0x18))))
-    L.append('    <Mass value="%s" />' % _F(_yf(r, ab + 0x40)))
-    L.append('    <MassInv value="%s" />' % _F(_yf(r, ab + 0x44)))
-    L.append('    <Unknown48 value="%s" />' % _F(_yf(r, ab + 0x48)))
-    L.append('    <Unknown4C value="%s" />' % _F(_yf(r, ab + 0x4C)))
-    L.append('    <Unknown50 value="%s" />' % _F(_yf(r, ab + 0x50)))
-    L.append('    <Unknown54 value="%s" />' % _F(_yf(r, ab + 0x54)))
-    L.append('    <InertiaTensor x="%s" y="%s" z="%s" />' % tuple(_F(x) for x in _yv3(r, ab + 0x60)))
-    L.append('    <InertiaTensorInv x="%s" y="%s" z="%s" />' % tuple(_F(x) for x in _yv3(r, ab + 0x70)))
-    _, bo = r.deref(_yU(r, ab + 0x20), 0x70)                    # phBound composite -> REUSE _bound_lines
-    L += _bound_lines(r, bo, "    ", "Bounds", "archetype")
-    L.append("   </Archetype>")
+    L += _emit_archetype(r, _yU(r, l1 + 0xD8), "Archetype")
+    # Archetype2 — the DAMAGED state's physics archetype @ l1+0xE0 (witnessed 2026-08-08,
+    # ch_prop_ch_monitor_01a: emitted right after </Archetype>, same record shape). NULL for
+    # ordinary fragments.
+    a2 = _yU(r, l1 + 0xE0)
+    if (a2 >> 28) == 5:
+        L += _emit_archetype(r, a2, "Archetype2")
     L += _emit_articulated(r, l1)
     _, to = r.deref(_yU(r, l1 + 0x100), 0x200); tn = _yU(r, to + 0x10)    # Transforms
     L.append("   <Transforms>")
@@ -778,6 +805,53 @@ def _emit_physics(r):
             L.append("    " + " ".join(str(r.sys[arr + j]) for j in range(i, min(i + 10, n))))
         L.append("   </%s>" % tag)
     L += ["  </LOD1>", " </Physics>"]
+    return L
+
+
+def _emit_drawable_array(r):
+    """<DrawableArray> — EXTRA drawables (damage states etc.), witnessed 2026-08-08 on
+    ch_prop_ch_monitor_01a: table @ fragroot+0x38 pairs a u64 drawable ptr with the item's
+    NAME inline at entry+0x10 (the drawable's own +0xA8 name ptr is NULL — the table name is
+    authoritative); TOTAL drawable count (main + extras) = u8 @ descriptor(+0xA8 struct)+0x10
+    (zent=1 → no array ✓, monitor=2 → one extra ✓). Emitted right after </Drawable>.
+    ⚠ 🧠 entry stride 0x20 is a single-witness hypothesis (one extra observed); a
+    multi-extra file diffs loudly if wrong."""
+    p = _yU(r, 0x38)
+    if (p >> 28) != 5:
+        return []
+    dsc = _yU(r, 0xA8)
+    if (dsc >> 28) != 5:
+        return []
+    _, d = r.deref(dsc, 0x14)
+    total = r.sys[d + 0x10]
+    if total <= 1:
+        return []
+    _, tab = r.deref(p, (total - 1) * 0x20)
+    L = [" <DrawableArray>"]
+    for i in range(total - 1):
+        ent = tab + i * 0x20
+        dp = _yU(r, ent)
+        _, db = r.deref(dp, 0xD0)
+        end = r.sys.find(b"\x00", ent + 0x10)
+        nm = r.sys[ent + 0x10:end].decode("latin-1")
+        body, _lights = _drawable_body(r, db, " ")
+        # the table name REPLACES the body's fallback Name line (drawable name ptr is NULL)
+        if body and body[0].strip().startswith("<Name>"):
+            body[0] = "  <Name>%s</Name>" % esc(nm)
+        # absent != empty: an array drawable with a NULL ShaderGroup ptr (+0x10) reuses the
+        # main drawable's shaders and the reference OMITS the element — drop the fabricated
+        # default block (gated on the BINARY's pointer, not on string contents)
+        if not r.ptr(db + 0x10):
+            try:
+                s = next(i for i, ln in enumerate(body) if ln.strip() == "<ShaderGroup>")
+                e = next(i for i, ln in enumerate(body) if ln.strip() == "</ShaderGroup>")
+                del body[s:e + 1]
+            except StopIteration:
+                pass
+        L.append("  <Item>")
+        L.extend(" " + ln for ln in body)
+        L.append("  </Item>")
+    L.append(" </DrawableArray>")
     return L
 
 
@@ -1153,6 +1227,7 @@ def convert(res, stem, extras=None):
         L.append(" <Drawable>")
         L.extend(body)
         L.append(" </Drawable>")
+        L += _emit_drawable_array(res)
         L += _bone_transforms(res, nb)
         L += _emit_physics(res)
         L += _emit_vehicle_glass(res)                          # oracle order: right after </Physics>
