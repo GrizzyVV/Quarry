@@ -874,6 +874,32 @@ def source_tag(chain, blob):
     return '%s_%s' % (slug, hashlib.sha1(blob).hexdigest()[:6])
 
 
+_PROV_INDEX = None
+
+
+def provenance_index(out_root):
+    """(slot, type, filename) -> source archive chain, from the provenance ledger.
+
+    Built once per run and kept in memory: --refresh has to answer "did the SAME source write
+    this exact path?" for every file, and re-reading a 300k-line ledger per file is quadratic.
+    """
+    global _PROV_INDEX
+    if _PROV_INDEX is None:
+        idx = {}
+        try:
+            with open(os.path.join(out_root, '_PROVENANCE.jsonl'), 'r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    idx[(r.get('slot'), r.get('type'), r.get('file'))] = r.get('archive')
+        except OSError:
+            pass
+        _PROV_INDEX = idx
+    return _PROV_INDEX
+
+
 def file_into(out_root, slot, name, blob, stats=None, skip_existing=False, chain=None,
               refresh=False):
     """File one blob by type into a precedence slot.
@@ -935,16 +961,48 @@ def file_into(out_root, slot, name, blob, stats=None, skip_existing=False, chain
         # source instance (`chain`), which is exactly the distinction the provenance ledger
         # records. Two genuinely different assets sharing a basename still take the ~N collision
         # path - refresh must never become a silent overwrite of build-accurate data.
+        # ⛔⛔ THE SAME-SOURCE TEST IS THE WHOLE SAFETY PROPERTY - IT MUST BE MEASURED, NOT ASSUMED.
+        # Shipped 2026-08-07 as `same_source = True  # no ledger yet -> first refresh is trusted`,
+        # i.e. a hardcoded stub, so --refresh overwrote ANY existing file and the collision path
+        # never ran. MEASURED DAMAGE from one run over ymap+ytyp: 11 of 11 collision groups
+        # collapsed to identical (bh1_occl_00..07.ymap, cutsobjects/icons/ped_props.ytyp) - the
+        # distinct FIRST copy was destroyed in every one, and the run printed `collisions: 0`.
+        # The control test missed it because cases 3 and 4 BOTH passed refresh=False: the negative
+        # control was run twice and neither exercised this branch.
+        # ⇒ refresh may overwrite ONLY when the ledger proves the same source wrote this exact
+        #   path. Unprovable is REFUSED (falls through to the collision path) and counted, because
+        #   the safe default when identity is unknown is to keep both copies, not to guess.
         if refresh and chain:
-            prov = os.path.join(out_root, '_PROVENANCE.jsonl')
-            same_source = True                     # no ledger yet -> first refresh is trusted
-            if stats is not None:
-                stats['refreshed (same source, new converter output)'] = \
-                    stats.get('refreshed (same source, new converter output)', 0) + 1
+            idx = provenance_index(out_root)
+            key = (slot, type_of(name), os.path.basename(target))
+            prior = idx.get(key)
+            same_source = prior is not None and prior == chain
+            if stats is not None and not same_source:
+                k = ('refresh refused (no provenance record - cannot prove same source)'
+                     if prior is None else
+                     'refresh refused (different source instance - kept as collision)')
+                stats[k] = stats.get(k, 0) + 1
             if same_source:
+                # ⛔ "new converter output" is a CLAIM. Compare before asserting it: the first
+                # version counted every file it touched, so a run that changed nothing still
+                # reported 22,152 files "refreshed (new converter output)".
+                try:
+                    with open(target, 'rb') as _f:
+                        unchanged = _f.read() == blob
+                except OSError:
+                    unchanged = False
+                if unchanged:
+                    if stats is not None:
+                        stats['refresh: already current'] = \
+                            stats.get('refresh: already current', 0) + 1
+                    return None
+                if stats is not None:
+                    stats['refreshed (same source, new converter output)'] = \
+                        stats.get('refreshed (same source, new converter output)', 0) + 1
                 with open(target, 'wb') as f:
                     f.write(blob)
                 written = os.path.basename(target)
+                idx[key] = chain
                 if stats is not None and chain:
                     _stem, _ext = split_type_ext(name)
                     stats.setdefault('provenance', []).append(
