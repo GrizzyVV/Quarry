@@ -695,12 +695,19 @@ def _emit_articulated(r, l1):
     L = ["   <ArticulatedBody>"]
     L.append("    <ItemIndices>%s</ItemIndices>" % " ".join(idx))
     L.append("    <ItemFlags>%s</ItemFlags>" % " ".join(flg))
-    L.append("    <UnknownVectors>")
+    # UnknownVectors spelling is COUNT-dependent (PINNED 2026-08-09): every multi-body
+    # oracle wraps one vector per line (fish 13, cormorant 22, ... 10/10 witnessed), and
+    # the single-body witness inlines all four components on the tag line
+    # (a_c_whalegrey: <UnknownVectors>0.0005..., 0.5236</UnknownVectors>).
     _, vecs = r.deref(_yU(r, bs + 0x80), n_bodies * 16)
-    for i in range(n_bodies):
-        v = [_yf(r, vecs + i * 16 + c * 4) for c in range(4)]
-        L.append("     %s" % ", ".join(_F(x) for x in v))
-    L.append("    </UnknownVectors>")
+    _vlines = [", ".join(_F(_yf(r, vecs + i * 16 + c * 4)) for c in range(4))
+               for i in range(n_bodies)]
+    if n_bodies == 1:
+        L.append("    <UnknownVectors>%s</UnknownVectors>" % _vlines[0])
+    else:
+        L.append("    <UnknownVectors>")
+        L.extend("     %s" % v for v in _vlines)
+        L.append("    </UnknownVectors>")
     L.append("    <Joints>")
     _, tab = r.deref(_yU(r, bs + 0x78), n_joints * 8)
     for i in range(n_joints):

@@ -30,6 +30,8 @@
   "bumper_r",
   "casino_back_laundry_damage",
   "chassis",
+  "clouds_fast",
+  "debugCloudsParams",
   "dlc_busi2_c_major_notes_a0",
   "dlc_busi2_c_major_notes_b0",
   "dlc_busi2_c_major_notes_c0",
@@ -113,6 +115,7 @@
  "_witnesses": {
   "exportcamera": "_Oracles/cut/00_base/under_int_4.cut.pso.xml (<cName>exportcamera</cName>; joaat 39662FB2)",
   "casino_back_laundry_damage": "_Oracles/ytyp/10_update/ch_dlc_int_06_ch.ytyp.xml (entitySets <name>; joaat C411D9E9)",
-  "_carcols_batch": "106 strings harvested 2026-08-08 from _Oracles/ymt/00_base/carcols.ymt.pso.xml diff alignment; every one joaat-verified against the hash our converter emitted at the same position"
+  "_carcols_batch": "106 strings harvested 2026-08-08 from _Oracles/ymt/00_base/carcols.ymt.pso.xml diff alignment; every one joaat-verified against the hash our converter emitted at the same position",
+  "_skydome_cloudhat_batch": "2 strings harvested 2026-08-09 from skydome.ydd + cloudhat_contrails_c.ydr oracle diff alignment, each joaat-verified"
  }
 }
