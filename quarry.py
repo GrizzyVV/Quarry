@@ -3321,6 +3321,18 @@ def _names_from_view(view_dir, game):
         import meta2xml as _m
         for n in json.load(open(p, encoding='utf-8')).get('names', []):
             names.setdefault(_m.joaat(n), n)
+    # ⛔ NO GLOBAL GAME-TEXTURE-NAME OVERLAY (tried and REVERTED 2026-08-08, same session).
+    # A 122k-name harvest from the corpus ytd manifests DID resolve carcols' plate01-class
+    # references - and immediately produced the INVERSE parity break: OUR output spelled
+    # `vehiclelight_car_standardmodern` where the reference exporter prints hash_BCA6181A.
+    # The boundary is the reference exporter's OWN string index, and the only sound proxy for
+    # it is what the oracles themselves spell: a string witnessed spelled in ANY oracle is
+    # spelled globally by the reference tool (its index is global), so importing it can never
+    # make us print a name where the reference prints hash_ - while importing names from
+    # ANY OTHER source (even clean game data) provably can, and would silently perturb every
+    # graded lane at its next regeneration. Oracle-witnessed names live in
+    # oracle_witnessed_names.json (loaded above); the harvest file game_texture_names.json
+    # stays on disk as a tool artifact but is deliberately NOT loaded.
     return names
 
 

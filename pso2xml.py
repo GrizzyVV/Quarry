@@ -99,6 +99,24 @@ def joaat_case(s):
 # name below verified against its stored hash in a real binary before use (clean-room:
 # the string is the case-sensitive joaat preimage of the descriptor hash).
 SCHEMA_NAMES = (
+    # carcols enum members (2026-08-08): all 27 oracle spellings joaat_case-verified against
+    # the file's OWN enum-def member hashes (metallicID 0x157C285E / audioColor 0x2070C98C /
+    # audioPrefix 0x7B21D8F4) - the §6y both-halves rule; 'none' is the metallic -1 member.
+    "EVehicleModelColorMetallic_normal", "EVehicleModelColorMetallic_1",
+    "EVehicleModelColorMetallic_2", "EVehicleModelColorMetallic_3",
+    "EVehicleModelColorMetallic_4", "EVehicleModelColorMetallic_5",
+    "EVehicleModelColorMetallic_6", "EVehicleModelColorMetallic_7",
+    "EVehicleModelColorMetallic_8", "EVehicleModelColorMetallic_9", "none",
+    "POLICE_SCANNER_COLOUR_beige", "POLICE_SCANNER_COLOUR_black",
+    "POLICE_SCANNER_COLOUR_blue", "POLICE_SCANNER_COLOUR_brown",
+    "POLICE_SCANNER_COLOUR_graphite", "POLICE_SCANNER_COLOUR_green",
+    "POLICE_SCANNER_COLOUR_grey", "POLICE_SCANNER_COLOUR_orange",
+    "POLICE_SCANNER_COLOUR_pink", "POLICE_SCANNER_COLOUR_red",
+    "POLICE_SCANNER_COLOUR_silver", "POLICE_SCANNER_COLOUR_white",
+    "POLICE_SCANNER_COLOUR_yellow", "POLICE_SCANNER_PREFIX_bright",
+    "POLICE_SCANNER_PREFIX_dark", "POLICE_SCANNER_PREFIX_light",
+    # carcols member name (2026-08-08): joaat 1B60404D, oracle spells <id value=".." />
+    "id",
     # CPackFileMetaData tree
     "CPackFileMetaData", "MapDataGroups", "CMapDataGroup", "HDTxdBindingArray",
     "CHDTxdAssetBinding", "imapDependencies", "CImapDependency", "imapDependencies_2",
@@ -236,6 +254,24 @@ try:
     for _n in _m2x.SCHEMA_NAMES:
         SCHEMA_BY_HASH.setdefault(_m2x.joaat_case(_n), _n)
 except Exception:                                   # standalone use without the sibling module
+    pass
+
+# ⭐ ORACLE-WITNESSED strings ALSO feed schema_name() (2026-08-08): enum MEMBERS render via
+# SCHEMA_BY_HASH, not the asset-names dict, so a witnessed spelling (VMT_ENGINE, misc_d,
+# MKT_SPORT - carcols <type>/<bone>/<marketType> members) must land here too or it resolves
+# in one context and prints hash_ in the other. Same safety as every other entry: setdefault
+# only, and a name only ever fires where its joaat equals the stored hash. One witnessed
+# source (oracle_witnessed_names.json) serves both tables.
+try:
+    import json as _json
+    import os as _os
+    _p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                       'oracle_witnessed_names.json')
+    if _os.path.isfile(_p):
+        for _n in _json.load(open(_p, encoding='utf-8')).get('names', []):
+            SCHEMA_BY_HASH.setdefault(joaat_case(_n), _n)
+            SCHEMA_BY_HASH.setdefault(joaat(_n), _n)
+except Exception:
     pass
 
 
@@ -545,9 +581,16 @@ class Emitter:
                 s = raw.decode("latin1")
                 return ["%s<%s />" % (ind, name)] if s == "" else \
                        ["%s<%s>%s</%s>" % (ind, name, esc(s), name)]
-            if sub == 0x03:                        # POINTER to a NUL-terminated inline string
+            if sub in (0x01, 0x02, 0x03):          # POINTER to a NUL-terminated inline string
                 # metaptr -> block; the char data lives in a separate string block. Null -> empty.
                 # (.cut rage__cutfAudioObject cName -> "UNDER_INT_4.WAV").
+                # subs 0x01 + 0x02 PINNED 2026-08-08 from carcols.ymt: colorName (0x01, the
+                # stored word decodes as a metaptr to block 3 and the pointed NUL-terminated
+                # text reproduces the oracle's literal spelling incl. leading space and
+                # trailing tabs) and the modShopLabel class (0x02, 4 members - the leaked
+                # values were 0x0nnnn003 pointer words, oracle spells MNU_EXH4-style labels)
+                # - both proven by the whole-file byte compare. Previously they fell through
+                # to the joaat branch and printed hash_%08X of the POINTER value.
                 mp = struct.unpack_from(">I", buf, o)[0]
                 s = self._string_at_ptr(mp)
                 return ["%s<%s />" % (ind, name)] if s == "" else \
@@ -558,7 +601,15 @@ class Emitter:
             return ["%s<%s />" % (ind, name)] if s == "" else \
                    ["%s<%s>%s</%s>" % (ind, name, esc(s), name)]
         if t == 0x0e:                              # ENUM (text)
-            v = struct.unpack_from(">I", buf, o)[0]
+            # storage width by SUB (PINNED 2026-08-08, carcols CVehicleModelColor: sub 0x02
+            # members metallicID/audioColor/audioPrefix sit at CONSECUTIVE offsets 12/13/14 -
+            # one byte each; the old unconditional u32 read produced 17039360 = 0x01040000,
+            # i.e. FOUR packed u8 enums read as one word). sub 0x00 stays u32. u8 enums are
+            # SIGNED for the -1 member (EVehicleModelColorMetallic none = -1 witnessed).
+            if sub == 0x02:
+                v = struct.unpack_from(">b", buf, o)[0]
+            else:
+                v = struct.unpack_from(">I", buf, o)[0]
             info = self.p.enum_def(extra)
             mh = info["members"].get(v)
             txt = schema_name(mh) if mh is not None else str(v)
@@ -646,6 +697,14 @@ class Emitter:
             x, y, z, w = struct.unpack_from(">4f", buf, o)
             return ['%s<%s x="%s" y="%s" z="%s" w="%s" />'
                     % (ind, name, fmt_num(x), fmt_num(y), fmt_num(z), fmt_num(w))]
+        if t == 0x08:                              # vec2 (2 BE floats)
+            # PINNED 2026-08-08 from carcols.ymt, the corpus's only carrier (12 occurrences,
+            # CVehicleModelInfoPlateTextureSet.MaxLettersOnPlate @48 + FontOutlineMinMaxDepth
+            # @68 in an 80-B struct = 8-B slots): the oracle spells <X x=".." y=".." />
+            # (x="7" y="1" / x="0.475" y="0.5") and two BE f32 at the member offset reproduce
+            # every value - proven by the whole-file byte compare.
+            x, y = struct.unpack_from(">2f", buf, o)
+            return ['%s<%s x="%s" y="%s" />' % (ind, name, fmt_num(x), fmt_num(y))]
         self._warn("unhandled member type %#04x" % t)
         return ["%s<%s />" % (ind, name)]
 
@@ -681,14 +740,24 @@ class Emitter:
         out.append("%s</%s>" % (ind, name))
         return out
 
-    def _emit_hashstring_array(self, name, ind, buf, o, count, depth):
+    def _emit_hashstring_array(self, name, ind, buf, o, count, depth, esub=0x07):
+        # esub dispatch PINNED 2026-08-08 (carcols liveryNames class): elements whose desc
+        # sub is a POINTER form (0x01/0x02/0x03) are EIGHT-byte {u32 metaptr, u32 pad} slots
+        # pointing at NUL-terminated text - MEASURED on live kit instances (SANC count=5:
+        # words alternate real-pointer/zero at 4-byte reads; at 8-byte stride all five
+        # pointers decode SANC_lV1..lV5 exactly as the oracle spells). A 4-byte walk read
+        # the pads as null pointers - half the list emitted empty, the tail lost. joaat subs
+        # (0x07/0x08) are 4-byte hash words and keep the dictionary route.
         if count == 0:
             return ["%s<%s />" % (ind, name)]
         f = " " * (depth + 1)
         out = ["%s<%s>" % (ind, name)]
+        ptrform = esub in (0x01, 0x02, 0x03)
+        stride = 8 if ptrform else 4
         for i in range(count):
-            h = struct.unpack_from(">I", buf, o + i * 4)[0]
-            out.append("%s<Item>%s</Item>" % (f, esc(self.resolve_hashstring(h))))
+            v = struct.unpack_from(">I", buf, o + i * stride)[0]
+            s = self._string_at_ptr(v) if ptrform else self.resolve_hashstring(v)
+            out.append("%s<Item>%s</Item>" % (f, esc(s)))
         out.append("%s</%s>" % (ind, name))
         return out
 
@@ -752,12 +821,12 @@ class Emitter:
                 stride = self.p.struct_def(eextra)["size"]
                 return self._emit_struct_array(name, ind, eextra, self.p.block_data(bidx),
                                                boff, count, stride, depth)
-            if et == 0x0b:                         # array of hash-strings (no itemType)
+            if et == 0x0b:                         # array of strings (no itemType)
                 if count == 0:
                     return ["%s<%s />" % (ind, name)]
                 bidx, boff = self.p.metaptr(ptr)
                 return self._emit_hashstring_array(name, ind, self.p.block_data(bidx),
-                                                   boff, count, depth)
+                                                   boff, count, depth, esub=esub)
             if et in (0x09, 0x14):                 # array of vec3 via pointer
                 if count == 0:
                     return ["%s<%s />" % (ind, name)]
@@ -770,6 +839,26 @@ class Emitter:
                 bidx, boff = self.p.metaptr(ptr)
                 return self._emit_scalar_array(name, ind, et, esub, self.p.block_data(bidx),
                                                boff, count)
+            if et == 0x0e:                         # array of ENUMS -> <Item>MemberName</Item>
+                # PINNED 2026-08-08 from carcols.ymt, the corpus's only carrier
+                # (CVehicleModVisible.turnOffBones, 750 arrays: 442 populated + 308 empty
+                # matching the oracle's 442 open+close pairs + 308 self-closing exactly).
+                # Elements are u32 BE enum values (same slot the 0x0e MEMBER renderer reads),
+                # each spelled as the enum member name in an <Item>, hashstring-array layout.
+                if count == 0:
+                    return ["%s<%s />" % (ind, name)]
+                bidx, boff = self.p.metaptr(ptr)
+                bdata = self.p.block_data(bidx)
+                info = self.p.enum_def(eextra)
+                f = " " * (depth + 1)
+                out = ["%s<%s>" % (ind, name)]
+                for i in range(count):
+                    v = struct.unpack_from(">I", bdata, boff + i * 4)[0]
+                    mh = info["members"].get(v)
+                    out.append("%s<Item>%s</Item>"
+                               % (f, esc(schema_name(mh) if mh is not None else str(v))))
+                out.append("%s</%s>" % (ind, name))
+                return out
             self._warn("unhandled array element type %#04x" % et)
             return ["%s<%s />" % (ind, name)]
 
@@ -788,9 +877,44 @@ class Emitter:
         if et in (0x09, 0x14):
             return self._emit_vec3_array(name, ind, buf, o, count, depth)
         if et == 0x0b:
-            return self._emit_hashstring_array(name, ind, buf, o, count, depth)
+            return self._emit_hashstring_array(name, ind, buf, o, count, depth, esub=esub)
         if et in self._SCALAR_SIZE:
             return self._emit_scalar_array(name, ind, et, esub, buf, o, count)
+        if et == 0x0d:                             # inline fixed array OF pointer-arrays
+            # PINNED 2026-08-08 from carcols.ymt, the corpus's only carrier
+            # (CVehicleModelInfoVarGlobal.Wheels: 9 fixed slots = 8 populated + 1 empty,
+            # matching the oracle's 8 <Item itemType="CVehicleWheel"> + 1 self-closing).
+            # Each 16-B slot is the standard pointer-array descriptor {u32 metaptr, u32 pad,
+            # u16 count, u16 cap, u32}; the inner element desc (type 0x0c, extra = struct
+            # hash) gives the item struct. Outer <Item> carries itemType="StructName";
+            # inner items are bare <Item> struct bodies.
+            ridx2 = desc["extra"] & 0xFFFF
+            if ridx2 >= len(sdef["entries"]):
+                self._warn("nested-array inner refTypeIdx %d out of range" % ridx2)
+                return ["%s<%s />" % (ind, name)]
+            inner = sdef["entries"][ridx2]
+            if inner["type"] != 0x0c or inner["extra"] not in self.p.def_off:
+                self._warn("nested-array inner elem type %#04x unhandled (extra=%#010x)"
+                           % (inner["type"], inner["extra"]))
+                return ["%s<%s />" % (ind, name)]
+            shash = inner["extra"]
+            itype = schema_name(shash)
+            stride = self.p.struct_def(shash)["size"]
+            f = " " * (depth + 1)
+            out = ["%s<%s>" % (ind, name)]
+            for i in range(count):
+                sptr, _spad, scount, _scap = struct.unpack_from(">IIHH", buf, o + i * 16)
+                if scount == 0:
+                    out.append('%s<Item itemType="%s" />' % (f, itype))
+                    continue
+                sbidx, sboff = self.p.metaptr(sptr)
+                sdata = self.p.block_data(sbidx)
+                out.append('%s<Item itemType="%s">' % (f, itype))
+                for j in range(scount):
+                    out += self._struct_item(shash, sdata, sboff + j * stride, depth + 2)
+                out.append("%s</Item>" % f)
+            out.append("%s</%s>" % (ind, name))
+            return out
         self._warn("unhandled inline array element type %#04x (sub=%#x)" % (et, e["sub"]))
         return ["%s<%s />" % (ind, name)]
 
