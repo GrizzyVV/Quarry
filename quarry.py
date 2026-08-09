@@ -1686,10 +1686,10 @@ def cmd_meta(a):
     # the NEXT step produce a corpus that lies, so it sits directly above the next-step line.
     if stale:
         print(f'\n⛔ STALE OUTPUT: {stale:,} .xml file(s) on disk were emitted by an EARLIER '
-              f'converter run and THIS run could not reproduce them. `resolve` will hardlink them '
-              f'into _resolved and RUDE will join against a MIXTURE of converter generations - '
-              f'which reads as corpus damage (missing archetypes, hash_ names that a current run '
-              f'would resolve), not as a converter boundary.'.replace('⛔', '!!'))
+              f'converter run and THIS run could not reproduce them. A consumer joining the '
+              f'corpus meets a MIXTURE of converter generations - which reads as corpus damage '
+              f'(missing archetypes, hash_ names that a current run would resolve), not as a '
+              f'converter boundary.'.replace('⛔', '!!'))
         for _p, _r in stale_examples:
             print(f'    {_p}  <- {_r}')
         if stale > len(stale_examples):
@@ -1933,13 +1933,13 @@ def cmd_textures(a):
         return 1
     resolved = os.path.join(out, '_resolved')
     slots = [os.path.join(out, s) for s in precedence_slots(out)]
-    # ⚠ TWO DIFFERENT ROOT SETS, and conflating them is both slow and wrong.
-    # READING references: `_resolved` alone when it exists - it IS the corpus contract (the
-    # winning copy of every asset RUDE can reach). Adding the slots re-reads the SAME BYTES
-    # (resolve hardlinks) for zero new references: ~115 GB of XML scanned twice.
-    # DELETING pixels: every root, because a hardlink is not freed until its LAST name is gone.
-    ref_roots = [resolved] if os.path.isdir(resolved) else list(slots)
-    prune_roots = ([resolved] if os.path.isdir(resolved) else []) + slots
+    # READING references: the SLOT TREE - the corpus contract since Matt's 2026-08-09 ruling
+    # ("files need to stay consistent with their DLC and structure"; the `_resolved` flat
+    # winner view is retired). Every slot's own drawables state their own references.
+    # DELETING pixels: every root incl. a leftover `_resolved` if one still exists - a
+    # hardlink is not freed until its LAST name is gone.
+    ref_roots = list(slots)
+    prune_roots = slots + ([resolved] if os.path.isdir(resolved) else [])
 
     # 1) every texture NAME the drawables ask for
     #    2) which dictionaries hold them
@@ -2019,20 +2019,20 @@ def cmd_textures(a):
     if not drawables or not manifests:
         print('\nSTOP - REFUSING TO PRUNE: scanned %d drawables and %d ytd manifests. With no drawable'
               ' XML to read, every dictionary looks unreferenced and this would delete them all.'
-              '\n   Run `quarry extract --xml` then `quarry resolve` for this project first.'
+              '\n   Run `quarry extract --xml` for this project first.'
               % (drawables, manifests))
         return 1
     # ⛔ PRESENCE IS NOT COVERAGE (2026-08-03). The zero-check above catches a binary-only
-    # project; a PARTIAL one sailed straight through. `resolve --types ydr,ytd` leaves _resolved
-    # with no ydd/ and no yft/ at all, so `wanted` never learns the textures those drawables name
-    # - and --prune then deletes those pixels from the SLOTS as well as from _resolved. Every
-    # drawable lane that can reference a texture must be present before deletion is allowed.
+    # project; a PARTIAL one sailed straight through: an extract that never landed ydd/ or
+    # yft/ leaves `wanted` blind to the textures those drawables name - and --prune then
+    # deletes pixels that ARE used. Every drawable lane that can reference a texture must be
+    # present before deletion is allowed.
     missing_kinds = sorted({'ydr', 'ydd', 'yft'} - kinds_seen)
     if missing_kinds:
         print('\nSTOP - REFUSING TO PRUNE: no %s drawable folder in the reference roots. Those '
               'drawables reference textures too, so their names are missing from the keep set and '
-              'pruning would delete pixels that ARE used.\n   Resolve every drawable type first '
-              '(`quarry resolve --out <project>` with no --types), then prune.'
+              'pruning would delete pixels that ARE used.\n   Extract every drawable type first '
+              '(`quarry extract --xml` covering ydr/ydd/yft), then prune.'
               % '/'.join(missing_kinds))
         return 1
     removed = 0
@@ -2044,7 +2044,7 @@ def cmd_textures(a):
             except OSError:
                 pass
     print(f'\npruned {removed:,} files, {drop_b / 1e9:.1f} GB freed '
-          f'(slots AND _resolved - hardlinks mean both must go)')
+          f'(every root walked - a hardlink is not freed until its last name is gone)')
     return 0
 
 
@@ -2337,7 +2337,7 @@ def _link_or_copy(src, dst):
         return None
 
 
-def _sibling_targets(out, resolved, slot, kind, stem, safe, ext, is_winner, pdir=''):
+def _sibling_targets(out, slot, kind, stem, safe, ext, pdir=''):
     """Every ADDITIONAL path a decoded pixel must exist at beyond its primary slot file.
 
     ⭐ An `__embedded` manifest's pixels ALSO land in the bare drawable folder `X/` — the
@@ -2345,9 +2345,10 @@ def _sibling_targets(out, resolved, slot, kind, stem, safe, ext, is_winner, pdir
     The decode lane not doing this is what graded 14 byte-identical pixels MISSING in the
     2026-08-07 sidecar grade: right bytes, wrong folder.
 
-    ⛔ THE `_resolved` TREE IS THE WINNER VIEW. Only the WINNING instance's pixels may be linked
-    forward — linking a non-winner instance would replace what RUDE reads with a DIFFERENT
-    asset that shares the name (w_lr_40mm: 00_base is 64x32, the patchday8ng winner 256x128).
+    ⛔ NO FLAT FORWARD-LINKING. The `_resolved` winner view is RETIRED (Matt, 2026-08-09:
+    "_resolved should never have been a thing … files need to stay consistent with their DLC
+    and structure"). Pixels exist ONLY beside their own instance in its slot; a consumer that
+    wants "the" copy resolves precedence itself, the corpus never pre-flattens it.
     """
     outs = []
     emb = stem.lower().endswith(EMBEDDED_INFIX)
@@ -2356,12 +2357,6 @@ def _sibling_targets(out, resolved, slot, kind, stem, safe, ext, is_winner, pdir
     if emb:
         outs.append(os.path.join(out, slot, kind, *( [pd] if pd else [] ),
                                  base, safe + ext))
-    if is_winner and os.path.isdir(resolved):
-        # _resolved keeps its FLAT winner contract (RUDE's shipped pairing) - ped-foldered
-        # instances are never winners under the flat model, so pdir never reaches here today
-        outs.append(os.path.join(resolved, kind, stem, safe + ext))
-        if emb:
-            outs.append(os.path.join(resolved, kind, base, safe + ext))
     return outs
 
 
@@ -2379,10 +2374,9 @@ def _parse_patterns(raw):
 def decode_referenced(a, out, resolved, ref_roots):
     """Decode ONLY the texture pixels something references, from a MANIFESTS-ONLY corpus.
 
-    ⛔ WRITES INTO THE WINNING SLOT AND HARDLINKS FORWARD INTO `_resolved`, never into `_resolved`
-    alone. `cmd_resolve` rmtree's `_resolved/<kind>/<stem>/` and re-materialises it from the slot,
-    so a pixel that exists only in `_resolved` is deleted by the next `resolve` - silently, and
-    long after the run that produced it. The slot is where a with-pixels extract would have put it.
+    ⛔ WRITES INTO EACH INSTANCE'S OWN SLOT (Matt's 2026-08-09 slot-tree ruling: files stay
+    consistent with their DLC and structure; the `_resolved` winner view is retired). The slot
+    is where a with-pixels extract would have put it.
 
     ⛔ NEVER EMITS A PLACEHOLDER PIXEL. Everything it cannot resolve - a manifest whose source
     binary is not in the archives, a texture the decoded dictionary does not contain, an unmapped
@@ -2469,31 +2463,13 @@ def decode_referenced(a, out, resolved, ref_roots):
           f'in more than one dictionary (most-shared name: {worst:,} holders)')
 
     cand = int(getattr(a, 'candidates', 0) or 0)
-    if cand > 0 and ambiguous:
-        # Preference is DATA, not enumeration order: a dictionary belonging to one of the scoped
-        # drawables (its `__embedded`, its `+hidr`) is the drawable's own and outranks a stranger
-        # that merely shares the name; ties then break lexicographically so the choice is
-        # reproducible. This is an APPROXIMATION and is reported as one.
-        def rank(key):
-            stem = key.split('/', 1)[1].lower()
-            own = any(stem == s or stem.startswith(s) for s in stems)
-            return (0 if own else 1, key)
-        keep_pairs = set()
-        for n, v in holders.items():
-            for key in sorted(v, key=rank)[:cand]:
-                keep_pairs.add((key, n))
-        dropped_d = dropped_t = 0
-        for key in list(holdings):
-            need = [x for x in holdings[key]['needed'] if (key, x.lower()) in keep_pairs]
-            dropped_t += len(holdings[key]['needed']) - len(need)
-            if not need:
-                del holdings[key]
-                dropped_d += 1
-            else:
-                holdings[key]['needed'] = need
-        print(f'candidate cap     : --candidates {cand} -> dropped {dropped_d:,} dictionaries and '
-              f'{dropped_t:,} duplicate texture copies. ! APPROXIMATION: if RUDE binds a copy from '
-              f'a dictionary this dropped, it reports missingPixels - re-run without --candidates')
+    if cand > 0:
+        # ⛔ RETIRED 2026-08-09 with the winner view: capping "candidate dictionaries per
+        # texture" skips some slots' own copies - exactly the flat-view thinking Matt's
+        # slot-tree ruling ended. Cost control is --scope (pay for an area) and --limit.
+        print(f'candidate cap     : --candidates {cand} is RETIRED (slot-tree ruling '
+              f'2026-08-09) and has NO effect - every holding instance decodes in its own '
+              f'slot. Use --scope / --limit for cost control.')
 
     need_tex = sum(len(h['needed']) for h in holdings.values())
     have_tex = sum(h['total'] for h in holdings.values())
@@ -2518,23 +2494,12 @@ def decode_referenced(a, out, resolved, ref_roots):
     except Exception:
         pass
 
-    winners = {}
-    try:
-        with open(os.path.join(resolved, '_RESOLVED.json')) as f:
-            winners = json.load(f).get('winners') or {}
-    except Exception:
-        pass
-
-    def slot_of(kind, stem):
-        return winners.get('%s/%s.ytd.xml' % (kind, stem))
-
     jobs, present, relinked = {}, 0, 0
     skipped_dicts = 0
 
-    def build_todo(slot, kind, stem, names, is_winner, pdir=''):
-        """One implementation of "what does this dictionary still owe" for BOTH planning modes
-        (winner-view and per-instance) — two copies would drift on the ledger/sibling rules.
-        `pdir` = the per-ped folder (game-mirrored) the manifest lives under, '' for flat."""
+    def build_todo(slot, kind, stem, names, pdir=''):
+        """One implementation of "what does this dictionary still owe". `pdir` = the per-ped
+        folder (game-mirrored) the manifest lives under, '' for flat."""
         nonlocal present, relinked
         todo = []
         mid = ('%s/' % pdir) if pdir else ''
@@ -2552,8 +2517,7 @@ def decode_referenced(a, out, resolved, ref_roots):
                     # "Already present" includes every sibling placement. A byte-identical pixel
                     # in the wrong folder graded MISSING on 2026-08-07 — placement is part of
                     # done, not decoration.
-                    for sdst in _sibling_targets(out, resolved, slot, kind, stem, safe, ext,
-                                                 is_winner, pdir):
+                    for sdst in _sibling_targets(out, slot, kind, stem, safe, ext, pdir):
                         if not os.path.exists(sdst):
                             if _link_or_copy(dst, sdst):
                                 relinked += 1
@@ -2561,110 +2525,86 @@ def decode_referenced(a, out, resolved, ref_roots):
                 todo.append((name, safe, ext, rel, dst))
         return todo
 
-    for key in sorted(holdings):
-        h = holdings[key]
-        kind, stem = h['kind'], h['stem']
-        if h.get('dir'):
-            # ped-foldered manifests are INSTANCE-layer: the flat winners table cannot address
-            # them, so they are planned by the per-instance pass below (--all-instances /
-            # scoped), never refused as winner-less here
-            continue
-        slot = slot_of(kind, stem)
-        if slot is None:
-            refuse('manifest_has_no_winning_slot', '%s/%s' % (kind, stem))
-            continue
-        src = manifest_source_name(kind, stem)
-        if src is None:
-            refuse('manifest_shape_unattributable_to_a_source', '%s/%s.ytd.xml' % (kind, stem))
-            continue
-        # slot came from the winners table, so this IS the winning instance by construction.
-        todo = build_todo(slot, kind, stem, h['needed'], True)
-        if not todo:
-            skipped_dicts += 1
-            continue
-        jobs.setdefault((slot, src.lower()), {'slot': slot, 'src': src.lower(), 'kind': kind,
-                                              'stem': stem, 'dir': '', 'todo': todo,
-                                              'winner': True})
-
-    # ---- per-instance planning: --all-instances (embedded) / --dicts (standalone, in full) --
-    # ⛔ THE WINNER PLAN ABOVE IS STRUCTURALLY BLIND to two classes, measured 2026-08-07
-    # (tools/sidecar_grade.py): a NON-WINNER slot instance's embedded pixels (its names never
-    # enter `wanted`, because references are scanned from _resolved = the winner view), and a
-    # dictionary NOTHING references (engine-referenced: waterfog). Both are planned here, each
-    # instance decoding from ITS OWN slot's archives. `--textures dds` at extract time would
-    # have written exactly this; doing it here is the no-re-extract route (Matt's Fix B ruling).
-    inst_mode = bool(getattr(a, 'all_instances', False))
+    # ---- planning: EVERY manifest instance in the slot tree, each in its own slot ----------
+    # ⛔ NO WINNER VIEW (Matt, 2026-08-09: `_resolved` retired — "files need to stay
+    # consistent with their DLC and structure"). Every dictionary instance that holds a
+    # referenced name decodes from ITS OWN slot's archives into ITS OWN slot folder:
+    #   - STANDALONE dictionaries: the referenced SUBSET of their names (the lane's economy);
+    #     `--dicts` patterns force a FULL decode (engine-referenced classes like waterfog).
+    #   - EMBEDDED (`X__embedded`) manifests: every name they advertise — they are the
+    #     drawable's own dictionary (scope narrows which drawables).
+    # `--all-instances` is now the ONLY behavior and the flag is accepted as a no-op.
     dict_pats = _parse_patterns(getattr(a, 'dicts', None))
-    if inst_mode or dict_pats:
-        import fnmatch
-        inst_dicts = 0
-        for slot_name in precedence_slots(out):
-            for kind in TXD_BEARING_DIRS:
-                d = os.path.join(out, slot_name, kind)
-                if not os.path.isdir(d):
-                    continue
-                # recursive: the per-ped layout files manifests under <kind>/<ped>/
-                for dp, _dirs, fs in os.walk(d):
-                    relbase = os.path.relpath(dp, d)
-                    pdir = '' if relbase == '.' else relbase.replace(os.sep, '/')
-                    for fn in fs:
-                        if not fn.lower().endswith('.ytd.xml'):
-                            continue
-                        stem = fn[:-len('.ytd.xml')]
-                        emb = stem.lower().endswith(EMBEDDED_INFIX)
-                        base = stem[:-len(EMBEDDED_INFIX)] if emb else stem
-                        if emb:
-                            if not inst_mode:
-                                continue
-                            # scope narrows the embedded sweep; an explicitly NAMED --dicts
-                            # entry is never scope-filtered (you asked for it by name).
-                            if scope and not _scope_match(base, fn, scope):
-                                continue
-                        elif not (dict_pats and any(fnmatch.fnmatch(stem.lower(), p)
-                                                    for p in dict_pats)):
-                            continue
-                        # ⛔ A `~N` collision stem is refused AT PLANNING, not at the archive
-                        # index: the suffix is corpus-side (file_into invented it), so no
-                        # archive holds a binary by that name — the job can never produce
-                        # output, and 242 such jobs made a COMPLETE corpus trip the zero-work
-                        # guard. Counted, never guessed; the ped-folder layout is what makes
-                        # those instances addressable (they re-file WITHOUT the suffix).
-                        if re.search(r'~\d+$', base):
-                            refuse('instance_source_unattributable_collision_suffix',
-                                   '%s/%s' % (kind, fn))
-                            continue
-                        src = manifest_source_name(kind, stem)
-                        if src is None:
-                            refuse('instance_source_unattributable', '%s/%s' % (kind, fn))
-                            continue
-                        if pdir:
-                            # path-qualify: this instance's OWN entry, not the first same-named
-                            # one the walk happens to meet (the defect measured 2026-08-08)
-                            src = '%s/%s' % (pdir, src)
-                        try:
-                            with open(os.path.join(dp, fn), encoding='utf-8',
-                                      errors='replace') as fh:
-                                names = [n.strip() for n in _XML_NAME_RE.findall(fh.read())]
-                        except OSError:
-                            refuse('instance_manifest_unreadable', '%s/%s' % (kind, fn))
-                            continue
+    if getattr(a, 'all_instances', False):
+        print('note      : --all-instances is the default (and only) planning mode since the '
+              '2026-08-09 slot-tree ruling; the flag is accepted but changes nothing')
+    import fnmatch
+    inst_dicts = 0
+    for slot_name in precedence_slots(out):
+        for kind in TXD_BEARING_DIRS:
+            d = os.path.join(out, slot_name, kind)
+            if not os.path.isdir(d):
+                continue
+            # recursive: the per-ped layout files manifests under <kind>/<ped>/
+            for dp, _dirs, fs in os.walk(d):
+                relbase = os.path.relpath(dp, d)
+                pdir = '' if relbase == '.' else relbase.replace(os.sep, '/')
+                for fn in fs:
+                    if not fn.lower().endswith('.ytd.xml'):
+                        continue
+                    stem = fn[:-len('.ytd.xml')]
+                    emb = stem.lower().endswith(EMBEDDED_INFIX)
+                    base = stem[:-len(EMBEDDED_INFIX)] if emb else stem
+                    forced = dict_pats and not emb and any(
+                        fnmatch.fnmatch(stem.lower(), p) for p in dict_pats)
+                    if emb and scope and not _scope_match(base, fn, scope):
+                        # scope narrows the embedded sweep; an explicitly NAMED --dicts
+                        # entry is never scope-filtered (you asked for it by name).
+                        continue
+                    # ⛔ A `~N` collision stem is refused AT PLANNING, not at the archive
+                    # index: the suffix is corpus-side (file_into invented it), so no
+                    # archive holds a binary by that name — the job can never produce
+                    # output, and 242 such jobs made a COMPLETE corpus trip the zero-work
+                    # guard. Counted, never guessed; the ped-folder layout is what makes
+                    # those instances addressable (they re-file WITHOUT the suffix).
+                    if re.search(r'~\d+$', base):
+                        refuse('instance_source_unattributable_collision_suffix',
+                               '%s/%s' % (kind, fn))
+                        continue
+                    try:
+                        with open(os.path.join(dp, fn), encoding='utf-8',
+                                  errors='replace') as fh:
+                            names = [n.strip() for n in _XML_NAME_RE.findall(fh.read())]
+                    except OSError:
+                        refuse('instance_manifest_unreadable', '%s/%s' % (kind, fn))
+                        continue
+                    if not names:
+                        continue
+                    if not emb and not forced:
+                        # standalone: only the referenced subset, in manifest order
+                        names = [n for n in names if n.lower() in wanted]
                         if not names:
                             continue
-                        is_winner = (not pdir and
-                                     winners.get('%s/%s.ytd.xml' % (kind, stem)) == slot_name)
-                        todo = build_todo(slot_name, kind, stem, names, is_winner, pdir)
-                        if not todo:
-                            skipped_dicts += 1
-                            continue
-                        inst_dicts += 1
-                        jobs.setdefault(
-                            (slot_name, src.lower(), pdir.lower(), stem.lower()),
-                            {'slot': slot_name, 'src': src.lower(), 'kind': kind,
-                             'stem': stem, 'dir': pdir, 'todo': todo, 'winner': is_winner})
-        print(f'instance planning : {"embedded at every slot instance" if inst_mode else ""}'
-              f'{" + " if inst_mode and dict_pats else ""}'
-              f'{"--dicts full decode" if dict_pats else ""} -> {inst_dicts:,} additional '
-              f'dictionaries to decode')
+                    src = manifest_source_name(kind, stem)
+                    if src is None:
+                        refuse('instance_source_unattributable', '%s/%s' % (kind, fn))
+                        continue
+                    if pdir:
+                        # path-qualify: this instance's OWN entry, not the first same-named
+                        # one the walk happens to meet (the defect measured 2026-08-08)
+                        src = '%s/%s' % (pdir, src)
+                    todo = build_todo(slot_name, kind, stem, names, pdir)
+                    if not todo:
+                        skipped_dicts += 1
+                        continue
+                    inst_dicts += 1
+                    jobs.setdefault(
+                        (slot_name, src.lower(), pdir.lower(), stem.lower()),
+                        {'slot': slot_name, 'src': src.lower(), 'kind': kind,
+                         'stem': stem, 'dir': pdir, 'todo': todo})
+    print(f'slot-tree planning: {inst_dicts:,} dictionary instances to decode '
+          f'(every holding instance, its own slot'
+          + (', --dicts full decode included' if dict_pats else '') + ')')
     limit = int(getattr(a, 'limit', 0) or 0)
     order = sorted(jobs)
     capped = len(order) > limit > 0
@@ -2673,7 +2613,7 @@ def decode_referenced(a, out, resolved, ref_roots):
     print(f'dictionaries      : {len(holdings):,} referenced, {skipped_dicts:,} already complete, '
           f'{len(jobs):,} to decode' + (f' (capped to {limit:,} by --limit)' if capped else ''))
     print(f'pixel files       : {present:,} already present (content-verified)'
-          + (f', {relinked:,} re-linked into _resolved' if relinked else ''))
+          + (f', {relinked:,} sibling placements re-linked' if relinked else ''))
     if not order:
         print('\nnothing to decode - every referenced pixel in scope is already present.')
         return _report_decode(0, 0, 0, present, False, refusals, examples)
@@ -2788,9 +2728,8 @@ def decode_referenced(a, out, resolved, ref_roots):
                         written_bytes += len(data)
                     ledger[rel] = {'sha256': _sha256_bytes(data), 'bytes': len(data),
                                    'source': it['src'], 'slot': it['slot']}
-                    for sdst in _sibling_targets(out, resolved, it['slot'], it['kind'],
-                                                 it['stem'], safe, ext,
-                                                 it.get('winner', True), it.get('dir', '')):
+                    for sdst in _sibling_targets(out, it['slot'], it['kind'],
+                                                 it['stem'], safe, ext, it.get('dir', '')):
                         how = _link_or_copy(dst, sdst)
                         if how == 'link':
                             linked += 1
@@ -2806,7 +2745,7 @@ def decode_referenced(a, out, resolved, ref_roots):
 
     print(f'\ndecoded {decoded:,} new pixel files ({written_bytes / 1e6:.1f} MB), '
           f'{rewritten:,} rewritten, {unchanged:,} byte-identical to what was already there')
-    print(f'hardlinked into _resolved: {linked:,}   copied: {copied:,}')
+    print(f'sibling placements (bare-folder dual-write): linked {linked:,}   copied: {copied:,}')
     return _report_decode(decoded, rewritten, unchanged, present, True, refusals, examples)
 
 
@@ -2840,18 +2779,22 @@ def _report_decode(decoded, rewritten, unchanged, present, attempted, refusals, 
 
 
 def cmd_resolve(a):
-    """Flatten the precedence tree into `_resolved/<type>/` - ONE build-accurate file per name.
+    """⛔ RETIRED (owner ruling, 2026-08-09): "_resolved should never have been a thing.
+    Because of how development and server streaming work, that means files need to stay
+    consistent with their DLC and structure. … _resolved is a flat structure for files that
+    creates more problems than solutions."
 
-    ⭐ WHY THIS EXISTS: RUDE reads a FLAT corpus (`ImportMapArea` globs `<root>/ytyp/*.xml`,
-    `<root>/ymap/<prefix>*.xml` and looks up `<root>/ydr/<assetName>.ydr.xml`), while extraction
-    writes numbered precedence slots. Without this step a QUARRY project folder cannot be opened
-    by the plugin at all - foundation step 3 - and the two halves silently disagree, exactly the
-    way emitting binary-vs-XML did. Resolving is QUARRY's job because QUARRY is what knows load
-    order; the DCC should not have to.
-
-    Point RUDE's CorpusRoot at `<project>/_resolved`. Hardlinks by default, so a whole-game
-    resolve costs almost no extra disk; falls back to copying when the filesystem refuses.
+    The corpus contract is the SLOT TREE: every file lives in its own precedence slot,
+    sidecars beside their drawable, exactly as the game ships them. A consumer that needs
+    precedence resolves it from the slot ordering (the slot names ARE the load order);
+    nothing pre-flattens the corpus. The old implementation is kept below, unreachable,
+    for the record.
     """
+    print('STOP - `resolve` is RETIRED (2026-08-09 slot-tree ruling). The corpus contract '
+          'is the precedence slot tree itself; nothing pre-flattens it. Point consumers at '
+          'the slot tree and resolve precedence by slot order.')
+    return 2
+
     out = a.out
     if not os.path.isdir(out):
         print(f'no project folder at {out}')
@@ -4765,19 +4708,18 @@ def main():
     pe.add_argument('--oodle')
     pe.set_defaults(fn=cmd_export)
 
-    # `resolve` reads only the project folder, so it needs no --game and no keys
-    pr = sub.add_parser('resolve', help='flatten the precedence tree into _resolved/ - the FLAT '
-                                        'corpus layout RUDE actually reads')
+    pr = sub.add_parser('resolve', help='RETIRED (2026-08-09 slot-tree ruling) - the corpus '
+                                        'contract is the precedence slot tree itself; '
+                                        'invoking this prints the ruling and exits 2')
     pr.add_argument('--out', required=True, help='the project folder built by init/extract')
-    pr.add_argument('--types', help='comma-separated type folders to resolve, e.g. ydr,ytd,ytyp,ymap')
-    pr.add_argument('--copy', action='store_true',
-                    help='copy instead of hardlinking (use when the destination is another volume)')
+    pr.add_argument('--types', help='(retired - no effect)')
+    pr.add_argument('--copy', action='store_true', help='(retired - no effect)')
     pr.set_defaults(fn=cmd_resolve)
 
     pt = sub.add_parser('textures', help='the referenced-pixel lane: report what is referenced, '
                                          '--decode-referenced to DECODE only that from the '
                                          'archives, --prune to delete what is not '
-                                         '(run AFTER meta/resolve)')
+                                         '(run AFTER extract/meta)')
     pt.add_argument('--out', required=True, help='the project folder built by init/extract')
     pt.add_argument('--prune', action='store_true',
                     help='actually delete the unreferenced png/dds sidecars. Safe: the source is '
@@ -4793,27 +4735,23 @@ def main():
                                     'This is what makes the decode cheap forever - you pay for an '
                                     'area, not for the game. Omit = the whole corpus.')
     pt.add_argument('--candidates', type=int, default=0,
-                    help='a drawable names a TEXTURE, not a dictionary, and most texture names '
-                         'exist in several. Default 0 = decode EVERY dictionary that holds a '
-                         'referenced name (complete: RUDE\'s scoped lookup then picks, and no '
-                         'bind can be wrong). N>0 keeps only N candidates per texture - much '
-                         'cheaper, but a bind RUDE resolves elsewhere becomes missingPixels')
+                    help='RETIRED (2026-08-09 slot-tree ruling) - accepted, no effect. Every '
+                         'holding instance decodes in its own slot; use --scope / --limit for '
+                         'cost control.')
     pt.add_argument('--limit', type=int, default=0,
                     help='decode at most N dictionaries this run (0 = no cap). Safe to use: the '
                          'run is resumable, so a capped run is a partial, not a wrong, corpus')
     pt.add_argument('--all-instances', action='store_true', dest='all_instances',
-                    help='ALSO decode every EMBEDDED dictionary at every slot instance (not just '
-                         'the _resolved winner), each from its own slot\'s archives - what a '
-                         '--textures dds extract would have written. The default winner-only plan '
-                         'cannot see a non-winner instance\'s pixels at all (the 2026-08-07 '
-                         'sidecar-grade instance-axis class). Non-winner pixels are NEVER linked '
-                         'into _resolved.')
+                    help='RETIRED (2026-08-09 slot-tree ruling) - accepted, no effect: '
+                         'per-instance planning at every slot IS the only mode now. Every '
+                         'dictionary instance decodes from its own slot\'s archives into its '
+                         'own slot folder.')
     pt.add_argument('--dicts',
                     help='force-decode these STANDALONE dictionaries IN FULL (every texture, not '
                          'just referenced ones): comma-separated fnmatch patterns against the '
                          'dictionary stem, or @file with one per line. For engine-referenced '
                          'dictionaries no drawable names (waterfog) and oracle-graded positions. '
-                         'With --all-instances, applies at every slot instance.')
+                         'Applies at every slot instance.')
     pt.add_argument('--dds', action='store_true',
                     help='also write the lossless .dds beside the .png (doubles the disk)')
     pt.add_argument('--dds-only', action='store_true', dest='dds_only',

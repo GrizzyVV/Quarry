@@ -35,10 +35,12 @@ python quarry.py view   --game "<install>" --out proj      # register every file
 python quarry.py extract --game "<install>" --out proj --xml \
        --types ydr,ydd,yft,ytd,ybn,ytyp,ymap --textures none
 python quarry.py meta    --out proj --view proj --game "<install>"
-python quarry.py resolve --out proj                        # flatten to proj/_resolved
 ```
 
-Point your consumer at `proj/_resolved`. Add pixels later, only for what you actually use:
+Point your consumer at the project's slot tree (`00_base/`, `10_update/`, `20_dlc/<slot>/`) —
+files stay exactly where the game ships them, in load order; sidecars sit beside their
+drawable. Precedence is the slot ordering itself. Add pixels later, only for what you
+actually use:
 
 ```bash
 python quarry.py textures --out proj --decode-referenced --game "<install>"
@@ -57,7 +59,7 @@ python quarry.py textures --out proj --decode-referenced --game "<install>"
 | `extract` | the bulk lane — convert whole types to XML, or keep binaries. `--types`, `--resume`, `--textures` |
 | `export` | **targeted** — convert exactly the named entries, straight from the archives, same converters |
 | `meta` | convert binary `ytyp`/`ymap`/`ymt` and resolve dictionary entry names. Run **after** `extract` |
-| `resolve` | flatten the precedence tree into `_resolved/` — one build-accurate file per name |
+| `resolve` | **retired** — the slot tree IS the corpus contract; nothing pre-flattens it (invoking prints the ruling and exits) |
 | `textures` | the referenced-pixel lane: report, decode only what is referenced, prune the rest |
 | `regress` | the churn gate — converter output may not change unless someone records why |
 | `witness` | rebuild the topic census the churn gate reads |
