@@ -950,7 +950,7 @@ def provenance_index(out_root):
 
 
 def file_into(out_root, slot, name, blob, stats=None, skip_existing=False, chain=None,
-              refresh=False, subdir=None):
+              refresh=False, subdir=None, overwrite=False):
     """File one blob by type into a precedence slot.
 
     Filing is FLAT by basename inside <slot>/<ext>/, which means two same-named files from
@@ -972,6 +972,65 @@ def file_into(out_root, slot, name, blob, stats=None, skip_existing=False, chain
         d = os.path.join(d, subdir.replace('/', os.sep))
     os.makedirs(d, exist_ok=True)
     target = os.path.join(d, name)
+    if overwrite:
+        # ⭐ --overwrite: REGENERATE THE CORPUS IN PLACE (Matt's ruling 2026-08-09: "I don't
+        # really care if you overwrite the old ones in place or delete them and export new
+        # ones, it's all the same to me"). The FIRST write of a path in THIS run claims it
+        # and overwrites whatever generation sat there; later writes of the SAME path in the
+        # same run are genuine instance collisions and claim the next ~N slot - overwriting
+        # the OLD generation's ~N of the same rank, because the archive walk is
+        # deterministic (control-proven: qualified names identical across walk orders), so
+        # rank-k this run IS rank-k last run. Old ~N beyond this run's instance count are
+        # left in place and countable afterwards as pre-run-mtime leftovers - counted by
+        # the post-run staleness sweep, never silently absorbed.
+        # Byte-identical rewrites are SKIPPED (counted), so an overwrite run is idempotent
+        # and cheap on the unchanged majority - and provenance is appended for EVERY file
+        # it touches or verifies, rebuilding the ledger with full coverage.
+        wset = stats.setdefault('_overwrite_written', set()) if stats is not None else set()
+        stem0, ext0 = split_type_ext(name)
+        tkey = target.lower()
+        n = 0
+        while tkey in wset:
+            n += 1
+            target = os.path.join(d, f'{stem0}~{n}{ext0}')
+            tkey = target.lower()
+        wset.add(tkey)
+        existed = os.path.isfile(target)
+        if existed:
+            try:
+                with open(target, 'rb') as _f:
+                    if _f.read() == blob:
+                        if stats is not None:
+                            stats['overwrite: already current'] = \
+                                stats.get('overwrite: already current', 0) + 1
+                            if chain:
+                                _s, _e = split_type_ext(name)
+                                stats.setdefault('provenance', []).append(
+                                    {'slot': slot, 'type': type_of(name),
+                                     'file': (subdir + '/' if subdir else '')
+                                             + os.path.basename(target),
+                                     'qualifiedName': '%s~%s%s'
+                                                      % (_s, source_tag(chain, blob), _e),
+                                     'sourceName': name, 'archive': chain,
+                                     'sha1': hashlib.sha1(blob).hexdigest()})
+                        return None
+            except OSError:
+                pass
+        with open(target, 'wb') as f:
+            f.write(blob)
+        if stats is not None:
+            k = ('overwritten (superseded generation)' if existed
+                 else 'written (new this generation)')
+            stats[k] = stats.get(k, 0) + 1
+            if chain:
+                _s, _e = split_type_ext(name)
+                stats.setdefault('provenance', []).append(
+                    {'slot': slot, 'type': type_of(name),
+                     'file': (subdir + '/' if subdir else '') + os.path.basename(target),
+                     'qualifiedName': '%s~%s%s' % (_s, source_tag(chain, blob), _e),
+                     'sourceName': name, 'archive': chain,
+                     'sha1': hashlib.sha1(blob).hexdigest()})
+        return os.path.basename(target)
     if os.path.exists(target):
         # ⭐ RESUME: with skip_existing, an identical target name is treated as ALREADY DONE rather
         # than as a collision. Added 2026-07-30 after a whole-game extract was lost twice - once to a
@@ -3771,7 +3830,8 @@ def cmd_extract(a):
                             written = file_into(a.out, slot, xml_name, xml_bytes, stats,
                                                 getattr(a, 'resume', False), chain=chain,
                                                 refresh=getattr(a, 'refresh', False),
-                                                subdir=pedsub or None)
+                                                subdir=pedsub or None,
+                                                overwrite=getattr(a, 'overwrite', False))
                             if written is None:
                                 # ⛔⛔ A RESUMED XML MUST NOT SKIP ITS SIDECARS (2026-08-04).
                                 # This `continue` jumped past the ENTIRE sidecar loop, so a second
@@ -3850,7 +3910,8 @@ def cmd_extract(a):
                         # fall through and keep the binary rather than losing the asset
                 file_into(a.out, slot, name, blob, stats, getattr(a, 'resume', False),
                           chain=chain, refresh=getattr(a, 'refresh', False),
-                          subdir=pedsub or None)
+                          subdir=pedsub or None,
+                          overwrite=getattr(a, 'overwrite', False))
                 n += 1
             except Exception as ex:
                 stats['failed'] = stats.get('failed', 0) + 1
@@ -4635,6 +4696,13 @@ def main():
                                       '`meta --view` use, freshness-gated). Without it those '
                                       'types are kept binary for the later `meta` pass - '
                                       'their names table needs the whole filename universe')
+        p.add_argument('--overwrite', action='store_true',
+                       help='REGENERATE the corpus in place (Matt 2026-08-09): the first '
+                            'write of each path this run overwrites the superseded copy; '
+                            'same-path collisions within the run claim ~N ranks, likewise '
+                            'overwriting the old generation rank-for-rank (the walk is '
+                            'deterministic). Byte-identical rewrites are skipped and '
+                            'counted; provenance is appended for every file touched')
         p.add_argument('--resume', action='store_true',
                        help='continue an INTERRUPTED run: treat an already-present output file as '
                             'done instead of as a name collision. ⛔ Opt-in only - the collision '
