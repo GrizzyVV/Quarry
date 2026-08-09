@@ -3748,6 +3748,12 @@ def cmd_extract(a):
             print(f'STOP --only {a.only!r} matched NO archive. Available ({len(avail)}): '
                   + ', '.join(avail[:24]) + (' …' if len(avail) > 24 else ''))
             return 2
+    if getattr(a, 'only_path', None):
+        want_p = os.path.normcase(os.path.abspath(a.only_path))
+        jobs = [j for j in jobs if os.path.normcase(os.path.abspath(j[0])) == want_p]
+        if not jobs:
+            print(f'STOP --only-path {a.only_path!r} matched NO archive in the job list.')
+            return 2
 
     want = None
     if getattr(a, 'types', None):
@@ -4657,6 +4663,10 @@ def main():
         p.add_argument('--out')
         p.add_argument('--keys')
         p.add_argument('--only', help='limit to one archive basename, e.g. x64a.rpf')
+        p.add_argument('--only-path', dest='only_path',
+                       help='limit to ONE archive by its full path (basename matching is '
+                            'ambiguous for DLC: every pack ships a dlc.rpf). The parallel '
+                            'driver\'s per-worker scope.')
         p.add_argument('--nested-only', dest='nested_only',
                        help='limit to NESTED archives matching this fnmatch pattern (e.g. '
                             '"streamedpedprops*.rpf") - the staged-migration scalpel: '
