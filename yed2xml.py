@@ -49,12 +49,19 @@ from ydr2xml import Res                       # noqa: E402  (RSC7 container read
 from meta2xml import fmt_num, esc             # noqa: E402  (float-text law, XML escape)
 
 # opcode byte -> (TypeName, operand-kind). Derived by aligning every stream's opcode array
-# against the oracle's instruction-type sequence: 0 conflicts over all 5 streams / 471 opcodes.
+# against the oracle's instruction-type sequence. Original 24: ig_lestercrest (5 streams /
+# 471 opcodes, 0 conflicts). 2026-08-09 EXTENSION (+9): the SAME alignment over ALL 24
+# oracle files - 39 streams / 49,491 instructions, every vote unanimous (incl. re-votes of
+# the original 24), and the pool accounting balanced EXACTLY on 39/39 streams under the
+# operand rules below (168,346 float spellings reproduced in the derivation harness).
+# ⚠ The one-file derivation base was the trap: ig_lestercrest simply never uses these 9.
 OPS = {
     0x00: ("End", None),          0x01: ("Pop", None),
     0x03: ("Push0", None),        0x04: ("Push1", None),
-    0x05: ("PushFloat", "f"),     0x09: ("TrackGetOffsetComp", "t"),
-    0x0b: ("PushVector", "v"),    0x10: ("VectorNeg", None),
+    0x05: ("PushFloat", "f"),     0x07: ("TrackGetComp", "t"),
+    0x09: ("TrackGetOffsetComp", "t"),
+    0x0b: ("PushVector", "v"),    0x0e: ("DefineSpring", "s"),
+    0x10: ("VectorNeg", None),
     0x1d: ("VectorDeg2Rad", None),0x1e: ("VectorRad2Deg", None),
     0x21: ("FromEuler", None),    0x26: ("TrackSet", "t"),
     0x27: ("TrackSetComp", "t"),  0x28: ("TrackSetOffset", "t"),
@@ -62,9 +69,17 @@ OPS = {
     0x2e: ("VectorAdd", None),    0x2f: ("VectorSub", None),
     0x30: ("VectorMul", None),    0x31: ("VectorMin", None),
     0x32: ("VectorMax", None),    0x33: ("QuatMul", None),
-    0x35: ("VectorGreaterThan", None), 0x3d: ("ToVector", None),
+    0x35: ("VectorGreaterThan", None), 0x36: ("VectorLessThan", None),
+    0x37: ("VectorGreaterEqual", None), 0x38: ("VectorLessEqual", None),
+    0x39: ("VectorClamp", None),  0x3b: ("VectorMad", None),
+    0x3d: ("ToVector", None),
+    0x44: ("BlendVector", "b"),   0x45: ("BlendQuaternion", "b"),
 }
-OPSIZE = {"f": 4, "t": 8, "j": 12}   # main-pool bytes; "v" consumes 16 from the vector pool
+# main-pool bytes; "v" consumes 16 from the vector pool, "s" (spring) a fixed 176 (11x16B
+# slots), "b" (blend) a SELF-SIZED vector-pool payload (u32 total-bytes header at the
+# cursor). vecPoolBytes = 16*#PushVector + 176*#DefineSpring + sum(blend payloads) -
+# the old "16 x #PushVector" doc line was the single-file view.
+OPSIZE = {"f": 4, "t": 8, "j": 12}
 
 
 def _u16(S, o): return struct.unpack_from("<H", S, o)[0]
@@ -72,6 +87,73 @@ def _u32(S, o): return struct.unpack_from("<I", S, o)[0]
 def _u64(S, o): return struct.unpack_from("<Q", S, o)[0]
 def _f32(S, o): return struct.unpack_from("<f", S, o)[0]
 def _arr(S, base): return (_u32(S, base) & 0x0FFFFFFF, _u16(S, base + 8))   # (ptr, count)
+
+
+def _spring_operand(S, vo, out, ind):
+    """DefineSpring: 176 vector-pool bytes = 11 16-byte slots (derived 2026-08-09, 14
+    witnesses). Slots 0-8: Vector01..09 (f32 x,y,z @+0/4/8; u16 a @+12, u16 b @+14).
+    Slot 9: Gravity xyz + u16 BoneTag @+12 (+14 = 0 in all 14). Slot 10: u32 BoneTrackRot,
+    u32 BoneTrackPos (rest 0 in all 14). XML: vectors, Gravity, Ushort pairs, tags."""
+    for i in range(9):
+        o = vo + i * 16
+        out.append('%s<Vector%02d x="%s" y="%s" z="%s" />'
+                   % (ind, i + 1, fmt_num(_f32(S, o)), fmt_num(_f32(S, o + 4)),
+                      fmt_num(_f32(S, o + 8))))
+    g = vo + 9 * 16
+    out.append('%s<Gravity x="%s" y="%s" z="%s" />'
+               % (ind, fmt_num(_f32(S, g)), fmt_num(_f32(S, g + 4)), fmt_num(_f32(S, g + 8))))
+    for i in range(9):
+        o = vo + i * 16
+        out.append('%s<Ushort%02da value="%d" />' % (ind, i + 1, _u16(S, o + 12)))
+        out.append('%s<Ushort%02db value="%d" />' % (ind, i + 1, _u16(S, o + 14)))
+    out.append('%s<BoneTag value="%d" />' % (ind, _u16(S, g + 12)))
+    t = vo + 10 * 16
+    out.append('%s<BoneTrackRot value="%d" />' % (ind, _u32(S, t)))
+    out.append('%s<BoneTrackPos value="%d" />' % (ind, _u32(S, t + 4)))
+
+
+def _blend_operand(S, vo, out, ind):
+    """BlendVector/BlendQuaternion: self-sized vector-pool payload (derived 2026-08-09,
+    484 blends, size law verified on every one). Header 16B: u32 payloadBytes (total incl.
+    header), u32 numSources, u32 numSourceWeights, u32 0 (REFUSED if nonzero - unwitnessed).
+    Source records @+16: nsrc x (u16 TrackIndex, u16 componentByteOffset; ComponentIndex =
+    offset/4), area padded to 16. Float planes in 4-source blocks: per weight-set w:
+    W.X W.Y W.Z O.X O.Y O.Z planes (+T.X T.Y T.Z when w < nsw-1), one 16B float4 per
+    plane, lane = source % 4. Returns consumed byte count."""
+    payload = _u32(S, vo)
+    nsrc = _u32(S, vo + 4)
+    nsw = _u32(S, vo + 8)
+    if _u32(S, vo + 12) != 0:
+        raise ValueError("blend header dword3 nonzero (unwitnessed shape) @0x%x" % vo)
+    src0 = vo + 16
+    src_area = ((nsrc * 4 + 15) // 16) * 16
+    planes0 = src0 + src_area
+    per_block = 9 * nsw - 3                     # planes per 4-source block
+
+    def plane(block, pidx, lane):
+        return _f32(S, planes0 + (block * per_block + pidx) * 16 + lane * 4)
+
+    out.append('%s<NumSourceWeights value="%d" />' % (ind, nsw))
+    out.append('%s<Sources>' % ind)
+    for s in range(nsrc):
+        so = src0 + s * 4
+        block, lane = s // 4, s % 4
+        out.append('%s <Item>' % ind)
+        out.append('%s  <TrackIndex value="%d" />' % (ind, _u16(S, so)))
+        out.append('%s  <ComponentIndex value="%d" />' % (ind, _u16(S, so + 2) // 4))
+        for ax, axoff in (("X", 0), ("Y", 1), ("Z", 2)):
+            w_vals = [plane(block, 9 * w + axoff, lane) for w in range(nsw)]
+            o_vals = [plane(block, 9 * w + 3 + axoff, lane) for w in range(nsw)]
+            t_vals = [plane(block, 9 * w + 6 + axoff, lane) for w in range(nsw - 1)]
+            out.append('%s  <%s>' % (ind, ax))
+            out.append('%s   <Weights>%s</Weights>' % (ind, ' '.join(fmt_num(v) for v in w_vals)))
+            out.append('%s   <Offsets>%s</Offsets>' % (ind, ' '.join(fmt_num(v) for v in o_vals)))
+            out.append('%s   <Thresholds>%s</Thresholds>' % (ind, ' '.join(fmt_num(v) for v in t_vals))
+                       if t_vals else '%s   <Thresholds />' % ind)
+            out.append('%s  </%s>' % (ind, ax))
+        out.append('%s </Item>' % ind)
+    out.append('%s</Sources>' % ind)
+    return payload
 
 
 def _track_operand(S, o, out, ind):
@@ -165,6 +247,10 @@ def yed_to_xml(path):
                 elif kind == "j":
                     ioff = _u32(S, mo + 8)      # 3rd u32 = InstructionOffset
                     out.append('%s<InstructionOffset value="%d" />' % (ind, ioff)); mo += 12
+                elif kind == "s":
+                    _spring_operand(S, vo, out, ind); vo += 176
+                elif kind == "b":
+                    vo += _blend_operand(S, vo, out, ind)
                 out.append("     </Item>")
             # self-check: operands must exactly fill both pools
             if mo != main_off + mbytes:

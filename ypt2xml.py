@@ -219,6 +219,18 @@ class Ypt:
 
 
 # ------------------------------------------------------------------ shared emit helpers
+def _fnum(x):
+    """Keyframe float spelling: non-finite float32 spells the way the reference writes it
+    - literal 'Infinity' witnessed (des_tv_smash oracle: y="Infinity"; stored bits
+    0x7F800000), '-Infinity' the sign twin. NaN stays UNWITNESSED in ypt keyframes and
+    falls through to fmt_num, which refuses it loudly rather than inventing a spelling."""
+    if x == float('inf'):
+        return 'Infinity'
+    if x == float('-inf'):
+        return '-Infinity'
+    return fmt_num(x)
+
+
 def _kfp_xml(res_kfp, indent, tag="Item"):
     sp = " " * indent
     L = ["%s<%s>" % (sp, tag),
@@ -232,8 +244,8 @@ def _kfp_xml(res_kfp, indent, tag="Item"):
         L.append("%s <Keyframes>" % sp)
         for t, v in kfs:
             L += ["%s  <Item>" % sp,
-                  '%s   <KeyframeTime x="%s" y="%s" z="%s" w="%s" />' % (sp, *[fmt_num(x) for x in t]),
-                  '%s   <KeyframeValue x="%s" y="%s" z="%s" w="%s" />' % (sp, *[fmt_num(x) for x in v]),
+                  '%s   <KeyframeTime x="%s" y="%s" z="%s" w="%s" />' % (sp, *[_fnum(x) for x in t]),
+                  '%s   <KeyframeValue x="%s" y="%s" z="%s" w="%s" />' % (sp, *[_fnum(x) for x in v]),
                   "%s  </Item>" % sp]
         L.append("%s </Keyframes>" % sp)
     L.append("%s</%s>" % (sp, tag))
@@ -250,8 +262,8 @@ def _kf_items(y, kfptr, cnt, indent):
         o = kfptr + i * 32
         t = struct.unpack_from("<4f", y.b, o); v = struct.unpack_from("<4f", y.b, o + 16)
         L += ["%s <Item>" % sp,
-              '%s  <KeyframeTime x="%s" y="%s" z="%s" w="%s" />' % (sp, *[fmt_num(x) for x in t]),
-              '%s  <KeyframeValue x="%s" y="%s" z="%s" w="%s" />' % (sp, *[fmt_num(x) for x in v]),
+              '%s  <KeyframeTime x="%s" y="%s" z="%s" w="%s" />' % (sp, *[_fnum(x) for x in t]),
+              '%s  <KeyframeValue x="%s" y="%s" z="%s" w="%s" />' % (sp, *[_fnum(x) for x in v]),
               "%s </Item>" % sp]
     L.append("%s</Keyframes>" % sp)
     return L
@@ -291,10 +303,18 @@ def _emitter_item(y, base, indent):
     return L
 
 
+def _by_name(y, objs, name_off):
+    """Dictionary items emit in ascending NAME order - the reference sorts by name, not
+    by the stored hash order (measured 2026-08-09: 7/11 stage-D DIFF first-causes were
+    exactly this reorder, e.g. jet<->splash, nitro<->petrol; the original 10-oracle base
+    never witnessed a file where the two orders diverge, so stored order looked right)."""
+    return sorted(objs, key=lambda base: y.res.cstr(y._p(base + name_off)))
+
+
 def emitter_dict(y):
     _, objs = y.dict_objects(0x50)
     L = [" <EmitterRuleDictionary>"]
-    for base in objs:
+    for base in _by_name(y, objs, 0x20):
         L += _emitter_item(y, base, 2)
     L.append(" </EmitterRuleDictionary>")
     return L
@@ -355,7 +375,11 @@ def _event_emitter(y, eo, indent):
          '%s <ZoomScalarMax value="%s" />' % (sp, fmt_num(y._f(eo + 0x5c))),
          '%s <ColourTintMin value="0x%X" />' % (sp, y._p(eo + 0x60)),
          '%s <ColourTintMax value="0x%X" />' % (sp, y._p(eo + 0x64))]
-    L += _evolution_list(y, y._deref(eo + 0x18), indent + 1)
+    elp = y._deref(eo + 0x18)
+    if elp is not None:
+        # NULL pointer = the element is OMITTED (oracle-witnessed: cut_trevor4
+        # </KeyframeProps> abuts </Item>; present when non-NULL: cut_josh_4)
+        L += _evolution_list(y, elp, indent + 1)
     L.append("%s</Item>" % sp)
     return L
 
@@ -420,8 +444,10 @@ def _effect_item(y, base, indent):
     for i in range(kcnt):
         L += _kfp_xml(y.read_kfp(y._deref(kp + i * 8) + 0x68), indent + 2, tag="Item")
     L.append("%s </KeyframeProps>" % sp)
-    # top-level EvolutionList @+0x48
-    L += _evolution_list(y, y._deref(base + 0x48), indent + 1)
+    # top-level EvolutionList @+0x48 - NULL pointer = element OMITTED (see _event_emitter)
+    elp = y._deref(base + 0x48)
+    if elp is not None:
+        L += _evolution_list(y, elp, indent + 1)
     L.append("%s</Item>" % sp)
     return L
 
@@ -429,7 +455,7 @@ def _effect_item(y, base, indent):
 def effect_dict(y):
     _, objs = y.dict_objects(0x48)
     L = [" <EffectRuleDictionary>"]
-    for base in objs:
+    for base in _by_name(y, objs, 0x20):
         L += _effect_item(y, base, 2)
     L.append(" </EffectRuleDictionary>")
     return L
@@ -596,7 +622,7 @@ def _particle_item(y, base, indent):
 def particle_dict(y):
     _, objs = y.dict_objects(0x38)
     L = [" <ParticleRuleDictionary>"]
-    for base in objs:
+    for base in _by_name(y, objs, PART["Name"]):
         L += _particle_item(y, base, 2)
     L.append(" </ParticleRuleDictionary>")
     return L
