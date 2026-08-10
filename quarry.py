@@ -1471,8 +1471,8 @@ def cmd_doctor(a):
     else:
         print('  Ready. Next:  quarry.py extract --game "<install>" --out "<project>" --xml '
               '--types ydr,ydd,yft,ytd,ybn,ytyp,ymap,ymt')
-        print('  Then:         quarry.py meta --out "<project>"   and   quarry.py resolve --out '
-              '"<project>"')
+        print('  Then:         quarry.py meta --out "<project>" --view <viewdir> --game '
+              '"<install>"   (the slot tree IS the corpus - nothing flattens it)')
     return 1 if bad else 0
 
 
@@ -1698,7 +1698,8 @@ def cmd_meta(a):
               '.xml files yourself so the gap is HONEST (a missing file is a countable hole; a '
               'stale one is a wrong answer with no counter).')
 
-    print('\n  next: quarry.py resolve --out "<project>"   (flatten for RUDE)')
+    print('\n  done: the slot tree IS the corpus contract (owner ruling 2026-08-09) - '
+          'consumers read it in slot order; nothing pre-flattens it.')
     return 0
 
 
@@ -1746,24 +1747,31 @@ def scan_drawable_references(ref_roots, scope=None):
             if not os.path.isdir(d):
                 continue
             kinds_seen.add(kind)
-            for fn in os.listdir(d):
-                if not fn.lower().endswith('.xml'):
-                    continue
-                # Sibling embedded-texture manifests share this folder now. They are not drawables,
-                # and counting them inflated "drawables scanned" to 12 for 6 files.
-                if fn.lower().endswith('.ytd.xml'):
-                    continue
-                stem = split_type_ext(fn)[0]
-                if scope and not _scope_match(stem, fn, scope):
-                    continue
-                try:
-                    with open(os.path.join(d, fn), encoding='utf-8', errors='replace') as fh:
-                        txt = fh.read()
-                except OSError:
-                    continue
-                drawables += 1
-                stems.add(stem.lower())
-                wanted.update(t.strip().lower() for t in _TEX_REF_RE.findall(txt))
+            # RECURSIVE walk (fixed 2026-08-10): the per-ped layout files drawables one
+            # folder down (<kind>/<ped>/<name>) - the flat listdir here was blind to every
+            # ped-homed drawable while decode planning walks recursively, so prune could
+            # have deleted pixels those drawables reference. Sidecar pixel folders under
+            # the same roots hold no .xml, so the filters below keep membership exact.
+            for wd, _subdirs, files in os.walk(d):
+                for fn in sorted(files):
+                    if not fn.lower().endswith('.xml'):
+                        continue
+                    # Sibling embedded-texture manifests share these folders. They are not
+                    # drawables, and counting them inflated "drawables scanned" once.
+                    if fn.lower().endswith('.ytd.xml'):
+                        continue
+                    stem = split_type_ext(fn)[0]
+                    if scope and not _scope_match(stem, fn, scope):
+                        continue
+                    try:
+                        with open(os.path.join(wd, fn), encoding='utf-8',
+                                  errors='replace') as fh:
+                            txt = fh.read()
+                    except OSError:
+                        continue
+                    drawables += 1
+                    stems.add(stem.lower())
+                    wanted.update(t.strip().lower() for t in _TEX_REF_RE.findall(txt))
     return wanted, drawables, kinds_seen, stems
 
 
@@ -3445,6 +3453,12 @@ def cmd_export(a):
             print('STOP: ytyp/ymap/ymt/ydd entries need --view <folder holding '
                   'VIEW_MANIFEST.jsonl> - the names source')
             return 2
+    if a.view:
+        # Registry given = registry used - in BOTH paths. extract --xml --view hands the
+        # names table to EVERY converter, but export used to build it only for NAMES_KINDS
+        # batches: a targeted ynv/mrf/rel/pso-only export ran names=None and spelled
+        # hash_ where the at-scale path resolves the name - exactly the targeted-vs-
+        # at-scale divergence the same-code guarantee (2.5.3/5.5) forbids.
         print('names    : deriving the joaat table from the view manifest '
               '(freshness-gated) ...')
         names = _names_from_view(a.view, a.game)
