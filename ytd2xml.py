@@ -117,10 +117,14 @@ USAGE_BY_CODE = {
 # oracle prints "Y1024" exactly where ascending-bit order places bit 20 (after Y512=18, before
 # UNK24=29). It completes the Y power-ladder (Y512=18 -> Y1024=20, mirroring X512=17 -> X1024=19).
 # Strictly additive: no passing oracle set bit 20, so no ytd/ydr/ydd file can change.
+# ⭐ bit 22 = Y2048 added 2026-08-10 by the same counter-witness method as Y1024:
+# ptfx_smoke_sheet_6 (core.ypt root TextureDictionary, dword 0x20400014, set bits
+# {2,4,22,29}) - bit 22 is the ONLY unnamed set bit and the oracle prints "Y2048"
+# exactly where ascending order places it (after X2048=21). Completes the ladder.
 USAGE_FLAG_BITS = (
     (5, "NOT_HALF"), (6, "HD_SPLIT"), (9, "Y4"), (10, "X8"), (11, "X16"), (12, "X32"),
     (13, "X64"), (14, "Y64"), (15, "X128"), (16, "X256"), (17, "X512"), (18, "Y512"),
-    (19, "X1024"), (20, "Y1024"), (21, "X2048"), (29, "UNK24"),
+    (19, "X1024"), (20, "Y1024"), (21, "X2048"), (22, "Y2048"), (29, "UNK24"),
 )
 
 

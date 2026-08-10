@@ -81,6 +81,13 @@ KFP_NAMES = [
  # 2026-08-10 ZCull derivation (both joaat-verified against cut_mpsui's stored hashes
  # 0xCE9ADBFD / 0xEA6AFABA):
  "ptxu_ZCull:m_heightKFP","ptxu_ZCull:m_fadeDistKFP",
+ # 2026-08-10 FogVolume derivation (all 7 oracle-witnessed spellings, joaat-verified vs
+ # the 56 stored hashes across core.ypt's 8 instances; densityRange is ALSO referenced
+ # from an EvolutionList outside any FogVolume block - exp_grd_bzgas_smoke):
+ "ptxu_FogVolume:m_rgbTintMinKFP","ptxu_FogVolume:m_rgbTintMaxKFP",
+ "ptxu_FogVolume:m_densityRangeKFP","ptxu_FogVolume:m_scaleMinKFP",
+ "ptxu_FogVolume:m_scaleMaxKFP","ptxu_FogVolume:m_rotationMinKFP",
+ "ptxu_FogVolume:m_rotationMaxKFP",
 ]
 HASH2NAME = {joaat(n): n for n in KFP_NAMES}
 
@@ -98,7 +105,13 @@ PART = dict(RefCount=0x10, CullMode=0x100, BlendSet=0x104, LightingMode=0x108,
             DepthWrite=0x10c, DepthTest=0x10d, AlphaBlend=0x10e,
             TexFrameIDMin=0x118, TexFrameIDMax=0x11c, Name=0x120,
             ShaderFile=0x1b8, ShaderTechnique=0x1c0, ShaderTemplateTechniqueID=0x1d0,
-            DiffuseMode=0x1e0, IsLit=0x1e8, IsSoft=0x1e9, SortType=0x220, DrawType=0x221)
+            DiffuseMode=0x1e0, ProjectionMode=0x1e4, IsLit=0x1e8, IsSoft=0x1e9,
+            IsNormalSpec=0x1ec, SortType=0x220, DrawType=0x221)
+# ProjectionMode @0x1E4 + IsNormalSpec @0x1EC pinned 2026-08-10 at 1,605-rule scale
+# (both were hardcoded consts): ProjectionMode = the unique value-intersection survivor
+# over every rule in core.ypt + scr_rcextreme2 (5 witnesses value 1: the River/water
+# family); IsNormalSpec = byte contiguous with the IsLit..IsRefract run (13 witnesses
+# value 1: glass/lens/petrol families).
 # EffectSpawner blocks: AtRatio Min @0x38 (Max @+0x20); OnCollision Min @0xa8 (Max @+0x20).
 # Min block: Duration@+0x00 Playback@+0x04 ColourTint@+0x08 Zoom@+0x0c Flags@+0x10 (f32/f32/u32hex/f32/u32).
 # AtRatio TracksPointPos @particle+0x8d (the only spawner bool that varied). AllBehaviours atArray
@@ -114,13 +127,13 @@ BEH_TYPEHASH = {
  # 2026-08-09 wave-2b (joaat of the ptxu_/ptxd_ class names, verified vs stored hashes):
  0x0544C710:"Light", 0xDF229542:"Liquid", 0x6232E25A:"Model", 0x25AC9437:"Attractor",
  0xB77FED19:"Noise",
- # 2026-08-10 derivations (oracle-witnessed Type spellings; single-witness layouts, see specs):
- 0x8F3B6036:"Decal", 0xA35C721F:"ZCull"}
-# ⚠ KNOWN-REMAINING unknown types (their rows refuse loudly until derived). Full-population
-# census 2026-08-10 (1,240/1,240 files walked, 0 failures): 0xA05DA63E (joaat "ptxu_FogVolume",
-# 76 files) · 0xA2D6DC3F ("ptxu_DecalPool", 49) · 0xD4594BEF ("ptxu_River", 7) - names
-# joaat-inferred, NOT oracle-witnessed; derive from fresh oracles, never from the name guess.
-# x64d...\ptfx.rpf\core.ypt carries all of them (plus Decal+ZCull) and has no oracle yet.
+ # 2026-08-10 derivations (oracle-witnessed Type spellings; layout evidence in the specs):
+ 0x8F3B6036:"Decal", 0xA35C721F:"ZCull",
+ 0xA05DA63E:"FogVolume", 0xA2D6DC3F:"DecalPool", 0xD4594BEF:"River"}
+# ✅ NO UNKNOWN TYPES REMAIN: the 2026-08-10 full-population census (1,240/1,240 files
+# walked, 0 failures, cross-checked 76/76 vs oracles) found exactly 23 behaviour types
+# game-wide - all 23 are in the table above. A future KeyError here means the install
+# changed or the census method missed something; both are report-worthy events.
 # Per-variant ordered field spec. ('scalar', tag, res) where res is ('const', str) or ('off', off, kind);
 # ('kfp', tag, kfp_index) -> embedded KFP at beh+0x98+idx*0x90 ; ('vec3', tag, off).
 BEH_SPEC = {
@@ -151,8 +164,10 @@ BEH_SPEC = {
    ("scalar","NearClipDist",("off",76,"f32")), ("scalar","FarClipDist",("off",80,"f32")),
    ("scalar","ProjectionDepth",("off",84,"f32")), ("scalar","ShadowCastIntensity",("off",88,"f32")),
    ("scalar","IsScreenSpace",("off",92,"byte")), ("scalar","IsHighRes",("off",93,"byte")),
-   ("scalar","NearClip",("off",94,"byte")), ("scalar","FarClip",("const","0")),
-   ("scalar","UVClip",("off",96,"byte")), ("scalar","DisableDraw",("const","0"))],
+   # FarClip@95 / DisableDraw@97 value-PROVEN 2026-08-10 at 1,453-instance scale
+   # (FarClip: 7 witnesses value 1, bullet tracer family; DisableDraw: 2 witnesses 1)
+   ("scalar","NearClip",("off",94,"byte")), ("scalar","FarClip",("off",95,"byte")),
+   ("scalar","UVClip",("off",96,"byte")), ("scalar","DisableDraw",("off",97,"byte"))],
  # Rotation block 624..636. ⚠ Init/Update @624/@628: the pair CO-VARIES in every one of
  # the 76 oracle files (no Init!=Update witness exists) - the assignment follows XML field
  # order and is order-consistent but not value-proven. SpeedFadeThreshold: f32 @636 -
@@ -170,8 +185,12 @@ BEH_SPEC = {
    ("scalar","RadiusMult",("off",336,"f32")), ("scalar","RestSpeed",("off",340,"f32")),
    ("scalar","CollisionChance",("off",344,"byte")), ("scalar","KillChance",("off",348,"byte")),
    ("scalar","OverrideMinRadius",("const","0")), ("kfp","BouncinessKFP",0), ("kfp","BounceDirVarKFP",1)],
+ # AnimateTexture re-pinned 2026-08-10 at 724-instance scale: KeyframeMode @192 (5
+ # witnesses 4/1, was const; byte-vs-u32 width tied, byte per adjacency to the run);
+ # LastFrameID is SIGNED - 3 witnesses store FFFFFFFF and the oracle spells -1 (s8/s32
+ # both fit all 724; i32 read chosen - the old byte read spelled 255).
  "AnimateTexture": [
-   ("scalar","KeyframeMode",("const","0")), ("scalar","LastFrameID",("off",196,"byte")),
+   ("scalar","KeyframeMode",("off",192,"byte")), ("scalar","LastFrameID",("off",196,"i32")),
    ("scalar","LoopMode",("off",200,"byte")), ("scalar","IsRandomised",("off",204,"byte")),
    ("scalar","IsScaledOverParticleLife",("off",205,"byte")), ("scalar","IsHeldOnLastFrame",("off",206,"byte")),
    ("scalar","DoFrameBlending",("off",207,"byte")), ("kfp","AnimRateKFP",0)],
@@ -181,12 +200,15 @@ BEH_SPEC = {
    ("scalar","HighLodDisturbanceMode",("off",216,"byte")), ("scalar","LodLodDisturbanceMode",("off",220,"byte")),
    ("scalar","IgnoreMtxWeight",("off",224,"byte")), ("kfp","InfluenceKFP",0)],
  # Trail: AlignAxis@192 (old @28 read zeros); TessU@212/TessV@216 disambiguated by U!=V
- # witnesses (1/4 and 3/1); Wrap@238. The remaining consts are single-valued store-wide.
+ # witnesses (1/4 and 3/1); Wrap@238. 2026-08-10 39-instance scale: SmoothnessX @220
+ # (1 witness 0.2, unique survivor, completes the 212/216/220 run) + ProjectionDepth
+ # @228 (2 witnesses 0.5, unique survivor); SmoothnessY likely @224 but ZERO-witnessed -
+ # stays a counted const. Remaining consts single-valued at 39-instance scale.
  "Trail": [
    ("vec3","AlignAxis",192), ("scalar","AlignmentMode",("const","0")),
    ("scalar","TessellationU",("off",212,"byte")), ("scalar","TessellationV",("off",216,"byte")),
-   ("scalar","SmoothnessX",("const","0")), ("scalar","SmoothnessY",("const","0")),
-   ("scalar","ProjectionDepth",("const","0")), ("scalar","ShadowCastIntensity",("const","0")),
+   ("scalar","SmoothnessX",("off",220,"f32")), ("scalar","SmoothnessY",("const","0")),
+   ("scalar","ProjectionDepth",("off",228,"f32")), ("scalar","ShadowCastIntensity",("const","0")),
    ("scalar","FlipU",("const","0")), ("scalar","FlipV",("const","0")),
    ("scalar","WrapTextureOverParticleLife",("off",238,"byte")), ("scalar","DisableDraw",("const","0")),
    ("kfp","TexInfoKFP",0)],
@@ -214,45 +236,88 @@ BEH_SPEC = {
    ("scalar","PoolStartSize",("off",56,"f32")), ("scalar","PoolEndSize",("off",60,"f32")),
    ("scalar","PoolGrowthRate",("off",64,"f32")), ("scalar","TrailWidthMin",("off",68,"f32")),
    ("scalar","TrailWidthMax",("off",72,"f32"))],
- # Model: single all-zero witness - three counted consts (offsets underivable until a
- # nonzero witness exists; a future non-zero file shows up in CONST_EMITS, never silent).
+ # Model: CameraShrink @52 pinned 2026-08-10 at 114-instance scale (18 witnesses value
+ # 2.0, unique survivor - the old all-zero single witness is superseded). The other two
+ # stay counted consts (zero at 114-instance scale).
  "Model": [
-   ("scalar","CameraShrink",("const","0")), ("scalar","ShadowCastIntensity",("const","0")),
+   ("scalar","CameraShrink",("off",52,"f32")), ("scalar","ShadowCastIntensity",("const","0")),
    ("scalar","DisableDraw",("const","0"))],
  # ---- 2026-08-10 derivations ----
- # Decal (0x8F3B6036 = joaat "ptxu_Decal"): SINGLE WITNESS store-wide (core_snow, 1
- # instance). Scalar tail beh+0x150..0x17B; nonzero value-anchors 1020/20.0/0.55/0.3
- # interleave the run so every assignment is order-consistent; DecalID integer PROVEN
- # (f32 read is garbage) but u32-vs-u16+pad indistinguishable on this witness; the
- # byte quartet @0x170..0x173 is width-FORCED by the two flanking f32 pins. Zeros stay
- # counted consts. KFPs at the standard beh+0x98+i*0x90 slots (hashes verified).
- # Whole-file render validated byte-identical (with the _by_name collation fix).
+ # Decal (0x8F3B6036 = joaat "ptxu_Decal"): derived single-witness (core_snow), then
+ # UPGRADED same day at 13-instance scale (core.ypt): FadeInTime @0x15C (4 distinct
+ # values 0/0.25/0.3/0.5), UVMultTime @0x168 (witness 2.0), FlipU @0x170 / FlipV
+ # @0x171 (8 nonzero witnesses; U==V in all 13 - the pair split is XML-order-
+ # consistent, value-unproven, same caveat class as Rotation Init/Update). DecalID
+ # width: u32 kept - all witnessed values positive (1010..9010); DecalPool's own
+ # DecalID is PROVEN i32, so signed is the likely truth here too - flip on the first
+ # negative witness. VelocityThreshold stays a counted const (zero in all 13).
+ # KFPs at the standard beh+0x98+i*0x90 slots (hashes verified).
  "Decal": [
    ("scalar","DecalID",             ("off",0x150,"u32")),
    ("scalar","VelocityThreshold",   ("const","0")),
    ("scalar","TotalLife",           ("off",0x158,"f32")),
-   ("scalar","FadeInTime",          ("const","0")),
+   ("scalar","FadeInTime",          ("off",0x15c,"f32")),
    ("scalar","UVMultStart",         ("off",0x160,"f32")),
    ("scalar","UVMultEnd",           ("off",0x164,"f32")),
-   ("scalar","UVMultTime",          ("const","0")),
+   ("scalar","UVMultTime",          ("off",0x168,"f32")),
    ("scalar","DuplicateRejectDist", ("off",0x16c,"f32")),
-   ("scalar","FlipU",               ("const","0")),
-   ("scalar","FlipV",               ("const","0")),
+   ("scalar","FlipU",               ("off",0x170,"byte")),
+   ("scalar","FlipV",               ("off",0x171,"byte")),
    ("scalar","ProportionalSize",    ("off",0x172,"byte")),
    ("scalar","UseComplexCollision", ("off",0x173,"byte")),
    ("scalar","ProjectionDepth",     ("off",0x174,"f32")),
    ("scalar","DistanceScale",       ("off",0x178,"f32")),
    ("kfp","DimensionsKFP",0), ("kfp","AlphaKFP",1)],
- # ZCull (0xA35C721F = joaat "ptxu_ZCull"): SINGLE WITNESS store-wide (cut_mpsui, 1
- # instance). Exact Acceleration parallel: 2 embedded KFPs then two 4-byte tail slots
- # @344/348 in XML order. ReferenceSpace @348 = the lone nonzero (1); width byte per
- # sibling convention, u32-indistinguishable on this witness. CullMode @344 is an
- # adjacency pick (zero-witnessed) - an offset read, so a future nonzero file
- # self-corrects instead of silently emitting 0. Whole-file render validated.
+ # ZCull (0xA35C721F = joaat "ptxu_ZCull"): derived single-witness (cut_mpsui), then
+ # UPGRADED same day at 104-instance scale (core.ypt 103 + scr_rcextreme2 1, all
+ # blocks byte-identical): CullMode @344 now PINNED-VARYING (values {0,1,2,3}, 85
+ # nonzero witnesses) and ReferenceSpace @348 PINNED-VARYING (values {0,1,3,4}).
+ # byte-vs-u32 width still indistinguishable (upper bytes zero in all 104).
  "ZCull": [
    ("scalar","CullMode",("off",344,"byte")),
    ("scalar","ReferenceSpace",("off",348,"byte")),
    ("kfp","HeightKFP",0), ("kfp","FadeDistKFP",1)],
+ # FogVolume (0xA05DA63E = joaat "ptxu_FogVolume", oracle-witnessed spelling): 8
+ # instances in core.ypt (76 carriers game-wide), contiguous objects at stride 0x430 =
+ # 7 embedded KFPs + scalar tail 0x420..0x42F. Falloff/LightingType/ColourTintFrom-
+ # Particle/SortWithParticles/UseGroundFogColour all PINNED-VARYING; HDRMult pinned by
+ # value (1.0 x8, slot forced by the flanking pins); UseEffectEvoValues zero-witnessed
+ # adjacency (offset read, self-corrects). All 8 sections render-validated identical.
+ "FogVolume": [
+   ("scalar","Falloff",               ("off",0x420,"f32")),
+   ("scalar","HDRMult",               ("off",0x424,"f32")),
+   ("scalar","LightingType",          ("off",0x428,"byte")),
+   ("scalar","ColourTintFromParticle",("off",0x42c,"byte")),
+   ("scalar","SortWithParticles",     ("off",0x42d,"byte")),
+   ("scalar","UseGroundFogColour",    ("off",0x42e,"byte")),
+   ("scalar","UseEffectEvoValues",    ("off",0x42f,"byte")),
+   ("kfp","RGBTintMinKFP",0), ("kfp","RGBTintMaxKFP",1),
+   ("kfp","DensityRangeKFP",2), ("kfp","ScaleMinKFP",3),
+   ("kfp","ScaleMaxKFP",4), ("kfp","RotationMinKFP",5),
+   ("kfp","RotationMaxKFP",6)],
+ # DecalPool (0xA2D6DC3F = joaat "ptxu_DecalPool", oracle-witnessed spelling): 10
+ # instances, all in core.ypt (49 carriers game-wide). Scalar-only, NO KFPs; object
+ # data ends by +0x50. LiquidType/DecalID PROVEN signed i32 (-1 spans all 4 bytes;
+ # DecalID 9001 kills byte width). VelocityThreshold zero in all 10 - @0x30 is the
+ # adjacency slot (aligned gap before LiquidType, parallels Liquid); offset read so a
+ # future nonzero witness self-corrects. All 10 sections render-validated identical.
+ "DecalPool": [
+   ("scalar","VelocityThreshold",("off",0x30,"f32")),
+   ("scalar","LiquidType",       ("off",0x34,"i32")),
+   ("scalar","DecalID",          ("off",0x38,"i32")),
+   ("scalar","StartSize",        ("off",0x3c,"f32")),
+   ("scalar","EndSize",          ("off",0x40,"f32")),
+   ("scalar","GrowthRate",       ("off",0x44,"f32"))],
+ # River (0xD4594BEF = joaat "ptxu_River", oracle-witnessed spelling): 0x40-byte
+ # object, 27 occurrences / 7 files game-wide (2 stems x base/patch/hi/lo), all 27
+ # measured. Influence @0x34 VALUE-PROVEN (0.5 vs 2.0, oracle-matched per-instance,
+ # both stems). VelocityMult @0x30: the UNIQUE 100.0f slot inside the object in all
+ # 27 and the assignment is forced by Influence's pin - but the value never varies
+ # game-wide (always 100), so offset-emitted yet value-unproven; a future non-100
+ # file self-corrects. No KFPs. 7/7 blocks + whole-file scr_rcextreme2 validated.
+ "River": [
+   ("scalar","VelocityMult",("off",0x30,"f32")),
+   ("scalar","Influence",   ("off",0x34,"f32"))],
 }
 
 # ------------------------------------------------------------------ ShaderVars (polymorphic)
@@ -474,21 +539,28 @@ def _evolution_list(y, elp, indent):
         for i in range(ocnt):
             eo = op + i * 0x18
             nh = y._p(eo + 0x10)
-            nm = HASH2NAME.get(nh, "0x%08X" % nh)
+            # empty-case spellings witnessed 2026-08-10 (water_splash_*_wade x4, core):
+            # a ZERO nameHash spells <Name /> (never 0x00000000) and a zero-count Items
+            # array spells the self-closing <Items />
             ip, icnt = y._aptr(eo + 0x00)
             L += ["%s  <Item>" % sp,
-                  "%s   <Name>%s</Name>" % (sp, esc(nm)),
-                  '%s   <BlendMode value="%d" />' % (sp, y._p(eo + 0x14)),
-                  "%s   <Items>" % sp]
-            for j in range(icnt):
-                io = ip + j * 0x30
-                kfp2, kcnt2 = y._aptr(io + 0x00)
-                L += ["%s    <Item>" % sp,
-                      '%s     <EvolutionID value="%d" />' % (sp, y._p(io + 0x20)),
-                      '%s     <IsLodEvolution value="%d" />' % (sp, y._p(io + 0x24))]
-                L += _kf_items(y, kfp2, kcnt2, indent + 5)
-                L.append("%s    </Item>" % sp)
-            L += ["%s   </Items>" % sp, "%s  </Item>" % sp]
+                  ("%s   <Name />" % sp) if nh == 0 else
+                  "%s   <Name>%s</Name>" % (sp, esc(HASH2NAME.get(nh, "0x%08X" % nh))),
+                  '%s   <BlendMode value="%d" />' % (sp, y._p(eo + 0x14))]
+            if icnt == 0:
+                L.append("%s   <Items />" % sp)
+            else:
+                L.append("%s   <Items>" % sp)
+                for j in range(icnt):
+                    io = ip + j * 0x30
+                    kfp2, kcnt2 = y._aptr(io + 0x00)
+                    L += ["%s    <Item>" % sp,
+                          '%s     <EvolutionID value="%d" />' % (sp, y._p(io + 0x20)),
+                          '%s     <IsLodEvolution value="%d" />' % (sp, y._p(io + 0x24))]
+                    L += _kf_items(y, kfp2, kcnt2, indent + 5)
+                    L.append("%s    </Item>" % sp)
+                L.append("%s   </Items>" % sp)
+            L.append("%s  </Item>" % sp)
         L.append("%s </EvolvedKeyframeProps>" % sp)
     L.append("%s</EvolutionList>" % sp)
     return L
@@ -647,6 +719,9 @@ def _beh_val(y, bo, res):
     _, o, kind = res
     if kind == "byte": return str(y.b[bo + o])
     if kind == "u32":  return str(y._p(bo + o))
+    if kind == "i32":  # SIGNED dword - DecalPool LiquidType/DecalID (-1 spans all 4
+        # bytes, 9001 kills byte width) + AnimateTexture LastFrameID (FFFFFFFF spells -1)
+        return str(struct.unpack_from("<i", y.b, bo + o)[0])
     return fmt_num(y._f(bo + o))
 
 
@@ -706,10 +781,14 @@ def _shadervar(y, so, indent):
             L.append("%s <Items>" % sp)
             for i in range(cnt):
                 io = ptr + i * 0x20
+                # _fnum, not fmt_num: Unknown4 holds +Infinity in 2 core.ypt rules
+                # (ent_anim_drill_core, veh_overheat_duster_vent) and the oracle spells
+                # 'Infinity' - raw fmt_num CRASHES on non-finite. Unknown0/10 by
+                # symmetry (Infinity there is unwitnessed).
                 L += ["%s  <Item>" % sp,
-                      '%s   <Unknown0 value="%s" />' % (sp, fmt_num(y._f(io + 0x00))),
-                      '%s   <Unknown4 value="%s" />' % (sp, fmt_num(y._f(io + 0x04))),
-                      '%s   <Unknown10 value="%s" />' % (sp, fmt_num(y._f(io + 0x10))),
+                      '%s   <Unknown0 value="%s" />' % (sp, _fnum(y._f(io + 0x00))),
+                      '%s   <Unknown4 value="%s" />' % (sp, _fnum(y._f(io + 0x04))),
+                      '%s   <Unknown10 value="%s" />' % (sp, _fnum(y._f(io + 0x10))),
                       "%s  </Item>" % sp]
             L.append("%s </Items>" % sp)
     L.append("%s</Item>" % sp)
@@ -746,14 +825,14 @@ def _particle_item(y, base, indent):
          '%s <TexFrameIDMax value="%d" />' % (sp, y._p(base + 0x11c)),
          '%s <ShaderTemplateTechniqueID value="%d" />' % (sp, y._p(base + 0x1d0)),
          '%s <DiffuseMode value="%d" />' % (sp, y._p(base + 0x1e0)),
-         '%s <ProjectionMode value="0" />' % sp,                  # const 0 in the set
+         '%s <ProjectionMode value="%d" />' % (sp, y._p(base + 0x1e4)),
          '%s <IsLit value="%d" />' % (sp, y._byte(base + 0x1e8)),
          '%s <IsSoft value="%d" />' % (sp, y._byte(base + 0x1e9)),
          # 0x1ea/0x1eb pinned 2026-08-09 (contiguous with IsLit/IsSoft; IsRefract O=1
          # witnesses were first-diff causes in cut_arena/scr_franklin0/scr_xm_heat)
          '%s <IsScreenSpace value="%d" />' % (sp, y._byte(base + 0x1ea)),
          '%s <IsRefract value="%d" />' % (sp, y._byte(base + 0x1eb)),
-         '%s <IsNormalSpec value="0" />' % sp,
+         '%s <IsNormalSpec value="%d" />' % (sp, y._byte(base + 0x1ec)),
          '%s <SortType value="%d" />' % (sp, y._byte(base + 0x220)),
          '%s <DrawType value="%d" />' % (sp, y._byte(base + 0x221)),
          '%s <Flags value="0" />' % sp,
