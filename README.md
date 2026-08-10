@@ -101,9 +101,14 @@ spelling, field order, whitespace, a dropped element — all defects.
 five ways and requires the diff to redden on all five, and to stay green on the two sanctioned
 cases. A gate that has never failed is unproven.
 
-**3 — Conformance is measured, not asserted.** The current suite grades **318 positions**:
-**316 pass byte-identical**. Texture sidecars are graded separately: **241/241**. Every non-pass is
-named, with its cause, below.
+**3 — Conformance is measured, not asserted.** The regression suite grades **318 positions:
+318/318 byte-identical**, and has held there across every change since. Beyond the suite, the
+full oracle board reads **1,263/1,263 across eight lanes at corpus scale**, targeted and
+at-scale output are proven identical **keyed by source entry (276/276 pairable positions)**,
+texture sidecars grade **288/290** (the 2 non-passes are a counted format-alias class and a
+store artifact, both named), and a fresh stratified draw over the long-tail lanes reads
+**169/172** with every residual's cause identified. Every non-pass is named, with its cause,
+below.
 
 **4 — Oracles are a lower bound, so invariants run at corpus scale.** Passing the suite does not
 prove correctness for the other 384,000 files. The tool therefore also checks properties the
@@ -128,30 +133,31 @@ that was asked to do something and produced nothing is a failure, not an empty s
 
 | area | status |
 |---|---|
-| `cut` cutscene names | one cosmetic string resolves as a hash. It is genuinely absent from the file, the executable, and 100% of the game's plaintext data files |
-| `carcols.ymt` | three PSO type codes still unpinned; the file converts but is not byte-identical |
-| `compositeEntityTypes/effectsData` | present in the binaries, not yet decoded; the emitter **declares the omission in the output** rather than writing a false empty element |
+| two `ypt` behaviour types | two rare particle behaviour type hashes are not yet derived; a file containing one refuses loudly rather than guessing. Every other behaviour type — including Light, Liquid, Model, Attractor and Noise — is derived and byte-verified |
+| remaining `ypt` constants | the behaviour scalars that vary in real data are now read from their pinned offsets; the remainder are single-valued across every witnessed file, emitted from constants and **counted on every emission** so a future counter-example surfaces itself |
+| `ybd` bounds dictionaries | the reference exporter produces no XML for this type at all, so there is no XML oracle to conform to; the lane is kept byte-exact raw |
+| animation channel variants | only provably-decodable channels emit values; the rest emit residual markers. Closing this lane against fresh oracles is the current campaign |
+| hash-only content names | a handful of names exist in no in-scope file (scripts are excluded). A **self-verifying overlay** harvested from reference exports resolves them: an entry only fires where its hash equals the value stored in the binary, so a wrong name cannot mis-fire; deleting the overlay reverts to hash spellings |
 | encrypted audio containers | container fully decoded; whole-file-encrypted archives are refused loudly — the cipher is not recoverable clean-room |
 | script files (`.ysc`) | excluded by maintainer policy |
-| `ypt` behaviour scalars | 40 values were constant across all available evidence, so they are emitted from constants and **counted on every emission** |
-| animation channel variants | only provably-decodable channels emit values; the rest emit residual markers |
 | degenerate archive entries | a small number of files do not inflate to their own declared page plan. They are reported, not guessed at |
 
 ---
 
 ## Roadmap
 
-**Now — whole-game conformance, lane by lane.** Each lane is taken to 100% against fresh reference
-exports drawn across every sub-category and DLC slot, then signed off with evidence: every file
-accounted for, no silent skips, corpus-scale invariants clean, a stratified spot-diff at 100%, and
-the regression suite unchanged.
+**Done — the city, its textures, and its interiors, at scale.** The map, geometry, collision,
+fragment, texture and interior lanes are conformance-signed at corpus scale: one uniform
+generation, full provenance ledger (which archive and which DLC every emitted file came from),
+targeted-vs-at-scale identity proven per source entry, pixels converged on the one image form
+downstream tools load. The corpus contract is the game's own layout: slot tree in load order,
+content keeps its in-game name, per-container folders where the game itself nests them.
 
-**Next — the corpus contract.** Mirror the game's own folder structure so an asset keeps the name
-the game gives it and identity lives in the layout. Measured: `(slot, archive, path, name)` is
-unique for all 384,528 files, so a mirrored tree has zero name collisions. A provenance ledger
-records, for every emitted file, which archive and which DLC it came from.
-
-**Then — pixels and interiors at scale**, followed by the remaining long-tail types.
+**Now — the long tail.** The small lanes (expressions, pose matchers, path nodes, vehicle and
+waypoint records, cloth and frag dictionaries, particles) are byte-identical against fresh
+stratified reference draws; the remaining work is the two underived particle behaviour types,
+navmesh densification, and the animation lane — the largest remaining derivation surface, run
+the same way as everything else: fresh oracles first, derive, byte-identical, then scale.
 
 **Later — a C++ port.** The Python here is the prototype layer: the rule is *conform first, port
 second, re-verify after*. Nothing gets ported until it is proven against the oracles.
