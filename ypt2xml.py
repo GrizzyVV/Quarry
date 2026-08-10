@@ -36,8 +36,8 @@ ROOT_NAME   = 0x10                     # ptxFxList (SYSTEM offset 0): Name point
 ROOT_DICTS  = [("EffectRuleDictionary",   0x48, 0x20),
                ("EmitterRuleDictionary",  0x50, 0x20),
                ("ParticleRuleDictionary", 0x38, 0x120),
-               ("DrawableDictionary",     0x30, None),   # empty in all 10
-               ("TextureDictionary",      0x20, None)]   # empty in all 10
+               ("DrawableDictionary",     0x30, None),   # non-empty witnessed once (wpn_amrifle)
+               ("TextureDictionary",      0x20, None)]   # decoded via ytd2xml when populated
 # pgDictionary: hashArray @+0x20 / count @+0x28 ; objPtrArray @+0x30 / count @+0x38
 # 64-bit pointers: an atArray inline descriptor is {u64 ptr, u16 count @+0x08, u16 cap @+0x0a}.
 
@@ -78,6 +78,9 @@ KFP_NAMES = [
  "ptxAttractorDomain:m_positionKFP","ptxAttractorDomain:m_rotationKFP","ptxAttractorDomain:m_sizeOuterKFP","ptxAttractorDomain:m_sizeInnerKFP",
  "ptxu_Acceleration:m_strengthKFP",   # the Attractor KFP's LITERAL stored name (oracle-witnessed)
  "ptxu_Decal:m_dimensionsKFP","ptxu_Decal:m_alphaKFP",
+ # 2026-08-10 ZCull derivation (both joaat-verified against cut_mpsui's stored hashes
+ # 0xCE9ADBFD / 0xEA6AFABA):
+ "ptxu_ZCull:m_heightKFP","ptxu_ZCull:m_fadeDistKFP",
 ]
 HASH2NAME = {joaat(n): n for n in KFP_NAMES}
 
@@ -110,9 +113,14 @@ BEH_TYPEHASH = {
  0xC57377F8:"Trail",
  # 2026-08-09 wave-2b (joaat of the ptxu_/ptxd_ class names, verified vs stored hashes):
  0x0544C710:"Light", 0xDF229542:"Liquid", 0x6232E25A:"Model", 0x25AC9437:"Attractor",
- 0xB77FED19:"Noise"}
-# ⚠ KNOWN-REMAINING unknown types (their rows refuse loudly until derived):
-# 0x8F3B6036 (ptxu_Decal family, core_snow) · 0xA35C721F (cut_mpsui).
+ 0xB77FED19:"Noise",
+ # 2026-08-10 derivations (oracle-witnessed Type spellings; single-witness layouts, see specs):
+ 0x8F3B6036:"Decal", 0xA35C721F:"ZCull"}
+# ⚠ KNOWN-REMAINING unknown types (their rows refuse loudly until derived). Full-population
+# census 2026-08-10 (1,240/1,240 files walked, 0 failures): 0xA05DA63E (joaat "ptxu_FogVolume",
+# 76 files) · 0xA2D6DC3F ("ptxu_DecalPool", 49) · 0xD4594BEF ("ptxu_River", 7) - names
+# joaat-inferred, NOT oracle-witnessed; derive from fresh oracles, never from the name guess.
+# x64d...\ptfx.rpf\core.ypt carries all of them (plus Decal+ZCull) and has no oracle yet.
 # Per-variant ordered field spec. ('scalar', tag, res) where res is ('const', str) or ('off', off, kind);
 # ('kfp', tag, kfp_index) -> embedded KFP at beh+0x98+idx*0x90 ; ('vec3', tag, off).
 BEH_SPEC = {
@@ -145,15 +153,17 @@ BEH_SPEC = {
    ("scalar","IsScreenSpace",("off",92,"byte")), ("scalar","IsHighRes",("off",93,"byte")),
    ("scalar","NearClip",("off",94,"byte")), ("scalar","FarClip",("const","0")),
    ("scalar","UVClip",("off",96,"byte")), ("scalar","DisableDraw",("const","0"))],
- # Rotation block 624..634. ⚠ Init/Update @624/@628: the pair CO-VARIES in every one of
+ # Rotation block 624..636. ⚠ Init/Update @624/@628: the pair CO-VARIES in every one of
  # the 76 oracle files (no Init!=Update witness exists) - the assignment follows XML field
- # order and is order-consistent but not value-proven. SpeedFadeThreshold: witnessed
- # varying (wpn_amrifle oracle 0.1) but offset UNPINNED - stays a counted const until a
- # derivation witness set exists (that row remains an honest DIFF).
+ # order and is order-consistent but not value-proven. SpeedFadeThreshold: f32 @636 -
+ # pinned 2026-08-10 by the fleet's ONLY varying witness (wpn_amrifle 0x3DCCCCCD = 0.1;
+ # the sole pattern hit in beh+[0,0x400) and the aligned slot after the byte run + zero
+ # pad @635); reads 0x00000000 in the other 276/277 Rotation instances - single nonzero
+ # witness, offset unique-survivor over 127 binaries.
  "Rotation": [
    ("scalar","InitRotationMode",("off",624,"byte")), ("scalar","UpdateRotationMode",("off",628,"byte")),
    ("scalar","AccumulateAngle",("off",632,"byte")), ("scalar","RotateAngleAxes",("off",633,"byte")),
-   ("scalar","RotateInitAngleAxes",("off",634,"byte")), ("scalar","SpeedFadeThreshold",("const","0")),
+   ("scalar","RotateInitAngleAxes",("off",634,"byte")), ("scalar","SpeedFadeThreshold",("off",636,"f32")),
    ("kfp","InitialAngleMinKFP",0), ("kfp","InitialAngleMaxKFP",1),
    ("kfp","AngleMinKFP",2), ("kfp","AngleMaxKFP",3)],
  "Collision": [
@@ -209,6 +219,40 @@ BEH_SPEC = {
  "Model": [
    ("scalar","CameraShrink",("const","0")), ("scalar","ShadowCastIntensity",("const","0")),
    ("scalar","DisableDraw",("const","0"))],
+ # ---- 2026-08-10 derivations ----
+ # Decal (0x8F3B6036 = joaat "ptxu_Decal"): SINGLE WITNESS store-wide (core_snow, 1
+ # instance). Scalar tail beh+0x150..0x17B; nonzero value-anchors 1020/20.0/0.55/0.3
+ # interleave the run so every assignment is order-consistent; DecalID integer PROVEN
+ # (f32 read is garbage) but u32-vs-u16+pad indistinguishable on this witness; the
+ # byte quartet @0x170..0x173 is width-FORCED by the two flanking f32 pins. Zeros stay
+ # counted consts. KFPs at the standard beh+0x98+i*0x90 slots (hashes verified).
+ # Whole-file render validated byte-identical (with the _by_name collation fix).
+ "Decal": [
+   ("scalar","DecalID",             ("off",0x150,"u32")),
+   ("scalar","VelocityThreshold",   ("const","0")),
+   ("scalar","TotalLife",           ("off",0x158,"f32")),
+   ("scalar","FadeInTime",          ("const","0")),
+   ("scalar","UVMultStart",         ("off",0x160,"f32")),
+   ("scalar","UVMultEnd",           ("off",0x164,"f32")),
+   ("scalar","UVMultTime",          ("const","0")),
+   ("scalar","DuplicateRejectDist", ("off",0x16c,"f32")),
+   ("scalar","FlipU",               ("const","0")),
+   ("scalar","FlipV",               ("const","0")),
+   ("scalar","ProportionalSize",    ("off",0x172,"byte")),
+   ("scalar","UseComplexCollision", ("off",0x173,"byte")),
+   ("scalar","ProjectionDepth",     ("off",0x174,"f32")),
+   ("scalar","DistanceScale",       ("off",0x178,"f32")),
+   ("kfp","DimensionsKFP",0), ("kfp","AlphaKFP",1)],
+ # ZCull (0xA35C721F = joaat "ptxu_ZCull"): SINGLE WITNESS store-wide (cut_mpsui, 1
+ # instance). Exact Acceleration parallel: 2 embedded KFPs then two 4-byte tail slots
+ # @344/348 in XML order. ReferenceSpace @348 = the lone nonzero (1); width byte per
+ # sibling convention, u32-indistinguishable on this witness. CullMode @344 is an
+ # adjacency pick (zero-witnessed) - an offset read, so a future nonzero file
+ # self-corrects instead of silently emitting 0. Whole-file render validated.
+ "ZCull": [
+   ("scalar","CullMode",("off",344,"byte")),
+   ("scalar","ReferenceSpace",("off",348,"byte")),
+   ("kfp","HeightKFP",0), ("kfp","FadeDistKFP",1)],
 }
 
 # ------------------------------------------------------------------ ShaderVars (polymorphic)
@@ -377,8 +421,17 @@ def _by_name(y, objs, name_off):
     """Dictionary items emit in ascending NAME order - the reference sorts by name, not
     by the stored hash order (measured 2026-08-09: 7/11 stage-D DIFF first-causes were
     exactly this reorder, e.g. jet<->splash, nitro<->petrol; the original 10-oracle base
-    never witnessed a file where the two orders diverge, so stored order looked right)."""
-    return sorted(objs, key=lambda base: y.res.cstr(y._p(base + name_off)))
+    never witnessed a file where the two orders diverge, so stored order looked right).
+    COLLATION (2026-08-10, core_snow first witness): the reference collates
+    case-insensitively with symbols before digits/letters ('wheel_decal_snow_decals'
+    before 'wheel_decal_snow2'; '_trail_bike' before '_trail_LOD') - plain ordinal sort
+    gets both wrong. The \\x01 substitution is a proxy for symbols-first; only '_' is
+    witnessed among divergent symbols. Validated 135/135 multi-item dictionaries across
+    all 76 oracle files (ordinal scored 133/135 - both misses in core_snow). The (key,
+    name) tiebreak is UNWITNESSED: zero primary-key collisions exist in the store."""
+    return sorted(objs, key=lambda base: (
+        y.res.cstr(y._p(base + name_off)).lower().replace("_", "\x01"),
+        y.res.cstr(y._p(base + name_off))))
 
 
 def emitter_dict(y):
@@ -710,7 +763,38 @@ def _particle_item(y, base, indent):
     L += _all_behaviours(y, base, indent + 1)
     L += _bias_links(y, base, indent + 1)
     L += _shadervars(y, base, indent + 1)
+    L += _drawables_block(y, base, indent + 1)
     L.append("%s</Item>" % sp)
+    return L
+
+
+# ptxParticleRule Drawables (derived 2026-08-10; wpn_amrifle = the store's ONLY carrier):
+# atArray ptr @rule+0x210, u16 count @+0x218 (cap @+0x21A); element stride 0x30 (single
+# witness, count==1): 4 f32 @+0x00 (BoundBoxWidth/Height/Depth, BoundingSphereRadius -
+# STORED, bit-exact proven, never computed), char* Name @+0x10 (the slash-composed
+# 'dict/drawable' string is IN THE FILE), drawable ptr @+0x18, joaat(Name) @+0x20.
+# Absent (NULL/0) in all 45 rules of the 4 probed binaries incl. every passing oracle file
+# - emits nothing, so the 63-file passing lane is undisturbed.
+DRW_ARR, DRW_CNT, DRW_STRIDE = 0x210, 0x218, 0x30
+
+
+def _drawables_block(y, base, indent):
+    ap = y._deref(base + DRW_ARR)
+    cnt = y._u16(base + DRW_CNT)
+    if ap is None or cnt == 0:
+        return []
+    sp = " " * indent
+    L = ["%s<Drawables>" % sp]
+    for i in range(cnt):
+        eo = ap + i * DRW_STRIDE
+        L += ["%s <Item>" % sp,
+              "%s  <Name>%s</Name>" % (sp, esc(y.res.cstr(y._p(eo + 0x10)))),
+              '%s  <BoundBoxWidth value="%s" />' % (sp, fmt_num(y._f(eo + 0x00))),
+              '%s  <BoundBoxHeight value="%s" />' % (sp, fmt_num(y._f(eo + 0x04))),
+              '%s  <BoundBoxDepth value="%s" />' % (sp, fmt_num(y._f(eo + 0x08))),
+              '%s  <BoundingSphereRadius value="%s" />' % (sp, fmt_num(y._f(eo + 0x0C))),
+              "%s </Item>" % sp]
+    L.append("%s</Drawables>" % sp)
     return L
 
 
@@ -758,6 +842,44 @@ def particle_dict(y):
     return L
 
 
+def drawable_dict(y):
+    """Root DrawableDictionary @0x30 (derived 2026-08-10, single non-empty witness =
+    wpn_amrifle). pgDictionary of gtaDrawable; the Item Name = the dict hash resolved
+    against the file's OWN Drawables-element strings (joaat of the slash-composed name -
+    joaat of the bare drawable name does NOT match; measured). Body = ydr2xml
+    drawable_lines with the ypt-lane switches: no <Bounds> (+0xC8 holds non-bound tail
+    data here) and no <Lights /> (oracle ends the Item at </DrawableModelsHigh>);
+    ydd-style <Item> wrap one indent deeper. Empty dict -> the empty-pair spelling
+    witnessed in every other oracle file. Multi-entry emit order = stored dict order
+    (UNWITNESSED beyond count 1 - stated)."""
+    base, objs = y.dict_objects(0x30)
+    if base is None or not objs:
+        return [" <DrawableDictionary>", " </DrawableDictionary>"]
+    from ydr2xml import drawable_lines
+    hArr = y._deref(base + 0x20)
+    names = {}
+    _, rules = y.dict_objects(0x38)
+    for r in rules:
+        ap = y._deref(r + DRW_ARR)
+        if ap is None:
+            continue
+        for i in range(y._u16(r + DRW_CNT)):
+            nm = y.res.cstr(y._p(ap + i * DRW_STRIDE + 0x10))
+            if nm:
+                names[joaat(nm)] = nm
+    L = [" <DrawableDictionary>"]
+    for i, obj in enumerate(objs):
+        h = y._p(hArr + i * 4)
+        nm = names.get(h, "hash_%08X" % h)
+        body = drawable_lines(y.res, nm, base=obj,
+                              include_bounds=False, include_lights=False)
+        L.append("  <Item>")
+        L.extend("  " + ln for ln in body)
+        L.append("  </Item>")
+    L.append(" </DrawableDictionary>")
+    return L
+
+
 # ------------------------------------------------------------------ full file
 def convert_res(res):
     y = Ypt.from_res(res)
@@ -766,7 +888,7 @@ def convert_res(res):
     L += effect_dict(y)
     L += emitter_dict(y)
     L += particle_dict(y)
-    L += [" <DrawableDictionary>", " </DrawableDictionary>"]      # empty in all 10
+    L += drawable_dict(y)
     base = y._deref(0x20)
     if base is None or y._u16(base + 0x28) == 0:
         L.append(" <TextureDictionary />")

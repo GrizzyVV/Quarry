@@ -1567,7 +1567,8 @@ def esc(s):
     return s
 
 
-def drawable_lines(res, name, base=0, allow_empty=False):
+def drawable_lines(res, name, base=0, allow_empty=False, include_bounds=True,
+                   include_lights=True):
     """The <Drawable> BODY (Name/bounds/ShaderGroup/DrawableModelsHigh) as lines with the standalone
     file's one-space indent. Shared: the ydr wrapper adds declaration+root; a dictionary converter
     (ydd/yft) wraps each entry as <Item> and re-indents. Whitespace is free to the consumer -
@@ -1575,7 +1576,11 @@ def drawable_lines(res, name, base=0, allow_empty=False):
 
     allow_empty: emit a drawable with NO geometry instead of refusing. Only yft2xml sets it, and
     only for the measured case where a fragment's visual mesh lives entirely in a physics child -
-    see the comment at its call site."""
+    see the comment at its call site.
+    include_bounds/include_lights: the ypt lane sets both False (measured 2026-08-10 on the
+    store's one non-empty DrawableDictionary, wpn_amrifle: +0xC8 holds non-bound tail data the
+    +0xCC escape does not catch, and the oracle emits neither <Bounds> nor <Lights />). The
+    defaults keep the ydr/ydd/yft lanes byte-stable."""
     shaders = read_shaders(res, base)
     geos = read_geometries(res, base)
     if not geos and not allow_empty:
@@ -1698,10 +1703,12 @@ def drawable_lines(res, name, base=0, allow_empty=False):
     # embedded collision - flows to ydd2xml/yft2xml automatically since they call
     # drawable_lines with their entry's base offset (the bound ptr is base-relative
     # at +0xC8; a drawable without a bound contributes nothing)
-    L.extend(bounds_lines(res, base, name))
+    if include_bounds:
+        L.extend(bounds_lines(res, base, name))
     # <Lights> comes AFTER Bounds (oracle order, caught by the golddisc pair); the
     # LightAttrs decoder emits the populated form (animlight family + des_tvsmash)
-    L.extend(lights_lines(res, base))
+    if include_lights:
+        L.extend(lights_lines(res, base))
     return L
 
 
