@@ -70,14 +70,25 @@ KFP_NAMES = [
  "ptxu_Rotation:m_angleMinKFP","ptxu_Rotation:m_angleMaxKFP","ptxu_Rotation:m_initialAngleMinKFP","ptxu_Rotation:m_initialAngleMaxKFP",
  "ptxu_AnimateTexture:m_animRateKFP","ptxu_Collision:m_bouncinessKFP","ptxu_Collision:m_bounceDirVarKFP",
  "ptxu_MatrixWeight:m_mtxWeightKFP","ptxu_Wind:m_influenceKFP","ptxd_Trail:m_texInfoKFP",
+ # 2026-08-09 wave-2b derivation (all joaat-verified against stored hashes):
+ "ptxu_Light:m_rgbMinKFP","ptxu_Light:m_rgbMaxKFP","ptxu_Light:m_intensityKFP","ptxu_Light:m_rangeKFP",
+ "ptxu_Light:m_coronaRgbMinKFP","ptxu_Light:m_coronaRgbMaxKFP","ptxu_Light:m_coronaIntensityKFP",
+ "ptxu_Light:m_coronaSizeKFP","ptxu_Light:m_coronaFlareKFP",
+ "ptxu_Noise:m_posNoiseMinKFP","ptxu_Noise:m_posNoiseMaxKFP","ptxu_Noise:m_velNoiseMinKFP","ptxu_Noise:m_velNoiseMaxKFP",
+ "ptxAttractorDomain:m_positionKFP","ptxAttractorDomain:m_rotationKFP","ptxAttractorDomain:m_sizeOuterKFP","ptxAttractorDomain:m_sizeInnerKFP",
+ "ptxu_Acceleration:m_strengthKFP",   # the Attractor KFP's LITERAL stored name (oracle-witnessed)
+ "ptxu_Decal:m_dimensionsKFP","ptxu_Decal:m_alphaKFP",
 ]
 HASH2NAME = {joaat(n): n for n in KFP_NAMES}
 
 # ------------------------------------------------------------------ ptxDomain
-DOMAIN_TYPE = {0: "Box", 1: "Sphere", 2: "Cylinder"}   # u32 @domain+0x0c (vtable also encodes it)
+DOMAIN_TYPE = {0: "Box", 1: "Sphere", 2: "Cylinder", 3: "Attractor"}  # u32 @domain+0x0c
 # +0x10..+0x13 = IsWorldSpace / IsPointRelative / IsCreationRelative / IsTargetRelatve (bytes)
 # +0x80 + i*0x90 (i=0..3) = the 4 KFP hashes (Position/Rotation/SizeOuter/SizeInner)
-# FileVersion is NOT stored per-domain; across all 30 oracle domains it is "2" iff Cylinder else "2.1".
+# ⛔ RETRACTED 2026-08-09: "FileVersion is NOT stored per-domain" was measured-wrong.
+# FileVersion IS STORED: f32 @domain+0x258 (the first tail field after the 4 embedded
+# KFPs) - sole equality survivor over 390 domain instances; witnessed 2.0, 2.1f AND -1.0.
+# The old "2 iff Cylinder" correlation was a 30-domain coincidence, false both directions.
 
 # ------------------------------------------------------------------ ptxParticleRule scalar offsets
 PART = dict(RefCount=0x10, CullMode=0x100, BlendSet=0x104, LightingMode=0x108,
@@ -96,62 +107,108 @@ BEH_TYPEHASH = {
  0xF5B33BAA:"Age", 0xD63D9F1B:"Acceleration", 0x6C0719BC:"Velocity", 0x38B60240:"Size",
  0x052B1293:"Dampening", 0x64E5D702:"MatrixWeight", 0x164AEA72:"Colour", 0x68FA73F5:"Sprite",
  0x1EE64552:"Rotation", 0x928A1C45:"Collision", 0xECA84C1E:"AnimateTexture", 0x38B63978:"Wind",
- 0xC57377F8:"Trail"}
+ 0xC57377F8:"Trail",
+ # 2026-08-09 wave-2b (joaat of the ptxu_/ptxd_ class names, verified vs stored hashes):
+ 0x0544C710:"Light", 0xDF229542:"Liquid", 0x6232E25A:"Model", 0x25AC9437:"Attractor",
+ 0xB77FED19:"Noise"}
+# ⚠ KNOWN-REMAINING unknown types (their rows refuse loudly until derived):
+# 0x8F3B6036 (ptxu_Decal family, core_snow) · 0xA35C721F (cut_mpsui).
 # Per-variant ordered field spec. ('scalar', tag, res) where res is ('const', str) or ('off', off, kind);
 # ('kfp', tag, kfp_index) -> embedded KFP at beh+0x98+idx*0x90 ; ('vec3', tag, off).
 BEH_SPEC = {
  "Age": [],
  "Velocity": [],
  "Acceleration": [
-   ("scalar","ReferenceSpace",("const","0")), ("scalar","IsAffectedByZoom",("off",348,"byte")),
+   ("scalar","ReferenceSpace",("off",344,"byte")), ("scalar","IsAffectedByZoom",("off",348,"byte")),
    ("scalar","EnableGravity",("const","0")), ("kfp","XYZMinKFP",0), ("kfp","XYZMaxKFP",1)],
  "Size": [
-   ("scalar","KeyframeMode",("off",624,"byte")), ("scalar","IsProportional",("const","1")),
+   ("scalar","KeyframeMode",("off",624,"byte")), ("scalar","IsProportional",("off",628,"byte")),
    ("kfp","WhdMinKFP",0), ("kfp","WhdMaxKFP",1), ("kfp","TblrScalarKFP",2), ("kfp","TblrVelScalarKFP",3)],
  "Dampening": [
-   ("scalar","ReferenceSpace",("const","0")), ("scalar","EnableAirResistance",("const","0")),
+   ("scalar","ReferenceSpace",("off",344,"byte")), ("scalar","EnableAirResistance",("const","0")),
    ("kfp","XYZMinKFP",0), ("kfp","XYZMaxKFP",1)],
  "MatrixWeight": [
    ("scalar","ReferenceSpace",("off",192,"byte")), ("kfp","mtxWeightKFP",0)],
  "Colour": [
-   ("scalar","KeyframeMode",("const","0")), ("scalar","RGBAMaxEnable",("off",484,"byte")),
-   ("scalar","RGBAProportional",("const","1")), ("scalar","RGBCanTint",("off",486,"byte")),
+   ("scalar","KeyframeMode",("off",480,"byte")), ("scalar","RGBAMaxEnable",("off",484,"byte")),
+   ("scalar","RGBAProportional",("off",485,"byte")), ("scalar","RGBCanTint",("off",486,"byte")),
    ("kfp","RGBAMinKFP",0), ("kfp","RGBAMaxKFP",1), ("kfp","EmissiveIntensityKFP",2)],
+ # Sprite scalar block re-pinned 2026-08-09: contiguous 48..97 (value-intersection over
+ # 77-125+ instances; the old AlignAxis@12 read zeros, NearClip@64 echoed AlignmentMode,
+ # FlipChanceV@68 echoed FlipChanceU). FarClip@95 / DisableDraw@97 stay const: value 0 in
+ # every witnessed file - offsets are layout-plausible but value-unproven.
  "Sprite": [
-   ("vec3","AlignAxis",12), ("scalar","AlignmentMode",("off",64,"byte")),
-   ("scalar","FlipChanceU",("off",68,"f32")), ("scalar","FlipChanceV",("off",68,"f32")),
-   ("scalar","NearClipDist",("const","0")), ("scalar","FarClipDist",("const","0")),
-   ("scalar","ProjectionDepth",("const","0")), ("scalar","ShadowCastIntensity",("off",88,"f32")),
-   ("scalar","IsScreenSpace",("const","0")), ("scalar","IsHighRes",("const","1")),
-   ("scalar","NearClip",("off",64,"byte")), ("scalar","FarClip",("const","0")),
-   ("scalar","UVClip",("const","0")), ("scalar","DisableDraw",("const","0"))],
+   ("vec3","AlignAxis",48), ("scalar","AlignmentMode",("off",64,"byte")),
+   ("scalar","FlipChanceU",("off",68,"f32")), ("scalar","FlipChanceV",("off",72,"f32")),
+   ("scalar","NearClipDist",("off",76,"f32")), ("scalar","FarClipDist",("off",80,"f32")),
+   ("scalar","ProjectionDepth",("off",84,"f32")), ("scalar","ShadowCastIntensity",("off",88,"f32")),
+   ("scalar","IsScreenSpace",("off",92,"byte")), ("scalar","IsHighRes",("off",93,"byte")),
+   ("scalar","NearClip",("off",94,"byte")), ("scalar","FarClip",("const","0")),
+   ("scalar","UVClip",("off",96,"byte")), ("scalar","DisableDraw",("const","0"))],
+ # Rotation block 624..634. ⚠ Init/Update @624/@628: the pair CO-VARIES in every one of
+ # the 76 oracle files (no Init!=Update witness exists) - the assignment follows XML field
+ # order and is order-consistent but not value-proven. SpeedFadeThreshold: witnessed
+ # varying (wpn_amrifle oracle 0.1) but offset UNPINNED - stays a counted const until a
+ # derivation witness set exists (that row remains an honest DIFF).
  "Rotation": [
-   ("scalar","InitRotationMode",("const","0")), ("scalar","UpdateRotationMode",("const","0")),
-   ("scalar","AccumulateAngle",("off",456,"byte")), ("scalar","RotateAngleAxes",("const","0")),
+   ("scalar","InitRotationMode",("off",624,"byte")), ("scalar","UpdateRotationMode",("off",628,"byte")),
+   ("scalar","AccumulateAngle",("off",632,"byte")), ("scalar","RotateAngleAxes",("off",633,"byte")),
    ("scalar","RotateInitAngleAxes",("off",634,"byte")), ("scalar","SpeedFadeThreshold",("const","0")),
    ("kfp","InitialAngleMinKFP",0), ("kfp","InitialAngleMaxKFP",1),
    ("kfp","AngleMinKFP",2), ("kfp","AngleMaxKFP",3)],
  "Collision": [
-   ("scalar","RadiusMult",("const","0.8")), ("scalar","RestSpeed",("const","0.01")),
-   ("scalar","CollisionChance",("const","100")), ("scalar","KillChance",("const","0")),
+   ("scalar","RadiusMult",("off",336,"f32")), ("scalar","RestSpeed",("off",340,"f32")),
+   ("scalar","CollisionChance",("off",344,"byte")), ("scalar","KillChance",("off",348,"byte")),
    ("scalar","OverrideMinRadius",("const","0")), ("kfp","BouncinessKFP",0), ("kfp","BounceDirVarKFP",1)],
  "AnimateTexture": [
    ("scalar","KeyframeMode",("const","0")), ("scalar","LastFrameID",("off",196,"byte")),
-   ("scalar","LoopMode",("off",200,"byte")), ("scalar","IsRandomised",("const","0")),
+   ("scalar","LoopMode",("off",200,"byte")), ("scalar","IsRandomised",("off",204,"byte")),
    ("scalar","IsScaledOverParticleLife",("off",205,"byte")), ("scalar","IsHeldOnLastFrame",("off",206,"byte")),
-   ("scalar","DoFrameBlending",("const","1")), ("kfp","AnimRateKFP",0)],
+   ("scalar","DoFrameBlending",("off",207,"byte")), ("kfp","AnimRateKFP",0)],
+ # Wind block 208..224 (the old LodLod@168 read was junk - returned 2 regardless).
  "Wind": [
    ("scalar","HighLodRange",("off",208,"f32")), ("scalar","LowLodRange",("off",212,"f32")),
-   ("scalar","HighLodDisturbanceMode",("const","2")), ("scalar","LodLodDisturbanceMode",("off",168,"byte")),
-   ("scalar","IgnoreMtxWeight",("const","0")), ("kfp","InfluenceKFP",0)],
+   ("scalar","HighLodDisturbanceMode",("off",216,"byte")), ("scalar","LodLodDisturbanceMode",("off",220,"byte")),
+   ("scalar","IgnoreMtxWeight",("off",224,"byte")), ("kfp","InfluenceKFP",0)],
+ # Trail: AlignAxis@192 (old @28 read zeros); TessU@212/TessV@216 disambiguated by U!=V
+ # witnesses (1/4 and 3/1); Wrap@238. The remaining consts are single-valued store-wide.
  "Trail": [
-   ("vec3","AlignAxis",28), ("scalar","AlignmentMode",("const","0")),
-   ("scalar","TessellationU",("const","3")), ("scalar","TessellationV",("const","1")),
+   ("vec3","AlignAxis",192), ("scalar","AlignmentMode",("const","0")),
+   ("scalar","TessellationU",("off",212,"byte")), ("scalar","TessellationV",("off",216,"byte")),
    ("scalar","SmoothnessX",("const","0")), ("scalar","SmoothnessY",("const","0")),
    ("scalar","ProjectionDepth",("const","0")), ("scalar","ShadowCastIntensity",("const","0")),
    ("scalar","FlipU",("const","0")), ("scalar","FlipV",("const","0")),
-   ("scalar","WrapTextureOverParticleLife",("const","0")), ("scalar","DisableDraw",("const","0")),
+   ("scalar","WrapTextureOverParticleLife",("off",238,"byte")), ("scalar","DisableDraw",("const","0")),
    ("kfp","TexInfoKFP",0)],
+ # ---- 2026-08-09 wave-2b NEW TYPES (each render-validated vs its oracle sections) ----
+ # Light: 9 embedded KFPs @0x98+i*0x90, contiguous scalars 0x540..0x54C right after the
+ # KFP region (28/28 section byte-compares). CoronaNotInReflection@1354 is an adjacency
+ # pick (zero-variance across all 28 - never contradicted).
+ "Light": [
+   ("scalar","CoronaZBias",("off",1344,"f32")), ("scalar","CoronaUseLightColour",("off",1348,"byte")),
+   ("scalar","ColourFromParticle",("off",1349,"byte")), ("scalar","ColourPerFrame",("off",1350,"byte")),
+   ("scalar","IntensityPerFrame",("off",1351,"byte")), ("scalar","RangePerFrame",("off",1352,"byte")),
+   ("scalar","CastsShadows",("off",1353,"byte")), ("scalar","CoronaNotInReflection",("off",1354,"byte")),
+   ("scalar","CoronaOnlyInReflection",("off",1355,"byte")), ("scalar","LightType",("off",1356,"byte")),
+   ("kfp","RGBMinKFP",0), ("kfp","RGBMaxKFP",1), ("kfp","IntensityKFP",2), ("kfp","RangeKFP",3),
+   ("kfp","CoronaRGBMinKFP",4), ("kfp","CoronaRGBMaxKFP",5), ("kfp","CoronaIntensityKFP",6),
+   ("kfp","CoronaSizeKFP",7), ("kfp","CoronaFlareKFP",8)],
+ "Noise": [
+   ("scalar","ReferenceSpace",("const","0")), ("scalar","KeepConstantSpeed",("off",628,"byte")),
+   ("kfp","PosNoiseMinKFP",0), ("kfp","PosNoiseMaxKFP",1),
+   ("kfp","VelNoiseMinKFP",2), ("kfp","VelNoiseMaxKFP",3)],
+ "Attractor": [("kfp","StrengthKFP",0)],
+ # Liquid: single distinct witness (both slot binaries byte-identical) - stated.
+ "Liquid": [
+   ("scalar","VelocityThreshold",("const","0")), ("scalar","LiquidType",("off",52,"u32")),
+   ("scalar","PoolStartSize",("off",56,"f32")), ("scalar","PoolEndSize",("off",60,"f32")),
+   ("scalar","PoolGrowthRate",("off",64,"f32")), ("scalar","TrailWidthMin",("off",68,"f32")),
+   ("scalar","TrailWidthMax",("off",72,"f32"))],
+ # Model: single all-zero witness - three counted consts (offsets underivable until a
+ # nonzero witness exists; a future non-zero file shows up in CONST_EMITS, never silent).
+ "Model": [
+   ("scalar","CameraShrink",("const","0")), ("scalar","ShadowCastIntensity",("const","0")),
+   ("scalar","DisableDraw",("const","0"))],
 }
 
 # ------------------------------------------------------------------ ShaderVars (polymorphic)
@@ -201,9 +258,13 @@ class Ypt:
         return base, objs
 
     def read_kfp(self, off):
-        """ptxKeyframeProp read FROM ITS HASH OFFSET -> dict(name, randomindex, keyframes)."""
+        """ptxKeyframeProp read FROM ITS HASH OFFSET -> dict(name, invertbiaslink,
+        randomindex, keyframes). InvertBiasLink = byte @hash+0x04 (pinned 2026-08-09 over
+        7,036 oracle-paired KFP instances; the old const-0 emission broke every
+        BiasLinks-bearing file)."""
         h = self._p(off)
         name = HASH2NAME.get(h, "0x%08X" % h)
+        ibl = self._byte(off + 0x04)
         randix = self._u16(off + KFP_RANDIX)
         cnt = self._u16(off + KFP_KFCNT)
         kfs = []
@@ -215,7 +276,7 @@ class Ypt:
                     break
                 f = struct.unpack_from("<8f", self.b, o)
                 kfs.append((f[0:4], f[4:8]))
-        return dict(name=name, randomindex=randix, keyframes=kfs)
+        return dict(name=name, invertbiaslink=ibl, randomindex=randix, keyframes=kfs)
 
 
 # ------------------------------------------------------------------ shared emit helpers
@@ -235,7 +296,7 @@ def _kfp_xml(res_kfp, indent, tag="Item"):
     sp = " " * indent
     L = ["%s<%s>" % (sp, tag),
          "%s <Name>%s</Name>" % (sp, esc(res_kfp["name"])),
-         '%s <InvertBiasLink value="0" />' % sp,                 # UNPINNED offset; 0 in all samples
+         '%s <InvertBiasLink value="%d" />' % (sp, res_kfp.get("invertbiaslink", 0)),
          '%s <RandomIndex value="%d" />' % (sp, res_kfp["randomindex"])]
     kfs = res_kfp["keyframes"]
     if not kfs:
@@ -273,7 +334,7 @@ def _kf_items(y, kfptr, cnt, indent):
 def _domain_xml(y, dp, indent, tagname):
     sp = " " * indent
     dt = y._p(dp + 0x0c)
-    fv = "2" if dt == 2 else "2.1"
+    fv = fmt_num(y._f(dp + 0x258))     # STORED per-domain (see the retraction note above)
     L = ["%s<%s>" % (sp, tagname),
          '%s <DomainType value="%s" />' % (sp, DOMAIN_TYPE[dt]),
          '%s <IsWorldSpace value="%d" />' % (sp, y._byte(dp + 0x10)),
@@ -292,11 +353,20 @@ def _emitter_item(y, base, indent):
     L = ["%s<Item>" % sp,
          "%s <Name>%s</Name>" % (sp, esc(y.res.cstr(y._p(base + 0x20)))),
          '%s <RefCount value="%d" />' % (sp, y._p(base + 0x10)),
-         '%s <IsOneShot value="0" />' % sp]                       # 0 across all 10; offset unpinned
+         # IsOneShot = byte @+0x628 - just past the 10 embedded KFP objects (0x78..0x618);
+         # unique survivor over 195 oracle-paired emitters (was an uncounted const 0)
+         '%s <IsOneShot value="%d" />' % (sp, y._byte(base + 0x628))]
     L += _domain_xml(y, y._deref(base + 0x38), indent + 1, "CreationDomainObj")
     L += _domain_xml(y, y._deref(base + 0x48), indent + 1, "TargetDomainObj")
+    adp = y._deref(base + 0x58)
+    if adp is not None:
+        # third domain slot (Attractor): NULL in 38/39 witnessed emitters = element
+        # OMITTED; the scr_hunting witness renders byte-identical through _domain_xml
+        L += _domain_xml(y, adp, indent + 1, "AttractorDomainObj")
     L.append("%s <KeyframeProps>" % sp)
     for i in range(10):
+        # count is stored (u16 @+0x620 = 10 in every witness) - the literal 10 has a
+        # real backing field; keep the constant but the note stands
         L += _kfp_xml(y.read_kfp(base + 0xe0 + i * 0x90), indent + 2, tag="Item")
     L.append("%s </KeyframeProps>" % sp)
     L.append("%s</Item>" % sp)
@@ -322,6 +392,17 @@ def emitter_dict(y):
 
 # ------------------------------------------------------------------ ptxEffectRule
 def _evolution_list(y, elp, indent):
+    """ptxEvolutionList (rewritten 2026-08-09 from the 31-binary sweep; the 8 stage-D
+    crash rows were exactly the files with any Items count >= 2):
+      +0x00 Evolutions atArray - elements are 0x18 BYTES with the char* at +0x00 (the old
+            stride-8 read landed in zero padding for every index >= 1: empty 2nd names).
+      +0x10 atArray of evolved-KFP OBJECTS, stride 0x18: Items atArray @+0x00 (ptr, u16
+            count @+0x08), kfpNameHash u32 @+0x10, BlendMode u32 @+0x14. EMIT ORDER =
+            this array's natural order (the old sort-by-Items-pointer provably diverges).
+      +0x28 a redundant hash-sorted index (228/228 lists verified) - never emitted.
+    Items elements are 0x30 BYTES (not 0x28 - the crash): keyframes atArray @+0x00,
+    u32 EvolutionID @+0x20, u32 IsLodEvolution @+0x24 - REAL varying fields (the old
+    consts 0/1 matched only some files by luck)."""
     sp = " " * indent
     L = ["%s<EvolutionList>" % sp]
     ep, ecnt = y._aptr(elp + 0x00)
@@ -330,29 +411,28 @@ def _evolution_list(y, elp, indent):
     else:
         L.append("%s <Evolutions>" % sp)
         for i in range(ecnt):
-            L.append("%s  <Item>%s</Item>" % (sp, esc(y.res.cstr(y._p(ep + i * 8)))))
+            L.append("%s  <Item>%s</Item>" % (sp, esc(y.res.cstr(y._p(ep + i * 0x18)))))
         L.append("%s </Evolutions>" % sp)
-    kp, kcnt = y._aptr(elp + 0x28)
-    if kcnt == 0:
+    op, ocnt = y._aptr(elp + 0x10)
+    if ocnt == 0:
         L.append("%s <EvolvedKeyframeProps />" % sp)
     else:
         L.append("%s <EvolvedKeyframeProps>" % sp)
-        # emitted sorted by ascending Items-pointer (element +0x08)
-        order = sorted(range(kcnt), key=lambda i: y._deref(kp + i * 0x10 + 8) or 0)
-        for i in order:
-            eo = kp + i * 0x10
-            nm = HASH2NAME.get(y._p(eo), "0x%08X" % y._p(eo))
-            ip, icnt = y._aptr(y._deref(eo + 8)) if y._deref(eo + 8) is not None else (None, 0)
+        for i in range(ocnt):
+            eo = op + i * 0x18
+            nh = y._p(eo + 0x10)
+            nm = HASH2NAME.get(nh, "0x%08X" % nh)
+            ip, icnt = y._aptr(eo + 0x00)
             L += ["%s  <Item>" % sp,
                   "%s   <Name>%s</Name>" % (sp, esc(nm)),
-                  '%s   <BlendMode value="1" />' % sp,             # 1 across all 14 evolved items
+                  '%s   <BlendMode value="%d" />' % (sp, y._p(eo + 0x14)),
                   "%s   <Items>" % sp]
             for j in range(icnt):
-                io = ip + j * 0x28
+                io = ip + j * 0x30
                 kfp2, kcnt2 = y._aptr(io + 0x00)
                 L += ["%s    <Item>" % sp,
-                      '%s     <EvolutionID value="0" />' % sp,     # const across the set
-                      '%s     <IsLodEvolution value="1" />' % sp]
+                      '%s     <EvolutionID value="%d" />' % (sp, y._p(io + 0x20)),
+                      '%s     <IsLodEvolution value="%d" />' % (sp, y._p(io + 0x24))]
                 L += _kf_items(y, kfp2, kcnt2, indent + 5)
                 L.append("%s    </Item>" % sp)
             L += ["%s   </Items>" % sp, "%s  </Item>" % sp]
@@ -463,11 +543,23 @@ def effect_dict(y):
 
 # ------------------------------------------------------------------ ptxParticleRule
 def _spawner(y, base, tag, indent, mn, tri):
+    """EffectSpawner blocks. Tail re-derived 2026-08-09: symmetric at particle+mn+0x50 -
+    TriggerInfo is an F32 (values 0 / 0.5 / 1 witnessed - the old int consts 0/1 were the
+    coincidence), then flag bytes InheritsPointLife/+4, TracksPointPos/+5, Dir/+6, NegDir/+7
+    (Dir!=NegDir witnessed once, des_tv_smash; AtRatio TriggerInfo single-valued 0, placed
+    by the exact +0x70 block symmetry with the measured OnCollision @0xf8). `tri` retained
+    in the signature for call-site stability; no longer emitted. EffectRule = the SPAWNED
+    effect's NAME, cstr ptr @mn+0x48 (probed on des_tv_smash: AtRatio slot particle+0x80
+    -> 'ent_sht_electrical_box_sp'; OnCollision +0xf0 by the same block symmetry, verified
+    by the weap_ch rows); NULL/empty -> self-closing element (the common case)."""
     sp = " " * indent
     mx = mn + 0x20
+    tail = mn + 0x50
     ff = lambda o: fmt_num(y._f(base + o))
+    ername = y.res.cstr(y._p(base + mn + 0x48))
     L = ["%s<%s>" % (sp, tag),
-         "%s <EffectRule />" % sp,                                # empty across all 10
+         ("%s <EffectRule>%s</EffectRule>" % (sp, esc(ername))) if ername
+         else "%s <EffectRule />" % sp,
          '%s <DurationScalarMin value="%s" />' % (sp, ff(mn)),
          '%s <PlaybackRateScalarMin value="%s" />' % (sp, ff(mn + 4)),
          '%s <ColourTintScalarMin value="0x%X" />' % (sp, y._p(base + mn + 8)),
@@ -478,11 +570,11 @@ def _spawner(y, base, tag, indent, mn, tri):
          '%s <ColourTintScalarMax value="0x%X" />' % (sp, y._p(base + mx + 8)),
          '%s <ZoomScalarMax value="%s" />' % (sp, ff(mx + 0xc)),
          '%s <FlagsMax value="%d" />' % (sp, y._p(base + mx + 0x10)),
-         '%s <TriggerInfo value="%d" />' % (sp, tri),
-         '%s <InheritsPointLife value="0" />' % sp,
-         '%s <TracksPointPos value="%d" />' % (sp, y._byte(base + 0x8d) if tag == "EffectSpawnerAtRatio" else 0),
-         '%s <TracksPointDir value="0" />' % sp,
-         '%s <TracksPointNegDir value="0" />' % sp,
+         '%s <TriggerInfo value="%s" />' % (sp, ff(tail)),
+         '%s <InheritsPointLife value="%d" />' % (sp, y._byte(base + tail + 4)),
+         '%s <TracksPointPos value="%d" />' % (sp, y._byte(base + tail + 5)),
+         '%s <TracksPointDir value="%d" />' % (sp, y._byte(base + tail + 6)),
+         '%s <TracksPointNegDir value="%d" />' % (sp, y._byte(base + tail + 7)),
          "%s</%s>" % (sp, tag)]
     return L
 
@@ -604,8 +696,10 @@ def _particle_item(y, base, indent):
          '%s <ProjectionMode value="0" />' % sp,                  # const 0 in the set
          '%s <IsLit value="%d" />' % (sp, y._byte(base + 0x1e8)),
          '%s <IsSoft value="%d" />' % (sp, y._byte(base + 0x1e9)),
-         '%s <IsScreenSpace value="0" />' % sp,
-         '%s <IsRefract value="0" />' % sp,
+         # 0x1ea/0x1eb pinned 2026-08-09 (contiguous with IsLit/IsSoft; IsRefract O=1
+         # witnesses were first-diff causes in cut_arena/scr_franklin0/scr_xm_heat)
+         '%s <IsScreenSpace value="%d" />' % (sp, y._byte(base + 0x1ea)),
+         '%s <IsRefract value="%d" />' % (sp, y._byte(base + 0x1eb)),
          '%s <IsNormalSpec value="0" />' % sp,
          '%s <SortType value="%d" />' % (sp, y._byte(base + 0x220)),
          '%s <DrawType value="%d" />' % (sp, y._byte(base + 0x221)),
@@ -614,8 +708,44 @@ def _particle_item(y, base, indent):
     L += _spawner(y, base, "EffectSpawnerAtRatio", indent + 1, 0x38, 0)
     L += _spawner(y, base, "EffectSpawnerOnCollision", indent + 1, 0xa8, 1)
     L += _all_behaviours(y, base, indent + 1)
+    L += _bias_links(y, base, indent + 1)
     L += _shadervars(y, base, indent + 1)
     L.append("%s</Item>" % sp)
+    return L
+
+
+def _bias_links(y, base, indent):
+    """<BiasLinks> (derived 2026-08-09, 19 sets / 17 rules / 15 files, all oracle-matched;
+    full-file byte-identity proven on both first-diff carriers): atArray @particle+0x188,
+    count u16 @+0x190; element 0x58 bytes = inline NUL-terminated Name @+0x00 (zero-padded
+    through +0x3F), KeyframePropIDs atArray @+0x40 (u32 hashes, count u16 @+0x48),
+    RandomIndex u32 @+0x50. Emitted ONLY when count > 0 (no empty <BiasLinks /> witnessed
+    anywhere; presence rule is the array count, NOT InvertBiasLink). KeyframePropIDs spell
+    hash_%08X even when the hash is resolvable - the oracle does the same.
+    ⚠ single-witness strides, stated: element 0x58 (every witnessed array has count 1);
+    KeyframePropIDs element 4 (one 1-count array)."""
+    ap = y._deref(base + 0x188)
+    cnt = y._u16(base + 0x190)
+    if ap is None or cnt == 0:
+        return []
+    sp = " " * indent
+    L = ["%s<BiasLinks>" % sp]
+    for i in range(cnt):
+        eo = ap + i * 0x58
+        name = y.b[eo:y.b.find(b"\x00", eo)].decode("latin-1")
+        L += ["%s <Item>" % sp,
+              "%s  <Name>%s</Name>" % (sp, esc(name)),
+              '%s  <RandomIndex value="%d" />' % (sp, y._p(eo + 0x50))]
+        kp, kcnt = y._aptr(eo + 0x40)
+        if kcnt == 0 or kp is None:
+            L.append("%s  <KeyframePropIDs />" % sp)
+        else:
+            L.append("%s  <KeyframePropIDs>" % sp)
+            for j in range(kcnt):
+                L.append("%s   <Item>hash_%08X</Item>" % (sp, y._p(kp + j * 4)))
+            L.append("%s  </KeyframePropIDs>" % sp)
+        L.append("%s </Item>" % sp)
+    L.append("%s</BiasLinks>" % sp)
     return L
 
 
