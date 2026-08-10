@@ -102,15 +102,18 @@ five ways and requires the diff to redden on all five, and to stay green on the 
 cases. A gate that has never failed is unproven.
 
 **3 — Conformance is measured, not asserted.** The regression suite grades **318 positions:
-318/318 byte-identical**, and has held there across every change since. Beyond the suite, the
-full oracle board reads **1,263/1,263 across eight lanes at corpus scale**, targeted and
-at-scale output are proven identical **keyed by source entry (276/276 pairable positions)**,
-texture sidecars grade **288/290** (the 2 non-passes are a counted format-alias class and a
-store artifact, both named), and the small-lane board — expressions, pose matchers, path
-nodes, vehicle and waypoint records, cloth dictionaries, bounds dictionaries and particles —
-reads **175/175 against fresh stratified reference draws, zero exceptions**, with those lanes
-also extracted at corpus scale under format invariants. Every non-pass in history is named,
-with its cause, below.
+318/318 byte-identical**, and has held there across every change since — and the suite now
+*exits non-zero when it fails*, which it did not always do. Beyond the suite, the full oracle
+board reads **1,263/1,263 across eight lanes at corpus scale**, targeted and at-scale output are
+proven identical **keyed by source entry (276/276 pairable positions)**, texture sidecars grade
+**288/290** (the 2 non-passes are a counted format-alias class and a store artifact, both named),
+and the small-lane board — expressions, pose matchers, path nodes, vehicle and waypoint records,
+cloth dictionaries, bounds dictionaries and particles — reads **175/175 against fresh stratified
+reference draws, zero exceptions**. Navmeshes read **40/40** on their board and convert at their
+full game population (10,567 files, zero failures). Shaders read **16/16** and move networks
+**36/36** against freshly drawn references. Animation dictionaries read **26/57** with **zero
+missing** — every non-passing position differs *only* by an explicitly marked undecoded channel
+variant, never by a wrong value. Every non-pass is named, with its cause, below.
 
 **4 — Oracles are a lower bound, so invariants run at corpus scale.** Passing the suite does not
 prove correctness for the other 384,000 files. The tool therefore also checks properties the
@@ -138,7 +141,10 @@ that was asked to do something and produced nothing is a failure, not an empty s
 | `ypt` behaviour types | **complete** — a full-population census (1,240/1,240 particle files walked) found exactly 23 behaviour types game-wide, and all 23 are derived and byte-verified, including the densest particle file in the game (42 MB of XML, byte-identical). An unknown type hash now means the install itself changed, and still refuses loudly |
 | remaining `ypt` constants | the behaviour scalars that vary in real data are read from their pinned offsets — a multi-instance stress pass over 1,605 particle rules promoted seven more from constants to offset reads. The remainder are single-valued across every witnessed file and **counted on every emission** so a future counter-example surfaces itself |
 | `ybd` bounds dictionaries | the reference exporter produces no XML for this type at all, so the lane grades on raw parity — and is **proven byte-exact at its entire game population** (4/4) |
-| animation channel variants | only provably-decodable channels emit values; the rest emit residual markers. Closing this lane against fresh oracles is the final derivation campaign |
+| animation channel variants | the inline-quantised codec is **derived and byte-exact for its selector-0 form** — a 64-frame block codec with a seek table, verified on 1,964 of 1,964 channels. Its accept test is structural (each block's bit cursor must land exactly on the next stored offset after exactly 64 frames), so an unwitnessed variant cannot slip through as plausible numbers. Non-zero selectors share the framing but not the code alphabet: they emit a counted residual marker and no values. An earlier rule that merely balanced a frame budget was retired after measurement showed it produced 5 wrong channels alongside 20 correct ones |
+| audio config (`rel`) | derived but **not yet shipped**: 108 record schemas and a prototype emitter that reproduces 25 of 34 reference exports byte-for-byte with zero mismatches and nine clean refusals. Until it lands, these files are kept byte-exact rather than converted, and the run says so |
+| cutscene (`cut`) field defects | 2 of 24 reference exports match; the rest differ in named fields, not structure |
+| map cache (`cache_y.dat`) | converted; 4 of 5 reference exports are byte-identical. The fifth differs on 4 lines out of 124,393 — genuine 32-bit hash collisions between two real game strings, where the reference tool's tie-break comes from its own index. Matching it would mean overriding a name this tool can prove correct, so the divergence is left visible and counted |
 | hash-only content names | a handful of names exist in no in-scope file (scripts are excluded). A **self-verifying overlay** harvested from reference exports resolves them: an entry only fires where its hash equals the value stored in the binary, so a wrong name cannot mis-fire; deleting the overlay reverts to hash spellings |
 | encrypted audio containers | container fully decoded; whole-file-encrypted archives are refused loudly — the cipher is not recoverable clean-room |
 | script files (`.ysc`) | excluded by maintainer policy |
@@ -155,13 +161,14 @@ targeted-vs-at-scale identity proven per source entry, pixels converged on the o
 downstream tools load. The corpus contract is the game's own layout: slot tree in load order,
 content keeps its in-game name, per-container folders where the game itself nests them.
 
-**Now — the last two campaigns.** Every small lane is closed: byte-identical against fresh
-stratified reference draws (175/175) and extracted at corpus scale under format invariants —
-including the complete particle type surface and the expression opcode surface, both of which
-grew by derivation this cycle when at-scale runs surfaced structures the original draws never
-witnessed. What remains is navmesh densification and the animation lane — the largest remaining
-derivation surface — run the same way as everything else: fresh oracles first, derive,
-byte-identical, then scale.
+**Now — the long tail.** The navmesh lane is closed (40/40, and its full game population
+converts with zero failures). Shaders and move networks closed the same way, after a round of
+fresh reference draws showed that each lane's single "unsupported" message had been hiding
+several unrelated gaps — sizing work from an error string instead of from evidence coverage is a
+mistake this project has now paid for three times. The animation lane's structure is closed and
+its dominant codec derived; what remains there is one codec variant. Audio config is derived and
+awaiting its port, and cutscenes need a field-level pass. The method does not change: draw fresh
+references first, derive against them, prove byte-identical, then scale.
 
 **Later — a C++ port.** The Python here is the prototype layer: the rule is *conform first, port
 second, re-verify after*. Nothing gets ported until it is proven against the oracles.
