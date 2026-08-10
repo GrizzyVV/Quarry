@@ -108,6 +108,7 @@ INLINE QuantizeFloat descriptor (variable) [emits <Type>QuantizeFloat</Type>] - 
     with no padding-fill fallback.  A descriptor whose budget does NOT close (an unproven
     variant) yields None and the emitter writes a visible RESIDUAL comment, never values.
 """
+import json
 import math
 import os
 import struct
@@ -116,6 +117,32 @@ import sys
 sys.path.insert(0, r"B:\ClaudeCode_Projects\_UEFiveMTool\quarry")
 from ydr2xml import Res                 # noqa: E402  (RSC7 container reader)
 from meta2xml import fmt_num, esc, joaat  # noqa: E402
+from meta2xml import f32 as F             # noqa: E402  (the float32 rounding law)
+
+
+def _rup(n):
+    """Map lists are padded to a multiple of 4 entries."""
+    return ((n + 3) // 4) * 4
+
+
+# The conformant output for a .ycd whose RSC7 container is not version 46.
+DECLINED_XML = '<?xml version="1.0" encoding="UTF-8"?>\n'
+
+
+def declined_version(blob):
+    """True when this .ycd's container version is one the reference exporter declines.
+
+    Must be asked BEFORE the RSC7 reader inflates: the four 00_base destruction .ycd are
+    version 43 and the reader dies inside inflate ("inflated payload shorter than the declared
+    system segment") long before require_version could speak. The reference exporter declines
+    them too - each of those four oracles is exactly 40 bytes, the XML declaration with NO root
+    element (hexdump-verified on all four, 2026-08-10) - so emitting the declaration alone is
+    byte-identical conformance, not a shortcut. Every decline is COUNTED by the caller, so the
+    class is visible in the run summary rather than looking like a successful conversion.
+    """
+    if len(blob) < 8 or blob[:4] != b'RSC7':
+        return False
+    return struct.unpack_from('<I', blob, 4)[0] != 46
 
 # THE_PLAN 5.0 (2026-08-06): every RESIDUAL/UNPINNED marker written into the XML is ALSO
 # counted here, because a file full of markers still converts "ok" - the caller (quarry.py's
@@ -149,7 +176,33 @@ def atmap(S, bucket_ptr, nbuckets):
             node = u32(S, n + 0x10)
 
 
-ATTR_TYPE = {2: "Int", 6: "Vector3", 8: "Vector4", 1: "Float"}
+# crPropertyAttribute type codes. 3=Bool and 12=HashString were derived 2026-08-10 from the
+# 57-oracle draw (14 witnesses): Bool reads u32 @attr+0x20 and spells `<Value value="%d" />`;
+# HashString reads u32 @attr+0x20 and spells it as ELEMENT TEXT `<Value>%s</Value>` through the
+# name table - it is the ONE attribute kind that is not attribute-form, so do not fold it into
+# the generic path.
+ATTR_TYPE = {2: "Int", 6: "Vector3", 8: "Vector4", 1: "Float", 3: "Bool", 12: "HashString"}
+
+
+def _witnessed_names():
+    """The oracle-witnessed content-name overlay, shared with quarry.py and pso2xml.py.
+
+    The reference exporter carries a hash->name index we cannot read; a string it spells that
+    exists nowhere in the binary can only come from that index. The sanctioned proxy (maintainer
+    call 2026-08-08, extended to this lane 2026-08-10) is what the ORACLES themselves spell:
+    self-verifying, because an entry only ever fires where joaat(name) equals the hash actually
+    stored in the file, so a wrong entry cannot mis-name anything - it is simply dead weight.
+    REVERSIBLE: delete oracle_witnessed_names.json and every lane reverts to hash_%08X.
+    """
+    out = {}
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oracle_witnessed_names.json')
+    if os.path.isfile(p):
+        try:
+            for n in json.load(open(p, encoding='utf-8')).get('names', []):
+                out.setdefault(joaat(n), n)
+        except Exception:
+            pass
+    return out
 
 
 class Ycd:
@@ -163,8 +216,11 @@ class Ycd:
         aobj = P(u32(S, 0x18))
         self.anims_bp = P(u32(S, aobj + 0x18)); self.anims_n = u16(S, aobj + 0x20)
         self.a2k = {av: k for k, av in atmap(S, self.anims_bp, self.anims_n)}  # anim ptr -> hash
-        # ---- name dictionary (for reversible <Hash>) built from clip name-stems ----
-        self.names = {}
+        # ---- name dictionary (for reversible <Hash>) ----
+        # Base layer = the oracle-witnessed overlay (vocabulary the reference exporter spells
+        # from its own index; proven absent from this file's system segment by byte-search).
+        # The file's OWN clip stems are layered ON TOP, so real in-file content always wins.
+        self.names = _witnessed_names()
         for _, cv in atmap(S, self.clips_bp, self.clips_n):
             nm = cstr(S, P(u32(S, cv + 0x18)))          # "pack:/<stem>.clip"
             stem = nm[6:-5] if nm.startswith("pack:/") and nm.endswith(".clip") else nm
@@ -176,18 +232,25 @@ class Ycd:
     # ---------------------------------------------------------------- clips
     def emit_clips(self, out):
         S = self.S
+        items = list(atmap(S, self.clips_bp, self.clips_n))
+        if not items:                       # an EMPTY dictionary self-closes (2 witnesses;
+            out.append(" <Clips />")        # drf_mic_3_cs_2-100.ycd is 101 B in full)
+            return
         out.append(" <Clips>")
-        for _, cv in atmap(S, self.clips_bp, self.clips_n):
-            self.emit_clip(out, cv)
+        for ckey, cv in items:
+            self.emit_clip(out, ckey, cv)
         out.append(" </Clips>")
 
-    def emit_clip(self, out, cv):
+    def emit_clip(self, out, ckey, cv):
         S = self.S
         typ = u32(S, cv + 0x10)                          # 1=Animation 2=AnimationList
         name = cstr(S, P(u32(S, cv + 0x18)))
-        stem = name[6:-5] if name.startswith("pack:/") and name.endswith(".clip") else name
         out.append("  <Item>")
-        out.append("   <Hash>%s</Hash>" % esc(stem))
+        # <Hash> is the dictionary KEY reversed through the name table - NOT joaat of the stem.
+        # They coincide for the ANIMATION dictionary but not for CLIPS: cs2_05.ycd stores key
+        # 0xF5B0F874 while joaat("cs2_05_decal_003_uv_0") is 0x8DA8CB7E, and the oracle spells
+        # the KEY. Measured on 7 witnesses, 2026-08-10.
+        out.append("   <Hash>%s</Hash>" % esc(self.hstr(ckey)))
         out.append("   <Name>%s</Name>" % esc(name))
         out.append('   <Type value="%s" />' % ("Animation" if typ == 1 else "AnimationList"))
         out.append('   <Unknown30 value="%d" />' % u32(S, cv + 0x30))
@@ -265,7 +328,12 @@ class Ycd:
             out.append("      <Item>")
             out.append("       <NameHash>%s</NameHash>" % self.hstr(nh))
             out.append('       <Type value="%s" />' % tn)
-            if tn == "Int":
+            if tn == "Bool":
+                out.append('       <Value value="%d" />' % u32(S, a + 0x20))
+            elif tn == "HashString":
+                # the ONE attribute kind spelled as element TEXT, not a value= attribute
+                out.append('       <Value>%s</Value>' % esc(self.hstr(u32(S, a + 0x20))))
+            elif tn == "Int":
                 out.append('       <Value value="%d" />' % i32(S, a + 0x20))
             elif tn == "Float":
                 out.append('       <Value value="%s" />' % fmt_num(f32(S, a + 0x20)))
@@ -283,8 +351,12 @@ class Ycd:
     # ---------------------------------------------------------------- animations
     def emit_anims(self, out):
         S = self.S
+        items = list(atmap(S, self.anims_bp, self.anims_n))
+        if not items:                            # empty dictionary self-closes, as for Clips
+            out.append(" <Animations />")
+            return
         out.append(" <Animations>")
-        for key, av in atmap(S, self.anims_bp, self.anims_n):
+        for key, av in items:
             self.emit_anim(out, key, av)
         out.append(" </Animations>")
 
@@ -318,256 +390,111 @@ class Ycd:
         out.append("  </Item>")
 
     def emit_sequence(self, out, seq, nbones):
-        from meta2xml import f32 as F
+        """One crAnimSequence -> its <SequenceData>.
+
+        THE COUNT TABLE IS NINE u16 (derived 2026-08-10 over 53 oracles / 442 sequences:
+        442/442 fit with zero NO_FIT, and every tuple equals the oracle's own per-sequence
+        channel tallies):
+            [nStaticQuat, nStaticVec3, nStaticFloat, nRawFloat, nQuantizeFloat,
+             nIndirectQuantizeFloat, nInlineQuantizeFloat, nCachedQuaternion1,
+             nCachedQuaternion2]
+        followed by NINE per-pool u16 map lists, each padded to a multiple of 4 entries.
+        `was:` the reader treated this as EIGHT counts plus a "u16 must be 0" separator - which
+        is byte-identical ONLY while nInlineQuantizeFloat == 0 AND nCachedQuaternion2 == 0, and
+        which refused 33,778 sequences game-wide. The ninth pool is a SECOND cached-quaternion
+        list; Cached1/Cached2 reproduce the oracle exactly, but what distinguishes them
+        behaviourally is NOT derived - only that they are two separate lists.
+        """
         S = self.S
         out.append("    <Item>")
         out.append("     <Hash>%s</Hash>" % self.hstr(u32(S, seq)))
         framecount = u16(S, seq + 0x16)
         out.append('     <FrameCount value="%d" />' % framecount)
-
         data = seq + 0x20
-        quant_off = u32(S, seq + 0x0C)
-        packed = data + quant_off
-        seq_end = seq + u32(S, seq + 0x10)              # +0x10 = total sequence size
-        # ---- locate count table: the 6-u16 counts are immediately followed by the mapping
-        #      region ([0,numCached,0] header + per-pool item-maps padded to mult-of-4 +
-        #      cached map), and the mapping region ends exactly at seq_end. ----
-        def _rup(n): return ((n + 3) // 4) * 4
-        co = None; counts = None
-        for c in range(packed, seq_end - 12, 2):
-            if u16(S, c + 12) != 0 or u16(S, c + 16) != 0:   # mapping header must be [0, nc, 0]
-                continue
-            cc = tuple(u16(S, c + i * 2) for i in range(6))
-            if max(cc) > 400:
-                continue
-            nc = u16(S, c + 14)
-            msz = 3 + sum(_rup(x) for x in cc) + _rup(nc)
-            if c + 12 + msz * 2 == seq_end:
-                co = c; counts = cc; break
-        if co is None:
-            # The legacy 6-u16 reader above rejects this position because it requires
-            # u16[6]==0, but this file has a nonzero INLINE QuantizeFloat pool (count[6]).
-            # Fall back to the unified 8-pool reader (see docstring COUNT TABLE / INLINE QZ).
-            if self._emit_seq_8pool(out, seq, nbones, data, quant_off, packed, seq_end,
-                                    framecount, _rup, F):
-                return
-            out.append("     <SequenceData>")
-            out.append("      <!-- count table not located -->")
-            RESIDUALS["count_table_not_located"] = RESIDUALS.get("count_table_not_located", 0) + 1
-            out.append("     </SequenceData>"); out.append("    </Item>"); return
-        nq, nv, nf, nr, nqz, ni = counts
+        packed = data + u32(S, seq + 0x0C)
 
-        # ---- pool bases ----
+        cands = self._locate_counts(seq)
+        if len(cands) != 1:
+            # UNIQUENESS IS THE TEST, not existence: the size equation alone leaves 2-3
+            # candidates on 15 of 442 sequences and the lowest-offset one is WRONG in 14 of
+            # them, so a first-match-wins scan emits a plausible, unmarked, WRONG channel map.
+            # Refuse loudly instead, and say how many candidates survived.
+            out.append("     <SequenceData>")
+            out.append("      <!-- count table not located (%d candidates) -->" % len(cands))
+            RESIDUALS["count_table_not_located"] = RESIDUALS.get("count_table_not_located", 0) + 1
+            out.append("     </SequenceData>")
+            out.append("    </Item>")
+            return True
+        co, counts, qz_descs, ind_descs, inl_descs, framebits = cands[0]
+        nq, nv, nf, nr, nqz, ni, n6, nc1, nc2 = counts
         quat_b = data
         vec_b = quat_b + nq * 12
         flt_b = vec_b + nv * 12
-        qz_b = flt_b + nf * 4                         # QuantizeFloat descriptors (12B)
-        # IndirectQuantizeFloat descriptors are VARIABLE stride (2026-08-06):
-        #   [u32 slotBits, u32 paletteBits, u32 nPalWords, f32 Quantum, f32 Offset,
-        #    u32 palette[nPalWords]]  -> stride = 0x14 + nPalWords*4.
-        # The compact form (nPalWords=1, 24B) and the drinking_shots inline-palette form
-        # (nPalWords=3, 32B, 9-entry palette) are the same record; walk by nPalWords so
-        # both close. npal = (nPalWords*32)//paletteBits (inline pal packed paletteBits
-        # each across the nPalWords u32).
-        ind_descs = []
-        o = qz_b + nqz * 12
-        overrun = False
-        for _k in range(ni):
-            if o + 0x14 > len(S):                     # bogus walk -> this is not the 6-pool layout
-                overrun = True; break
-            ind_descs.append(o)
-            o += 0x14 + u32(S, o + 8) * 4
-        # descriptors must exactly fill up to the packed-frame block (quant_off is a
-        # DATA-relative offset, so compare against o - data)
-        if overrun or o - data != quant_off:
-            out.append("     <SequenceData>")
-            out.append("      <!-- UNPINNED: indirect descriptors do not reach quant_off -->")
-            RESIDUALS["indirect_descriptors_unpinned"] = \
-                RESIDUALS.get("indirect_descriptors_unpinned", 0) + 1
-            out.append("     </SequenceData>"); out.append("    </Item>"); return
-
-        # ---- decode the packed frame block (quant + indirect channels, frame-major) ----
-        frame_bits = sum(u32(S, qz_b + k * 12) for k in range(nqz)) + \
-                     sum(u32(S, d) for d in ind_descs)
-        framebits = ((frame_bits + 31) // 32) * 32
-        def readbits(bit, n):
-            v = 0
-            for i in range(n):
-                p = bit + i
-                v |= ((S[packed + (p >> 3)] >> (p & 7)) & 1) << i
-            return v
-        qz_vals = [[] for _ in range(nqz)]; ind_raw = [[] for _ in range(ni)]
-        for fr in range(framecount):
-            bit = fr * framebits
-            for k in range(nqz):
-                nb = u32(S, qz_b + k * 12); q = f32(S, qz_b + k * 12 + 4); off = f32(S, qz_b + k * 12 + 8)
-                qz_vals[k].append(F(off + F(readbits(bit, nb) * q))); bit += nb
-            for k in range(ni):
-                sb = u32(S, ind_descs[k]); ind_raw[k].append(readbits(bit, sb)); bit += sb
-
-        # ---- parse the mapping region (right after the 6-u16 count table) ----
-        m = co + 12
-        numCached = u16(S, m + 2); m += 6                 # header [0, numCached, 0]
-        def take(cnt):                                    # cnt values padded to a multiple of 4
-            nonlocal m
-            vals = [u16(S, m + i * 2) for i in range(cnt)]
-            m += ((cnt + 3) // 4) * 4 * 2
-            return vals
-        map_quat = take(nq); map_vec = take(nv); map_flt = take(nf)
-        map_raw = take(nr); map_qz = take(nqz); map_ind = take(ni)
-        map_cached = take(numCached)
-
-        # ---- assemble channels per item ----
-        items = {}                                        # item -> list of (comp, kind, payload)
-        def add(mapping, kind, payload_of):
-            for slot, val in enumerate(mapping):
-                it, comp = val // 4, val % 4
-                items.setdefault(it, []).append((comp, kind, payload_of(slot)))
-        add(map_quat, "SQ", lambda s: (quat_b + s * 12))
-        add(map_vec, "SV", lambda s: (vec_b + s * 12))
-        add(map_flt, "SF", lambda s: (flt_b + s * 4))
-        add(map_qz, "QZ", lambda s: s)
-        add(map_ind, "IQ", lambda s: s)
-        cached = {}                                       # item -> QuatIndex
-        for val in map_cached:
-            cached[val // 4] = val % 4
-
-        # ---- emit ----
-        out.append("     <SequenceData>")
-        for it in range(nbones):
-            out.append("      <Item>")
-            out.append("       <Channels>")
-            for comp, kind, pl in sorted(items.get(it, [])):
-                if kind == "SQ":
-                    x, y, z = f32(S, pl), f32(S, pl + 4), f32(S, pl + 8)
-                    w = F(math.sqrt(max(0.0, F(1.0 - F(F(F(x * x) + F(y * y)) + F(z * z))))))
-                    out.append('        <Item>')
-                    out.append('         <Type value="StaticQuaternion" />')
-                    out.append('         <Value x="%s" y="%s" z="%s" w="%s" />' % (
-                        fmt_num(x), fmt_num(y), fmt_num(z), fmt_num(w)))
-                    out.append('        </Item>')
-                elif kind == "SV":
-                    out.append('        <Item>')
-                    out.append('         <Type value="StaticVector3" />')
-                    out.append('         <Value x="%s" y="%s" z="%s" />' % (
-                        fmt_num(f32(S, pl)), fmt_num(f32(S, pl + 4)), fmt_num(f32(S, pl + 8))))
-                    out.append('        </Item>')
-                elif kind == "SF":
-                    out.append('        <Item>')
-                    out.append('         <Type value="StaticFloat" />')
-                    out.append('         <Value value="%s" />' % fmt_num(f32(S, pl)))
-                    out.append('        </Item>')
-                elif kind == "QZ":
-                    out.append('        <Item>')
-                    out.append('         <Type value="QuantizeFloat" />')
-                    out.append('         <Quantum value="%s" />' % fmt_num(f32(S, qz_b + pl * 12 + 4)))
-                    out.append('         <Offset value="%s" />' % fmt_num(f32(S, qz_b + pl * 12 + 8)))
-                    self._emit_values(out, qz_vals[pl], "         ")
-                    out.append('        </Item>')
-                elif kind == "IQ":
-                    self._emit_indirect(out, S, ind_descs[pl], ind_raw[pl])
-            if it in cached:
-                out.append('        <Item>')
-                out.append('         <Type value="CachedQuaternion1" />')
-                out.append('         <QuatIndex value="%d" />' % cached[it])
-                out.append('        </Item>')
-            out.append("       </Channels>")
-            out.append("      </Item>")
-        out.append("     </SequenceData>")
-        out.append("    </Item>")
-
-    def _emit_seq_8pool(self, out, seq, nbones, data, quant_off, packed, seq_end,
-                        framecount, _rup, F):
-        """Unified 8-pool sequence decoder (see docstring COUNT TABLE).  Handles the
-        mpsecurity drinking_shots structural variant (nonzero inline-QuantizeFloat pool).
-        Pools quat/vec/flt/quant/indirect/cached decode byte-exact; the inline-QZ pool's
-        per-frame <Values> are the one open RESIDUAL and are emitted as a marker.
-        Returns True if the 8-pool count table located, else False (caller marks)."""
-        S = self.S
-        # locate 8-count table: c + (9 + Sum rup(c_i)) * 2 == seq_end, u16[8]==0 separator.
-        co = None; counts = None
-        for c in range(packed, seq_end - 18, 2):
-            if u16(S, c + 16) != 0:                       # separator (u16[8]) must be 0
-                continue
-            cc = tuple(u16(S, c + i * 2) for i in range(8))
-            if max(cc) > 400:
-                continue
-            msz = 9 + sum(_rup(x) for x in cc)
-            if c + msz * 2 == seq_end:
-                co = c; counts = cc; break
-        if co is None:
-            return False
-        nq, nv, nf, nr, nqz, ni, n6, numCached = counts
-
-        # ---- pool bases / descriptors ----
-        quat_b = data; vec_b = quat_b + nq * 12; flt_b = vec_b + nv * 12
-        raw_b = flt_b + nf * 4                            # RawFloat fmt unknown (nr==0 here)
-        o = raw_b                                         # (raw pool size unknown; assume 0)
-        qz_descs = [o + k * 12 for k in range(nqz)]; o += nqz * 12   # 12B: numBits,Q,Off
-        ind_descs = []
-        for _k in range(ni):
-            if o + 0x14 > len(S):                                    # bogus walk -> not our layout
-                return False
-            ind_descs.append(o); o += 0x14 + u32(S, o + 8) * 4       # variable IQ descriptor
-        inl_descs = []
-        for _k in range(n6):
-            if o + 16 > len(S):
-                return False
-            sw = u32(S, o)
-            if sw < 4 or o + sw * 4 > len(S):                        # sizeWords must be sane
-                return False
-            inl_descs.append(o); o += sw * 4                         # sizeWords (u32) stride
-        if o - data != quant_off:                        # descriptors must reach the packed block
-            return False
-
-        # ---- frame-major packed block: quant + indirect channels ----
-        frame_bits = sum(u32(S, d) for d in qz_descs) + sum(u32(S, d) for d in ind_descs)
-        framebits = ((frame_bits + 31) // 32) * 32
 
         def readbits(bit, n):
             v = 0
             for i in range(n):
-                p = bit + i
-                v |= ((S[packed + (p >> 3)] >> (p & 7)) & 1) << i
+                pp = bit + i
+                v |= ((S[packed + (pp >> 3)] >> (pp & 7)) & 1) << i
             return v
-        qz_vals = [[] for _ in qz_descs]; ind_raw = [[] for _ in ind_descs]
+
+        # RAWFLOAT HAS NO DESCRIPTOR. Its data is frame-major INSIDE the packed block, laid
+        # after that frame's bit-packed channels, so the frame stride grows by nr*4 bytes.
+        # `was:` the pool was assumed zero-sized and its map list was read and DISCARDED -
+        # 20,734 channels across 98 files vanished from the XML with nothing counted, and every
+        # later descriptor base was wrong, which usually surfaced as a MIS-NAMED
+        # "indirect_descriptors_unpinned" refusal (a marker naming the wrong cause).
+        stride_bits = (framebits // 8 + nr * 4) * 8
+        qz_vals = [[] for _ in qz_descs]
+        ind_raw = [[] for _ in ind_descs]
         for fr in range(framecount):
-            bit = fr * framebits
+            bit = fr * stride_bits
             for k, d in enumerate(qz_descs):
-                nb = u32(S, d); q = f32(S, d + 4); off = f32(S, d + 8)
-                qz_vals[k].append(F(off + F(readbits(bit, nb) * q))); bit += nb
+                nb = u32(S, d)
+                q = f32(S, d + 4)
+                off = f32(S, d + 8)
+                # FLOAT LAW: float32 the raw integer BEFORE the multiply (7,413/7,413 exact).
+                qz_vals[k].append(F(F(off) + F(F(readbits(bit, nb)) * q)))
+                bit += nb
             for k, d in enumerate(ind_descs):
-                sb = u32(S, d); ind_raw[k].append(readbits(bit, sb)); bit += sb
+                sb = u32(S, d)
+                ind_raw[k].append(readbits(bit, sb))
+                bit += sb
 
-        # ---- mapping region (8 lists + cached), right after [8 counts][separator] ----
-        m = co + 16 + 2
+        # Every RawFloat witness (6 sequences / 5 files) carries NO bit-packed pool alongside,
+        # so the interleave between the f32 array and a bitstream within one frame is
+        # UNWITNESSED. Refuse that combination rather than guess a byte order.
+        raw_ok = (nqz == 0 and ni == 0 and n6 == 0)
+        raw_vals = []
+        if nr and raw_ok:
+            raw_vals = [[F(f32(S, packed + (fr * nr + k) * 4)) for fr in range(framecount)]
+                        for k in range(nr)]
+
+        m = co + 18                                   # nine counts, then the nine map lists
 
         def take(cnt):
             nonlocal m
             vals = [u16(S, m + i * 2) for i in range(cnt)]
             m += _rup(cnt) * 2
             return vals
-        map_q = take(nq); map_v = take(nv); map_f = take(nf); take(nr)   # raw list (empty)
-        map_qz = take(nqz); map_ind = take(ni); map_inl = take(n6); map_cached = take(numCached)
+
+        map_q = take(nq); map_v = take(nv); map_f = take(nf); map_r = take(nr)
+        map_qz = take(nqz); map_ind = take(ni); map_inl = take(n6)
+        map_c1 = take(nc1); map_c2 = take(nc2)
 
         items = {}
 
-        def add(mapping, kind, payload_of):
+        def add(mapping, kind):
             for slot, val in enumerate(mapping):
-                it, comp = val // 4, val % 4
-                items.setdefault(it, []).append((comp, kind, payload_of(slot)))
-        add(map_q, "SQ", lambda s: (quat_b + s * 12))
-        add(map_v, "SV", lambda s: (vec_b + s * 12))
-        add(map_f, "SF", lambda s: (flt_b + s * 4))
-        add(map_qz, "QZ", lambda s: s)
-        add(map_ind, "IQ", lambda s: s)
-        add(map_inl, "Q6", lambda s: s)
-        cached = {}
-        for val in map_cached:
-            cached[val // 4] = val % 4
+                items.setdefault(val // 4, []).append((val % 4, kind, slot))
 
-        # ---- decode inline-QZ pool6 (double-integration bitstream, see docstring) ----
-        inl_vals = [self._decode_inline_qz(inl_descs[s], framecount) for s in range(n6)]
+        add(map_q, "SQ"); add(map_v, "SV"); add(map_f, "SF"); add(map_r, "RF")
+        add(map_qz, "QZ"); add(map_ind, "IQ"); add(map_inl, "Q6")
+        cached = {}
+        for val in map_c1:
+            cached[val // 4] = ("CachedQuaternion1", val % 4)
+        for val in map_c2:
+            cached[val // 4] = ("CachedQuaternion2", val % 4)
 
         out.append("     <SequenceData>")
         for it in range(nbones):
@@ -575,7 +502,8 @@ class Ycd:
             out.append("       <Channels>")
             for comp, kind, pl in sorted(items.get(it, [])):
                 if kind == "SQ":
-                    x, y, z = f32(S, pl), f32(S, pl + 4), f32(S, pl + 8)
+                    b = quat_b + pl * 12
+                    x, y, z = f32(S, b), f32(S, b + 4), f32(S, b + 8)
                     w = F(math.sqrt(max(0.0, F(1.0 - F(F(F(x * x) + F(y * y)) + F(z * z))))))
                     out.append('        <Item>')
                     out.append('         <Type value="StaticQuaternion" />')
@@ -583,21 +511,35 @@ class Ycd:
                         fmt_num(x), fmt_num(y), fmt_num(z), fmt_num(w)))
                     out.append('        </Item>')
                 elif kind == "SV":
+                    b = vec_b + pl * 12
                     out.append('        <Item>')
                     out.append('         <Type value="StaticVector3" />')
                     out.append('         <Value x="%s" y="%s" z="%s" />' % (
-                        fmt_num(f32(S, pl)), fmt_num(f32(S, pl + 4)), fmt_num(f32(S, pl + 8))))
+                        fmt_num(f32(S, b)), fmt_num(f32(S, b + 4)), fmt_num(f32(S, b + 8))))
                     out.append('        </Item>')
                 elif kind == "SF":
                     out.append('        <Item>')
                     out.append('         <Type value="StaticFloat" />')
-                    out.append('         <Value value="%s" />' % fmt_num(f32(S, pl)))
+                    out.append('         <Value value="%s" />' % fmt_num(f32(S, flt_b + pl * 4)))
+                    out.append('        </Item>')
+                elif kind == "RF":
+                    out.append('        <Item>')
+                    out.append('         <Type value="RawFloat" />')
+                    if not raw_ok:
+                        RESIDUALS["rawfloat_mixed_block"] = \
+                            RESIDUALS.get("rawfloat_mixed_block", 0) + 1
+                        out.append('         <!-- RESIDUAL: RawFloat shares a bit-packed block '
+                                   '(nqz=%d ni=%d n6=%d): interleave underived -->'
+                                   % (nqz, ni, n6))
+                    else:
+                        self._emit_values(out, raw_vals[pl], "         ")
                     out.append('        </Item>')
                 elif kind == "QZ":
+                    d = qz_descs[pl]
                     out.append('        <Item>')
                     out.append('         <Type value="QuantizeFloat" />')
-                    out.append('         <Quantum value="%s" />' % fmt_num(f32(S, qz_descs[pl] + 4)))
-                    out.append('         <Offset value="%s" />' % fmt_num(f32(S, qz_descs[pl] + 8)))
+                    out.append('         <Quantum value="%s" />' % fmt_num(f32(S, d + 4)))
+                    out.append('         <Offset value="%s" />' % fmt_num(f32(S, d + 8)))
                     self._emit_values(out, qz_vals[pl], "         ")
                     out.append('        </Item>')
                 elif kind == "IQ":
@@ -608,26 +550,84 @@ class Ycd:
                     out.append('         <Type value="QuantizeFloat" />')
                     out.append('         <Quantum value="%s" />' % fmt_num(f32(S, d + 8)))
                     out.append('         <Offset value="%s" />' % fmt_num(f32(S, d + 0xC)))
-                    if inl_vals[pl] is None:
-                        # frame budget did not close -> an inline variant this decoder has
-                        # not proven.  Emit a RESIDUAL marker, never invented values.
+                    vals = self._decode_inline_qz(d, framecount)
+                    if vals is None:
                         RESIDUALS["inline_quantize_undecoded"] = \
                             RESIDUALS.get("inline_quantize_undecoded", 0) + 1
                         out.append('         <!-- RESIDUAL: inline QuantizeFloat variant '
-                                   'B=%#010x sizeWords=%d not decoded -->' % (u32(S, d + 4), u32(S, d)))
+                                   'B=%#010x sizeWords=%d not decoded -->'
+                                   % (u32(S, d + 4), u32(S, d)))
                     else:
-                        self._emit_values(out, inl_vals[pl], "         ")
+                        self._emit_values(out, vals, "         ")
                     out.append('        </Item>')
             if it in cached:
+                tn, qi = cached[it]
                 out.append('        <Item>')
-                out.append('         <Type value="CachedQuaternion1" />')
-                out.append('         <QuatIndex value="%d" />' % cached[it])
+                out.append('         <Type value="%s" />' % tn)
+                out.append('         <QuatIndex value="%d" />' % qi)
                 out.append('        </Item>')
             out.append("       </Channels>")
             out.append("      </Item>")
         out.append("     </SequenceData>")
         out.append("    </Item>")
         return True
+
+    def _locate_counts(self, seq):
+        """Every surviving count-table candidate for one sequence, under THREE constraints.
+
+        C1 size equation: c + (9 + sum(rup(count_i)))*2 == seq_end, with all nine counts <= 400.
+        C2 descriptor walk: walking the pools from `data` must land EXACTLY on quantOffset.
+        C3 packed-block extent: packed + (framebits//8 + nRawFloat*4) * FrameCount == c.
+        C1 ALONE IS NOT SUFFICIENT - 15 of 442 sequences keep 2-3 candidates under it and the
+        lowest-offset one is wrong in 14 of them. The caller requires exactly ONE survivor, so
+        an ambiguous sequence refuses instead of silently taking the first fit.
+        """
+        S = self.S
+        data = seq + 0x20
+        quant_off = u32(S, seq + 0x0C)
+        packed = data + quant_off
+        seq_end = seq + u32(S, seq + 0x10)
+        framecount = u16(S, seq + 0x16)
+        cands = []
+        for c in range(packed, seq_end - 18, 2):
+            cc = tuple(u16(S, c + k * 2) for k in range(9))
+            if max(cc) > 400:
+                continue
+            if c + (9 + sum(_rup(x) for x in cc)) * 2 != seq_end:
+                continue
+            nq, nv, nf, nr, nqz, ni, n6, nc1, nc2 = cc
+            o = data + nq * 12 + nv * 12 + nf * 4      # NOTE: RawFloat has NO descriptor
+            qz_d = [o + k * 12 for k in range(nqz)]
+            o += nqz * 12
+            ind_d = []
+            bad = False
+            for _ in range(ni):
+                if o + 0x14 > len(S):
+                    bad = True
+                    break
+                ind_d.append(o)
+                o += 0x14 + u32(S, o + 8) * 4          # variable IQ descriptor
+            if bad:
+                continue
+            inl_d = []
+            for _ in range(n6):
+                if o + 16 > len(S):
+                    bad = True
+                    break
+                sw = u32(S, o)
+                if sw < 4 or o + sw * 4 > len(S):
+                    bad = True
+                    break
+                inl_d.append(o)
+                o += sw * 4
+            if bad or o - data != quant_off:
+                continue
+            fb = sum(u32(S, d) for d in qz_d) + sum(u32(S, d) for d in ind_d)
+            framebits = ((fb + 31) // 32) * 32
+            if packed + (framebits // 8 + nr * 4) * framecount != c:
+                continue
+            cands.append((c, cc, qz_d, ind_d, inl_d, framebits))
+        return cands
 
     def _decode_inline_qz(self, desc, framecount):
         """Decode one INLINE QuantizeFloat channel -> list of framecount float values,
@@ -695,7 +695,7 @@ class Ycd:
         if len(raw) != framecount:
             return None
         from meta2xml import f32 as _F
-        return [_F(off + _F(rw * q)) for rw in raw]
+        return [_F(_F(off) + _F(_F(rw) * q)) for rw in raw]   # see the FLOAT LAW above
 
     def _emit_values(self, out, vals, ind):
         if len(vals) <= 10:
@@ -716,7 +716,8 @@ class Ycd:
         # 9-entry palette intact.
         big = int.from_bytes(bytes(S[desc + 0x14: desc + 0x14 + npw * 4]), "little")
         n_pal = min((npw * 32) // pbits, (1 << slotbits) - 1)
-        pal = [F(off + F(((big >> (k * pbits)) & ((1 << pbits) - 1)) * q)) for k in range(n_pal)]
+        pal = [F(F(off) + F(F((big >> (k * pbits)) & ((1 << pbits) - 1)) * q))
+               for k in range(n_pal)]   # FLOAT LAW: float32 the raw int before the multiply
         out.append('        <Item>')
         out.append('         <Type value="IndirectQuantizeFloat" />')
         out.append('         <Quantum value="%s" />' % fmt_num(q))
@@ -733,6 +734,19 @@ class Ycd:
 
 
 def ycd_to_xml(path):
+    # RSC7 VERSION GATE, read from the raw header BEFORE the container inflates (2026-08-10).
+    # Four 00_base destruction .ycd are version 43, not 46, and the RSC7 reader dies inside
+    # inflate on them ("inflated payload shorter than the declared system segment") long before
+    # require_version could speak. The REFERENCE EXPORTER also declines them: each of the four
+    # oracles is exactly 40 bytes - `<?xml version="1.0" encoding="UTF-8"?>` and NO root element
+    # at all (hexdump-verified on all four). So the conformant output for a non-v46 .ycd is the
+    # declaration alone. It is COUNTED, never silent: an operator sees the class in the run
+    # summary, and if a version-43 file ever needs real content this counter is what surfaces it.
+    if isinstance(path, str) and os.path.isfile(path):
+        with open(path, 'rb') as _f:
+            _hdr = _f.read(8)
+        if declined_version(_hdr):
+            return DECLINED_XML
     y = Ycd(path)
     out = ['<?xml version="1.0" encoding="UTF-8"?>', "<ClipDictionary>"]
     y.emit_clips(out)

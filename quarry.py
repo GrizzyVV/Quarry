@@ -682,7 +682,14 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
         # printed summary (THE_PLAN 5.0; the 51,463-channel lesson: only 2,109 provably decode).
         import ydr2xml, ycd2xml
         ycd2xml.RESIDUALS.clear()
-        xml = ycd2xml.ycd_to_xml(ydr2xml.Res.from_bytes(blob)).encode('utf-8')
+        # The container-version gate has to run on the BLOB: a non-v46 .ycd cannot even be
+        # inflated, so Res.from_bytes would raise before the converter could decline it the way
+        # the reference exporter does (declaration only). Counted, never silent.
+        if ycd2xml.declined_version(blob):
+            ycd2xml.RESIDUALS['container_version_declined'] = 1
+            xml = ycd2xml.DECLINED_XML.encode('utf-8')
+        else:
+            xml = ycd2xml.ycd_to_xml(ydr2xml.Res.from_bytes(blob)).encode('utf-8')
         if ycd2xml.RESIDUALS and stats is not None:
             for k, n in ycd2xml.RESIDUALS.items():
                 key = 'ycd %s (marker emitted, nothing invented)' % k
