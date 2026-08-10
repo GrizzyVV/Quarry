@@ -55,31 +55,54 @@ from meta2xml import fmt_num, esc             # noqa: E402  (float-text law, XML
 # the original 24), and the pool accounting balanced EXACTLY on 39/39 streams under the
 # operand rules below (168,346 float spellings reproduced in the derivation harness).
 # ⚠ The one-file derivation base was the trap: ig_lestercrest simply never uses these 9.
+# 2026-08-10 EXTENSION (+19): the at-scale run refused 26 files (cutscene-character
+# expressions outside the stratified draw); 26 fresh oracles minted and the same
+# alignment run over 689 streams / 262,209 instructions - every vote unanimous, pool
+# accounting exact 689/689, validated 26/26 fresh + 17/17 regression whole-file
+# byte-identical. Two new operand kinds (var, la) below. Low-witness names flagged:
+# ToEuler/PushTime/VectorNotEqual are single-witness, Unk23 is the ORACLE's own spelling.
 OPS = {
     0x00: ("End", None),          0x01: ("Pop", None),
     0x03: ("Push0", None),        0x04: ("Push1", None),
-    0x05: ("PushFloat", "f"),     0x07: ("TrackGetComp", "t"),
+    0x05: ("PushFloat", "f"),     0x06: ("TrackGet", "t"),
+    0x07: ("TrackGetComp", "t"),
     0x09: ("TrackGetOffsetComp", "t"),
+    0x0a: ("TrackGetBoneTransform", "t"),
     0x0b: ("PushVector", "v"),    0x0e: ("DefineSpring", "s"),
-    0x10: ("VectorNeg", None),
+    0x10: ("VectorNeg", None),    0x11: ("VectorRcp", None),
+    0x1b: ("VectorNeg3", None),
     0x1d: ("VectorDeg2Rad", None),0x1e: ("VectorRad2Deg", None),
-    0x21: ("FromEuler", None),    0x26: ("TrackSet", "t"),
+    0x1f: ("VectorSaturate", None),
+    0x20: ("TrackValid", "t"),
+    0x21: ("FromEuler", None),    0x22: ("ToEuler", None),
+    0x23: ("Unk23", "t"),
+    0x26: ("TrackSet", "t"),
     0x27: ("TrackSetComp", "t"),  0x28: ("TrackSetOffset", "t"),
+    0x2a: ("TrackSetBoneTransform", "t"),
     0x2b: ("Jump", "j"),          0x2c: ("JumpIfTrue", "j"),
+    0x2d: ("JumpIfFalse", "j"),
     0x2e: ("VectorAdd", None),    0x2f: ("VectorSub", None),
     0x30: ("VectorMul", None),    0x31: ("VectorMin", None),
     0x32: ("VectorMax", None),    0x33: ("QuatMul", None),
     0x35: ("VectorGreaterThan", None), 0x36: ("VectorLessThan", None),
     0x37: ("VectorGreaterEqual", None), 0x38: ("VectorLessEqual", None),
-    0x39: ("VectorClamp", None),  0x3b: ("VectorMad", None),
-    0x3d: ("ToVector", None),
+    0x39: ("VectorClamp", None),  0x3a: ("VectorLerp", None),
+    0x3b: ("VectorMad", None),
+    0x3c: ("QuatSlerp", None),    0x3d: ("ToVector", None),
+    0x3e: ("LookAt", "la"),       0x3f: ("PushTime", None),
+    0x40: ("VectorTransform", None),
+    0x42: ("GetVariable", "var"), 0x43: ("SetVariable", "var"),
     0x44: ("BlendVector", "b"),   0x45: ("BlendQuaternion", "b"),
+    0x46: ("PushDeltaTime", None),
+    0x49: ("VectorNotEqual", None),
 }
 # main-pool bytes; "v" consumes 16 from the vector pool, "s" (spring) a fixed 176 (11x16B
 # slots), "b" (blend) a SELF-SIZED vector-pool payload (u32 total-bytes header at the
-# cursor). vecPoolBytes = 16*#PushVector + 176*#DefineSpring + sum(blend payloads) -
-# the old "16 x #PushVector" doc line was the single-file view.
-OPSIZE = {"f": 4, "t": 8, "j": 12}
+# cursor), "la" (LookAt) 32 vector-pool bytes, "var" 8 main-pool bytes (u32 nameHash +
+# u32 slot-index-like dword the reference does NOT emit - a future WRITER needs its
+# generation law derived; the decoder skips it, hash-match proven 3,360/3,360 @+0).
+# vecPoolBytes = 16*#PushVector + 176*#DefineSpring + sum(blend payloads) + 32*#LookAt.
+OPSIZE = {"f": 4, "t": 8, "j": 12, "var": 8}
 
 
 def _u16(S, o): return struct.unpack_from("<H", S, o)[0]
@@ -156,6 +179,28 @@ def _blend_operand(S, vo, out, ind):
     return payload
 
 
+# LookAt enums: witnessed codes ONLY (2026-08-10, 119 instructions; coverage LookAtAxis
+# {0,1,2}, UpAxis {0,2}, Origin {0,2}) - Negative*/>=3 spellings are UNWITNESSED and
+# refuse loudly rather than guess.
+_AXIS = {0: "PositiveX", 1: "PositiveY", 2: "PositiveZ"}
+
+
+def _lookat_operand(S, vo, out, ind):
+    """LookAt: 32 vector-pool bytes = 2 16-byte slots (derived 2026-08-10, 119 witnesses,
+    unanimous). Slot0 = Offset float4; slot1 = u32 LookAtAxis, u32 UpAxis, u32 Origin,
+    u32 zero (refused if nonzero - unwitnessed)."""
+    out.append('%s<Offset x="%s" y="%s" z="%s" w="%s" />'
+               % (ind, fmt_num(_f32(S, vo)), fmt_num(_f32(S, vo + 4)),
+                  fmt_num(_f32(S, vo + 8)), fmt_num(_f32(S, vo + 12))))
+    for tag, off in (("LookAtAxis", 16), ("UpAxis", 20), ("Origin", 24)):
+        v = _u32(S, vo + off)
+        if v not in _AXIS:
+            raise ValueError("LookAt %s enum %d unwitnessed @0x%x" % (tag, v, vo + off))
+        out.append('%s<%s>%s</%s>' % (ind, tag, _AXIS[v], tag))
+    if _u32(S, vo + 28) != 0:
+        raise ValueError("LookAt slot1 dword3 nonzero (unwitnessed) @0x%x" % (vo + 28))
+
+
 def _track_operand(S, o, out, ind):
     """Emit the shared 6-field track record used by the Track* instructions."""
     ti = _u16(S, o); bone = _u16(S, o + 2)
@@ -184,6 +229,20 @@ def yed_to_xml(path):
         out.append("  <Name>%s</Name>" % esc(name))
         out.append('  <Signature value="%d" />' % sig)
         out.append('  <Unk7C value="%d" />' % unk7c)
+
+        # NULL-ARRAY items omit <Tracks>/<Streams> entirely (derived 2026-08-10: clean
+        # split over all 666 fresh items - all four array fields zero <=> both elements
+        # absent, 53/53; all four nonzero <=> both present, 613/613; no mixed shape
+        # witnessed -> refuse). Zero null-array items exist in the 24-oracle regression
+        # base, so this branch is regression-neutral by construction.
+        sp_raw, sc_n = _u32(S, b + 0x20) & 0x0FFFFFFF, _u16(S, b + 0x28)
+        tp_raw, tc_n = _u32(S, b + 0x30) & 0x0FFFFFFF, _u16(S, b + 0x38)
+        if sp_raw == 0 and sc_n == 0 and tp_raw == 0 and tc_n == 0:
+            out.append(" </Item>")
+            continue
+        if (sp_raw == 0) != (sc_n == 0) or (tp_raw == 0) != (tc_n == 0) or \
+                (sp_raw == 0) != (tp_raw == 0):
+            raise ValueError("mixed null-array item shape (unwitnessed) item %d" % i)
 
         # ---- Tracks (stride-4 records) ----
         tp, tc = _arr(S, b + 0x30)
@@ -251,6 +310,13 @@ def yed_to_xml(path):
                     _spring_operand(S, vo, out, ind); vo += 176
                 elif kind == "b":
                     vo += _blend_operand(S, vo, out, ind)
+                elif kind == "var":
+                    # u32 nameHash emitted (hash-match 3,360/3,360 @+0); the second dword
+                    # is NOT emitted by the reference (slot-index-like, INFERRED)
+                    out.append('%s<Variable>hash_%08X</Variable>' % (ind, _u32(S, mo)))
+                    mo += 8
+                elif kind == "la":
+                    _lookat_operand(S, vo, out, ind); vo += 32
                 out.append("     </Item>")
             # self-check: operands must exactly fill both pools
             if mo != main_off + mbytes:
