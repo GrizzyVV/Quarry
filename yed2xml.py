@@ -139,8 +139,14 @@ def yed_to_xml(path):
             for j in range(cnt):
                 code = S[op_off + j]
                 if code not in OPS:
+                    # the file identifier must be Res-safe: os.path.basename(path) raised
+                    # TypeError when the dispatch passed a Res, BURYING the real refusal
+                    # behind an opaque error (measured 2026-08-09 - all 23 stage-D yed
+                    # rows reported the TypeError instead of the opcode)
+                    fid = (path if isinstance(path, str)
+                           else getattr(path, 'name', None) or type(path).__name__)
                     raise ValueError("unknown expression opcode 0x%02x (%s instr %d)"
-                                     % (code, os.path.basename(path), j))
+                                     % (code, os.path.basename(str(fid)), j))
                 tname, kind = OPS[code]
                 if kind is None:
                     out.append('     <Item type="%s" />' % tname)

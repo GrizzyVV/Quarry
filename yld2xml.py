@@ -12,7 +12,12 @@ characterCloth item struct:
   +0x28 tagged ptr -> Bounds     (phBoundComposite root)
   +0x30 Unknown30 atArray : u32[] bone tags (count @+0x38)
   +0x50 Transform : 16 float32, row-major 4x4 (last row 0 0 0 0)
-  (item carries NO Name field; XML Name == Controller.Name, the sole name string in the file)
+  (item carries NO Name field; the ITEM <Name> resolves the pgDictionary Hashes entry
+  (sys+0x20) - falsified 2026-08-09 the old "XML Name == Controller.Name" claim:
+  a_f_y_beach_01.yld stores hash joaat('accs_000_u') != joaat(controller string
+  'a_f_y_beach_01') and the oracle spells accs_000_u for the Item, the controller string
+  for <Controller><Name>. The claim held only while every witnessed dictionary hash
+  equalled joaat(controller name).)
 
 clothController struct:
   +0x10 ptr -> BridgeSimGfx      +0x20 ptr -> VerletCloth1
@@ -29,6 +34,10 @@ BridgeSimGfx: +0x10 u32 VertexCount +0x14 u32 Unknown14 +0x18 u32 Unknown18
 VerletCloth1: +0x10 BBMin Vec3 +0x20 BBMax Vec3 +0x3C u32 Unknown3C +0x4C u32 Unknown4C
   +0x50 f32 Unknown50 +0x70 Vertices2 atArray Vec4 +0x80 Vertices atArray Vec4
   +0xA8 f32 UnknownA8 +0xAC f32 UnknownAC +0xE8 u32 UnknownE8 +0xFA u16 UnknownFA
+  +0x100 Constraints2 atArray (stride 16, SAME record schema - measured 2026-08-09 on
+         a_f_y_beach_01 (88 items) + uppr_000_u (248 items); null/count-0 in every
+         passing witness and the element is then OMITTED - null-vs-empty-but-allocated
+         unwitnessed, they co-occur in the corpus)
   +0x110 Constraints atArray (stride 16) +0x148 u16 Unknown148 +0x158 f32 Unknown158
   (Unknown140 and Behaviour render as constant-empty elements)
 
@@ -42,7 +51,7 @@ import sys
 sys.path.insert(0, r"B:\ClaudeCode_Projects\_UEFiveMTool\quarry")
 from ydr2xml import (Res, _bound_lines, _bound_deref, _bound_header_lines,     # noqa: E402
                      _bound_flags_text, BOUND_COMPOSITE_FLAG_BITS)
-from meta2xml import fmt_num, esc, num_list, scalar_list  # noqa: E402
+from meta2xml import fmt_num, esc, num_list, scalar_list, joaat  # noqa: E402
 
 
 def _yld_bounds(r, off, ind, name):
@@ -109,10 +118,11 @@ def _vec4_block(S, ptr, n, tag, ind):
     return ["%s<%s>" % (ind, tag)] + ["%s %s" % (ind, r) for r in rows] + ["%s</%s>" % (ind, tag)]
 
 
-def yld_to_xml(path):
+def yld_to_xml(path, names=None):
     r = path if hasattr(path, 'sys') else Res(path)
     r.require_version(8, "yld")
     S = r.sys
+    hp, hc = _arr(S, 0x20)                             # pgDictionary Hashes (parallel)
     dp, dc = _arr(S, 0x30)
 
     out = ['<?xml version="1.0" encoding="UTF-8"?>', "<ClothDictionary>"]
@@ -120,9 +130,18 @@ def yld_to_xml(path):
         b = _u64(S, dp + it * 8) & 0x0FFFFFFF          # item struct
         ctrl = _u32(S, b + 0x20) & 0x0FFFFFFF
         name = S[ctrl + 0x58: S.find(b"\x00", ctrl + 0x58)].decode("latin-1")
+        # ITEM name = the dictionary entry hash resolved (see header - the controller
+        # string is a DIFFERENT field and only coincidentally equal in most witnesses)
+        ihash = _u32(S, hp + it * 4) if it < hc else 0
+        if ihash == joaat(name.lower()):
+            iname = name
+        elif names and ihash in names:
+            iname = names[ihash]
+        else:
+            iname = 'hash_%08X' % ihash
 
         out.append(" <Item>")
-        out.append("  <Name>%s</Name>" % esc(name))
+        out.append("  <Name>%s</Name>" % esc(iname))
         # Transform: 4x4 row-major, 4 per line at 3-space content
         tf = _floats(S, b + 0x50, 16)
         out.append("  <Transform>")
@@ -176,18 +195,24 @@ def yld_to_xml(path):
         out += _vec4_block(S, vp, vcnt, "Vertices", "    ")
         v2p, v2cnt = _arr(S, vc + 0x70)         # XML Vertices2 (memory +0x70)
         out += _vec4_block(S, v2p, v2cnt, "Vertices2", "    ")
-        cp, ccnt = _arr(S, vc + 0x110)
-        out.append("    <Constraints>")
-        for k in range(ccnt):
-            o = cp + k * 16
-            out.append("     <Item>")
-            out.append('      <Unknown0 value="%d" />' % _u16(S, o))
-            out.append('      <Unknown2 value="%d" />' % _u16(S, o + 2))
-            out.append('      <Unknown4 value="%s" />' % fmt_num(_f32(S, o + 4)))
-            out.append('      <Unknown8 value="%s" />' % fmt_num(_f32(S, o + 8)))
-            out.append('      <UnknownC value="%s" />' % fmt_num(_f32(S, o + 12)))
-            out.append("     </Item>")
-        out.append("    </Constraints>")
+        def _constraint_block(tag, base_off):
+            p, cnt = _arr(S, vc + base_off)
+            if base_off == 0x100 and (p == 0 or cnt == 0):
+                return []           # Constraints2 OMITTED when null/empty (oracle-witnessed)
+            blk = ["    <%s>" % tag]
+            for k in range(cnt):
+                o = p + k * 16
+                blk.append("     <Item>")
+                blk.append('      <Unknown0 value="%d" />' % _u16(S, o))
+                blk.append('      <Unknown2 value="%d" />' % _u16(S, o + 2))
+                blk.append('      <Unknown4 value="%s" />' % fmt_num(_f32(S, o + 4)))
+                blk.append('      <Unknown8 value="%s" />' % fmt_num(_f32(S, o + 8)))
+                blk.append('      <UnknownC value="%s" />' % fmt_num(_f32(S, o + 12)))
+                blk.append("     </Item>")
+            blk.append("    </%s>" % tag)
+            return blk
+        out += _constraint_block("Constraints", 0x110)
+        out += _constraint_block("Constraints2", 0x100)   # second array @+0x100, after Constraints
         out.append("   </VerletCloth1>")
 
         # controller tail

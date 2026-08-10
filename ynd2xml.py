@@ -62,7 +62,11 @@ def convert(path):
         out.append('  <Item>')
         out.append('   <AreaID value="%d" />' % area)
         out.append('   <NodeID value="%d" />' % nid)
-        out.append('   <StreetName>hash_%08X</StreetName>' % street)
+        # zero hash = NO street name: the reference writes a self-closing empty element,
+        # not hash_00000000 (measured 2026-08-09, 11/11 stage-D witnesses byte-identical
+        # once spelled this way; nonzero spelling re-witnessed by nodes555 both slots)
+        out.append('   <StreetName />' if street == 0
+                   else '   <StreetName>hash_%08X</StreetName>' % street)
         out.append('   <Position x="%s" y="%s" z="%s" />' % (_pos_i(nbuf, o + 0x1C, XY_SCALE),
                                                              _pos_i(nbuf, o + 0x1E, XY_SCALE),
                                                              _pos_i(nbuf, o + 0x22, Z_SCALE)))

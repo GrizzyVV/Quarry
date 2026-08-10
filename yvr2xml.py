@@ -13,17 +13,27 @@ The record array is a flat fixed-stride table. STRIDE = 32 bytes:
     +0x04 i16   Velocity.x      +0x06 i16 Velocity.y   +0x08 i16 Velocity.z   (* VEL_SCALE)
     +0x0A i8    Right.x         +0x0B i8  Right.y       +0x0C i8  Right.z      (/ 127)
     +0x0D i8    Forward.x       +0x0E i8  Forward.y     +0x0F i8  Forward.z    (/ 127)
-    +0x10 i8    Steering        (scale UNPINNED - all 0 in evidence)
+    +0x10 i8    Steering        (* 0.05 - pinned 2026-08-09, pilotschool140)
     +0x11 u8    GasPedal        (/ 100)
     +0x12 u8    BrakePedal      (/ 100 - all 0 in evidence)
     +0x13 u8    Handbrake       (0 -> "False", nonzero -> "True")
     +0x14 f32   Position.x      +0x18 f32 Position.y    +0x1C f32 Position.z
 
 SCALES (empirically pinned by value-intersection against the oracle):
-  Velocity: int16 * 0.0036622217367  -- a DOUBLE constant; no float32 reproduces the oracle.
-            Valid interval [0.00366222173456, 0.00366222173885] (width 4.3e-12) over 228 pairs.
+  Velocity: int16 * (1/273.05828857421875) -- a DOUBLE constant; no float32 multiplier
+            reproduces the oracle. Interval re-pinned 2026-08-09 over 11,511 samples /
+            7,602 distinct raws (8 pilotschool + 5 base witnesses): admissible multiply
+            interval [0.0036622217373970226, 0.0036622217374240669]; the previous constant
+            0.0036622217367 (from a 228-pair interval) sat BELOW it and rounded 20 raws one
+            float32 step low. 1/273.05828857421875 = 0.0036622217374229038 is inside and
+            reproduces all 11,511 spellings exactly (273.05828857421875 is float32-exact).
   Forward/Right: int8 * (1/127.0)     -- 0/456 mismatches.
+  Steering: int8 * 0.05               -- pinned 2026-08-09 on pilotschool140 (the first
+            witness with nonzero steering: raws {-1,1,2,3} -> oracle -0.05/0.05/0.1/0.15;
+            the old 1/127 guess produced 0.007874016). Larger raws unwitnessed.
   GasPedal: u8 / 100.0                -- e.g. 100->1, 95->0.95, 64->0.64.
+EMPTY LIST: count==0 emits the self-closing root '<VehicleRecordList />' (measured: all six
+  58-byte stub yvr oracles, both slots).
 """
 import os
 import struct
@@ -34,8 +44,9 @@ sys.path.insert(0, QUARRY)
 from ydr2xml import Res          # noqa: E402  (RSC7 container reader - REUSED)
 from meta2xml import fmt_num     # noqa: E402  (float spelling law - REUSED)
 
-VEL_SCALE = 0.0036622217367      # double; midpoint of the pinned interval
+VEL_SCALE = 1.0 / 273.05828857421875   # double; see header - inside the 11,511-sample interval
 DIR_SCALE = 1.0 / 127.0
+STEER_SCALE = 0.05
 GAS_SCALE = 1.0 / 100.0
 
 
@@ -46,6 +57,9 @@ def yvr_to_xml(res):
     b = res.sys
     arr = res.u32(0x10) & 0x0FFFFFFF
     count = res.u16(0x18)
+    if count == 0:
+        return ('<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<VehicleRecordList />\n')
     out = ['<?xml version="1.0" encoding="UTF-8"?>', '<VehicleRecordList>']
     for i in range(count):
         o = arr + i * 32
@@ -65,7 +79,7 @@ def yvr_to_xml(res):
                    % (fmt_num(fx * DIR_SCALE), fmt_num(fy * DIR_SCALE), fmt_num(fz * DIR_SCALE)))
         out.append('  <Right x="%s" y="%s" z="%s" />'
                    % (fmt_num(rx * DIR_SCALE), fmt_num(ry * DIR_SCALE), fmt_num(rz * DIR_SCALE)))
-        out.append('  <Steering value="%s" />' % fmt_num(steer * DIR_SCALE))
+        out.append('  <Steering value="%s" />' % fmt_num(steer * STEER_SCALE))
         out.append('  <GasPedal value="%s" />' % fmt_num(gas * GAS_SCALE))
         out.append('  <BrakePedal value="%s" />' % fmt_num(brake * GAS_SCALE))
         out.append('  <Handbrake value="%s" />' % ('True' if hbrake else 'False'))

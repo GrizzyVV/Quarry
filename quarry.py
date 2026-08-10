@@ -664,7 +664,7 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
     if t == 'yld':
         import ydr2xml, yld2xml
         return stem + '.yld.xml', yld2xml.yld_to_xml(
-            ydr2xml.Res.from_bytes(blob)).encode('utf-8'), ()
+            ydr2xml.Res.from_bytes(blob), names=names).encode('utf-8'), ()
     if t == 'yfd':
         import ydr2xml, yfd2xml
         return stem + '.yfd.xml', yfd2xml.yfd_to_xml(
@@ -3437,7 +3437,9 @@ def cmd_export(a):
             return buf.raw[:n]
 
     names = None
-    NAMES_KINDS = META_KINDS + ('ydd',)   # ydd entry names resolve from the same table
+    # ydd entry names resolve from the same table; yld item names resolve the
+    # pgDictionary hash the same way (a_f_y_beach_01 witness, 2026-08-09)
+    NAMES_KINDS = META_KINDS + ('ydd', 'yld')
     if any(type_of(os.path.basename(e)) in NAMES_KINDS for e in entries):
         if not a.view:
             print('STOP: ytyp/ymap/ymt/ydd entries need --view <folder holding '

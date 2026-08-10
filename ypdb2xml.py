@@ -80,6 +80,16 @@ CLIP_STRINGS = [
     'move_m@generic',
     'nm@normal@',
     'v_25_levnumbers_loda',
+    # animal clipsets (oracle-witnessed 2026-08-09, each joaat-verified vs the stored
+    # u32; seagull deliberately ABSENT - its stored hash 0x34032066 != joaat('seagull')
+    # and its oracle keeps hash_34032066)
+    'pigeon',
+    'crow',
+    'cormorant',
+    'chickenhawk',
+    'stingray',
+    'rat',
+    'humpback',
 ]
 HASH2STR = {joaat(s): s for s in CLIP_STRINGS}
 
@@ -112,26 +122,27 @@ def decode(data):
     L.append('<PoseMatcher>')
     L.append(' <Signature value="%d" />' % signature)
 
-    # --- samples occupy off 17 .. 17 + sample_count*272 -----------------------
-    SAMPLE_BASE = 17
-    STRIDE = 272
+    # --- samples: CURSOR WALK, sizes from each sample's OWN stored counts ------
+    # ⛔ The fixed 272-byte stride + assert==14 was the male.ypdb shape ONLY (the
+    # original two-oracle base). Animal posematchers store 2-6 points/weights per
+    # sample in the same field ORDER with count-driven sizes (measured 2026-08-09:
+    # cursor walk consumes all 18 corpus binaries exactly to the footer, LEFTOVER=0).
+    pos = 17
     samples = []
     for s in range(sample_count):
-        b = SAMPLE_BASE + s * STRIDE
-        clipset = u32(b + 0)
-        clip = u32(b + 4)
-        offset = f32(b + 8)
-        pcount = u32(b + 12)
-        assert pcount == 14, 'unexpected point count %d @sample %d' % (pcount, s)
-        pts = [f32(b + 16 + i * 4) for i in range(pcount * 3)]
-        wcount = u32(b + 184)
-        assert wcount == 14, 'unexpected weight count %d @sample %d' % (wcount, s)
-        wts = [f32(b + 188 + i * 4) for i in range(wcount)]
-        bmin = [f32(b + 244 + i * 4) for i in range(3)]
-        bmax = [f32(b + 256 + i * 4) for i in range(3)]
+        clipset = u32(pos); clip = u32(pos + 4); offset = f32(pos + 8)
+        pcount = u32(pos + 12)
+        pos += 16
+        pts = [f32(pos + i * 4) for i in range(pcount * 3)]
+        pos += pcount * 12
+        wcount = u32(pos)
+        pos += 4
+        wts = [f32(pos + i * 4) for i in range(wcount)]
+        pos += wcount * 4
+        bmin = [f32(pos + i * 4) for i in range(3)]
+        bmax = [f32(pos + 12 + i * 4) for i in range(3)]
+        pos += 28                              # bounds (24) + trailing f32 (4, not emitted)
         samples.append((clipset, clip, offset, pts, wts, bmin, bmax))
-
-    pos = SAMPLE_BASE + sample_count * STRIDE
 
     # --- BoneTags (u16) -------------------------------------------------------
     bone_count = u32(pos); pos += 4
@@ -143,7 +154,14 @@ def decode(data):
     tweights = [f32(pos + i * 4) for i in range(tw_count)]
     pos += tw_count * 4
 
-    # (footer: u32 0x3D08882F, u32 1, u32 signature -- constant, not emitted)
+    # footer: u32 0x3D08882F, u32 1, u32 signature (trailer) -- constant, not emitted.
+    # INTEGRITY GATE (the cursor walk must land exactly here): trailer==signature and
+    # the file ends at the footer - anything else means the walk mis-consumed.
+    trailer = u32(pos + 8)
+    if trailer != signature or pos + 12 != len(data):
+        raise ValueError('ypdb cursor walk mis-consumed: pos %d + footer 12 != len %d, '
+                         'trailer %08X vs signature %08X'
+                         % (pos, len(data), trailer, signature))
 
     # --- emit BoneTags --------------------------------------------------------
     L.append(' <BoneTags>')
@@ -168,9 +186,15 @@ def decode(data):
         for i in range(0, len(pts), 3):
             L.append('    %s, %s, %s' % (fmt_num(pts[i]), fmt_num(pts[i + 1]), fmt_num(pts[i + 2])))
         L.append('   </Points>')
-        L.append('   <Weights>')
-        L.extend(_wrap10(wts, '    ', fmt_num))
-        L.append('   </Weights>')
+        # short weight lists print INLINE on the tag line (oracle-witnessed at <=6
+        # values; wrapped witnessed at 14; the <=10 boundary = one wrap-line worth,
+        # interpolated - counts 7-13 have no oracle witness yet)
+        if len(wts) <= 10:
+            L.append('   <Weights>%s</Weights>' % ' '.join(fmt_num(v) for v in wts))
+        else:
+            L.append('   <Weights>')
+            L.extend(_wrap10(wts, '    ', fmt_num))
+            L.append('   </Weights>')
         L.append('  </Item>')
     L.append(' </Samples>')
     L.append('</PoseMatcher>')
