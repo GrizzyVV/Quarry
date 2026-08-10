@@ -100,17 +100,23 @@ IndirectQuantizeFloat descriptor (variable, 0x14 + nPalWords*4): u32 slotBits, u
     min((nPalWords*32)//paletteBits, (1<<slotBits)-1); value = f32(Offset + f32(raw*Quantum));
     <Frames> = slotBits-wide slot (frame-major, DWORD-aligned).  Both the compact (nPalWords=1)
     and inline-palette (nPalWords>1) forms close.
-RAWFLOAT (derived 2026-08-10, 6 sequences / 5 witnesses) - the pool has NO descriptor at all.
-    Its values live frame-major INSIDE the packed block, after that frame's bit-packed channels:
-        value(channel c, frame f) = f32 at packed + (f*(framebits//8 + nRawFloat*4)) + c*4
-    so the packed-block frame stride grows by nRawFloat*4 bytes - which is also the third
-    locator constraint. `was:` the pool was assumed zero-sized and its map list was READ AND
-    DISCARDED: 20,734 channels across 98 files vanished from the XML with NOTHING counted, and
-    every later descriptor base was off, usually surfacing as a mis-named
-    "indirect_descriptors_unpinned" refusal (a marker naming the wrong cause is worse than none).
-    ❓ UNWITNESSED: every RawFloat witness has no bit-packed pool alongside it, so the byte
-    interleave when nRawFloat and (nQuantizeFloat|nIndirect|nInline) are BOTH nonzero is
-    underived - that combination refuses (rawfloat_mixed_block) rather than guessing.
+RAWFLOAT (derived 2026-08-10) - the pool has NO descriptor at all, and it sits at the FRONT of
+    every packed frame:
+        value(channel c, frame f) = f32 at packed + f*(framebits//8 + nRawFloat*4) + c*4
+    and the BIT-PACKED channels of that frame therefore start at bit nRawFloat*32, not bit 0.
+    The frame stride grows by nRawFloat*4 bytes, which is also the third locator constraint.
+    `was (MEASURED WRONG, and it emitted invented numbers):` "laid after that frame's bit-packed
+    channels". Under that model the QuantizeFloat channels of a mixed sequence read from a cursor
+    short by nRawFloat*32 bits and printed wrong values, while a `rawfloat_mixed_block` refusal
+    suppressed only the RawFloat channels - a refusal scoped to the wrong thing. Adjudicated
+    against lab oracles over the COMPLETE game-wide mixed population (3 sequences:
+    bunk_int_p4_t04, bunk_int_p4a1_t04, bunk_int_p6_t06): raw-FIRST makes all three whole-file
+    byte-identical; raw-last and raw-after-roundup32 both differ.
+    `was:` earlier still, the pool was assumed zero-sized and its map list was READ AND DISCARDED
+    - 20,734 channels across 98 files vanished with NOTHING counted, and every later descriptor
+    base was off, usually surfacing as a mis-named "indirect_descriptors_unpinned" refusal.
+    ❓ UNWITNESSED: RawFloat alongside INLINE QuantizeFloat (nr > 0 with n6 > 0) has ZERO
+    occurrences game-wide, so that combination refuses (`rawfloat_with_inline_qz`).
 INLINE QuantizeFloat descriptor (variable) [emits <Type>QuantizeFloat</Type>] - SOLVED:
     u32 sizeWords(=total descriptor size in u32, incl this 16B header), u32 B,
     f32 Quantum, f32 Offset, then payload = (sizeWords-4) u32 words.
@@ -370,7 +376,20 @@ class Ycd:
         for i in range(ac):
             a = P(u32(S, ap + i * 8))
             t = u32(S, a + 0x08); nh = u32(S, a + 0x18)
-            tn = ATTR_TYPE.get(t, "type%d" % t)
+            # ⛔ NO INVENTED TYPE NAMES. `was:` ATTR_TYPE.get(t, "type%d" % t), which spelled an
+            # unwitnessed code as e.g. "type4" AND - because the if/elif chain below has no else -
+            # dropped the <Value> element entirely, with nothing counted. Witnessed firing on
+            # Type 4 (space_cannon): our file was 2 lines short of the oracle and RESIDUALS came
+            # back empty. The 57-oracle board can never catch it (its type census is {1,2,3,6,8,12}).
+            if t not in ATTR_TYPE:
+                RESIDUALS["attr_type_unwitnessed"] = RESIDUALS.get("attr_type_unwitnessed", 0) + 1
+                out.append("      <Item>")
+                out.append("       <NameHash>%s</NameHash>" % self.hstr(nh))
+                out.append('       <!-- RESIDUAL: crPropertyAttribute Type %d unwitnessed - no '
+                           'oracle shows its name or value spelling -->' % t)
+                out.append("      </Item>")
+                continue
+            tn = ATTR_TYPE[t]
             out.append("      <Item>")
             out.append("       <NameHash>%s</NameHash>" % self.hstr(nh))
             out.append('       <Type value="%s" />' % tn)
@@ -494,7 +513,10 @@ class Ycd:
         qz_vals = [[] for _ in qz_descs]
         ind_raw = [[] for _ in ind_descs]
         for fr in range(framecount):
-            bit = fr * stride_bits
+            # RawFloat sits at the FRONT of each frame, so the bit-packed channels start after
+            # it. Measured on the complete game-wide mixed population (3 sequences): raw-first
+            # is whole-file byte-identical, raw-last and raw-after-roundup32 both differ.
+            bit = fr * stride_bits + nr * 32
             for k, d in enumerate(qz_descs):
                 nb = u32(S, d)
                 q = f32(S, d + 4)
@@ -510,11 +532,17 @@ class Ycd:
         # Every RawFloat witness (6 sequences / 5 files) carries NO bit-packed pool alongside,
         # so the interleave between the f32 array and a bitstream within one frame is
         # UNWITNESSED. Refuse that combination rather than guess a byte order.
-        raw_ok = (nqz == 0 and ni == 0 and n6 == 0)
+        # `was:` raw_ok = (nqz == 0 and ni == 0 and n6 == 0) - a MIS-SCOPED refusal. It hid the
+        # RawFloat channels of a mixed sequence while leaving the QuantizeFloat channels sharing
+        # those frames to read from a cursor that was wrong by nr*32 bits, so the file still
+        # emitted invented numbers and the counter pointed at the wrong thing. With the geometry
+        # right there is nothing to suppress. The one combination nobody has witnessed is
+        # RawFloat alongside INLINE QuantizeFloat (n6): zero occurrences game-wide, so it refuses.
+        raw_ok = (n6 == 0)
         raw_vals = []
         if nr and raw_ok:
-            raw_vals = [[F(f32(S, packed + (fr * nr + k) * 4)) for fr in range(framecount)]
-                        for k in range(nr)]
+            raw_vals = [[F(f32(S, packed + fr * (stride_bits // 8) + k * 4))
+                         for fr in range(framecount)] for k in range(nr)]
 
         m = co + 18                                   # nine counts, then the nine map lists
 
@@ -572,11 +600,11 @@ class Ycd:
                     out.append('        <Item>')
                     out.append('         <Type value="RawFloat" />')
                     if not raw_ok:
-                        RESIDUALS["rawfloat_mixed_block"] = \
-                            RESIDUALS.get("rawfloat_mixed_block", 0) + 1
-                        out.append('         <!-- RESIDUAL: RawFloat shares a bit-packed block '
-                                   '(nqz=%d ni=%d n6=%d): interleave underived -->'
-                                   % (nqz, ni, n6))
+                        RESIDUALS["rawfloat_with_inline_qz"] = \
+                            RESIDUALS.get("rawfloat_with_inline_qz", 0) + 1
+                        out.append('         <!-- RESIDUAL: RawFloat alongside inline '
+                                   'QuantizeFloat (nr=%d n6=%d): zero witnesses game-wide, '
+                                   'interleave underived -->' % (nr, n6))
                     else:
                         self._emit_values(out, raw_vals[pl], "         ")
                     out.append('        </Item>')
