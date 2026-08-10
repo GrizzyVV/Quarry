@@ -131,6 +131,12 @@ def _deflate_span(buf):
     return None                       # input exhausted with no end-of-stream marker: TRUNCATED
 
 
+# Stored-uncompressed resource acceptances (the destruction-family page-capacity class,
+# 2026-08-10) - incremented in Rpf.payload, folded into every run summary by
+# report_lane_counters. Disclosure law: an acceptance class must reach the printed output.
+RESOURCE_STORED_RAW = {'count': 0, 'examples': []}
+
+
 # ------------------------------------------------------------------ RPF7 container
 class Rpf:
     def __init__(self, path, keys=None, tables=None, data=None, name=None, aes_key=None):
@@ -342,6 +348,31 @@ class Rpf:
                                            | ((gfxf >> 28) & 0xF))
                                 return (struct.pack('<4sIII', b'RSC7', version, sysf, gfxf)
                                         + out)
+                    # ⭐ 2026-08-10: STORED-UNCOMPRESSED resources (the destruction-family
+                    # census class). des_setpiece.ybd measured: NO deflate stream exists on
+                    # any route, yet the STORED body EQUALS the reference tool's raw export
+                    # byte-for-byte (34,712 B against a 57,344 B page plan - the plan is
+                    # page CAPACITY, not data length, for this class). Accept the stored
+                    # bytes as the body - LAST resort, only when every deflate route failed
+                    # and the stored length fits the plan - re-wrapped in deflate so the
+                    # payload contract (RSC7 header + deflate body) holds unchanged for
+                    # every consumer (lossless; the emitted output is the inflated bytes
+                    # either way). COUNTED via RESOURCE_STORED_RAW -> the run summary.
+                    # Honesty: a truncated stored-raw body is indistinguishable here - the
+                    # TOC size field is the length authority, exactly as for binary
+                    # entries; downstream validation (converters parse it, raw lanes
+                    # byte-diff the oracle) is the check that can fail.
+                    if 0 < len(raw) <= want:
+                        RESOURCE_STORED_RAW['count'] += 1
+                        if len(RESOURCE_STORED_RAW['examples']) < 10:
+                            RESOURCE_STORED_RAW['examples'].append(e['name'])
+                        c = zlib.compressobj(9, zlib.DEFLATED, -15)
+                        body = c.compress(bytes(raw)) + c.flush()
+                        e['_how'] = 'stored-raw'
+                        sysf, gfxf = e['usize'], e['gfx']
+                        version = ((((sysf >> 28) & 0xF) << 4) | ((gfxf >> 28) & 0xF))
+                        return (struct.pack('<4sIII', b'RSC7', version, sysf, gfxf)
+                                + body)
                     raise ValueError(
                         f'resource body does not inflate to its RSC7 page plan ({want} B) '
                         'either plain, NG-decrypted, or via Oodle'
@@ -750,16 +781,18 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
     if t == 'ybd':
         # A .ybd is a pgDictionary of phBound - and the reference exporter has NO XML export for it,
         # so its "export" is a RAW dump of the DECOMPRESSED resource, not the stored file.
-        # MEASURED 2026-08-06 (des_heli_biotech): oracle 40,960 B == Res(blob).sys exactly,
-        # while the stored RSC7 is 24,285 B. So parity = emit the inflated segment under
-        # the ORIGINAL name (no .xml). gfx is empty in the witnessed case; concatenating
-        # sys+gfx reduces to it, and a gfx-carrying ybd is UNWITNESSED (flagged, not guessed).
-        import ydr2xml
-        r = ydr2xml.Res.from_bytes(blob)
-        if r.gfx and stats is not None:
-            stats['ybd with a graphics segment - concatenation order UNWITNESSED'] = \
-                stats.get('ybd with a graphics segment - concatenation order UNWITNESSED', 0) + 1
-        return name, bytes(r.sys) + bytes(r.gfx or b''), ()
+        # MEASURED 2026-08-06 (des_heli_biotech): oracle 40,960 B == the whole inflated body
+        # (== Res.sys there, gfx 0) while the stored RSC7 is 24,285 B. RE-MEASURED 2026-08-10
+        # (des_setpiece, the stored-uncompressed page-capacity class): oracle 34,712 B == the
+        # whole body VERBATIM - shorter than the declared system segment, so a Res segment
+        # split REFUSES a file the reference tool exports. Parity contract, both witnesses:
+        # emit the ENTIRE inflated body in stream order under the ORIGINAL name (no .xml,
+        # no segment split - the raw export IS the stream). For deflate-backed resources
+        # the payload gate already proved inflate == the full sys+gfx plan, so this is
+        # byte-identical to the old sys+gfx concatenation there; for the stored-raw class
+        # it is the only shape that matches the oracle.
+        body = zlib.decompressobj(-15).decompress(bytes(blob[16:]))
+        return name, body, ()
     if t == 'ymf' or (blob[:4] == b'PSIN'):
         # PSO ('PSIN') container -> reference-identical XML via the generic pso2xml
         # (schema-driven from the file's own PSCH). MEASURED 2026-08-06 against the oracle
@@ -3574,6 +3607,12 @@ def report_lane_counters(stats):
     crashed on a list value. A downgrade that never reaches a human is a silent one no matter
     how carefully it was counted."""
     stats = stats if stats is not None else {}
+    if RESOURCE_STORED_RAW['count']:
+        stats['resource stored UNCOMPRESSED - accepted verbatim (page-capacity tail class), '
+              'e.g. ' + ', '.join(RESOURCE_STORED_RAW['examples'][:3])] = \
+            RESOURCE_STORED_RAW['count']
+        RESOURCE_STORED_RAW['count'] = 0
+        RESOURCE_STORED_RAW['examples'].clear()
     try:
         import ydr2xml
         ydr2xml.report_refusals(stats)   # emitter table (ydr+ydd+yft) -> stats[emitter_*] + print
