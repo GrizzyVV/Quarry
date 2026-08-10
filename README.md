@@ -106,9 +106,11 @@ cases. A gate that has never failed is unproven.
 full oracle board reads **1,263/1,263 across eight lanes at corpus scale**, targeted and
 at-scale output are proven identical **keyed by source entry (276/276 pairable positions)**,
 texture sidecars grade **288/290** (the 2 non-passes are a counted format-alias class and a
-store artifact, both named), and a fresh stratified draw over the long-tail lanes reads
-**169/172** with every residual's cause identified. Every non-pass is named, with its cause,
-below.
+store artifact, both named), and the small-lane board — expressions, pose matchers, path
+nodes, vehicle and waypoint records, cloth dictionaries, bounds dictionaries and particles —
+reads **175/175 against fresh stratified reference draws, zero exceptions**, with those lanes
+also extracted at corpus scale under format invariants. Every non-pass in history is named,
+with its cause, below.
 
 **4 — Oracles are a lower bound, so invariants run at corpus scale.** Passing the suite does not
 prove correctness for the other 384,000 files. The tool therefore also checks properties the
@@ -133,14 +135,14 @@ that was asked to do something and produced nothing is a failure, not an empty s
 
 | area | status |
 |---|---|
-| two `ypt` behaviour types | two rare particle behaviour type hashes are not yet derived; a file containing one refuses loudly rather than guessing. Every other behaviour type — including Light, Liquid, Model, Attractor and Noise — is derived and byte-verified |
-| remaining `ypt` constants | the behaviour scalars that vary in real data are now read from their pinned offsets; the remainder are single-valued across every witnessed file, emitted from constants and **counted on every emission** so a future counter-example surfaces itself |
-| `ybd` bounds dictionaries | the reference exporter produces no XML for this type at all, so there is no XML oracle to conform to; the lane is kept byte-exact raw |
-| animation channel variants | only provably-decodable channels emit values; the rest emit residual markers. Closing this lane against fresh oracles is the current campaign |
+| `ypt` behaviour types | **complete** — a full-population census (1,240/1,240 particle files walked) found exactly 23 behaviour types game-wide, and all 23 are derived and byte-verified, including the densest particle file in the game (42 MB of XML, byte-identical). An unknown type hash now means the install itself changed, and still refuses loudly |
+| remaining `ypt` constants | the behaviour scalars that vary in real data are read from their pinned offsets — a multi-instance stress pass over 1,605 particle rules promoted seven more from constants to offset reads. The remainder are single-valued across every witnessed file and **counted on every emission** so a future counter-example surfaces itself |
+| `ybd` bounds dictionaries | the reference exporter produces no XML for this type at all, so the lane grades on raw parity — and is **proven byte-exact at its entire game population** (4/4) |
+| animation channel variants | only provably-decodable channels emit values; the rest emit residual markers. Closing this lane against fresh oracles is the final derivation campaign |
 | hash-only content names | a handful of names exist in no in-scope file (scripts are excluded). A **self-verifying overlay** harvested from reference exports resolves them: an entry only fires where its hash equals the value stored in the binary, so a wrong name cannot mis-fire; deleting the overlay reverts to hash spellings |
 | encrypted audio containers | container fully decoded; whole-file-encrypted archives are refused loudly — the cipher is not recoverable clean-room |
 | script files (`.ysc`) | excluded by maintainer policy |
-| degenerate archive entries | a small number of files do not inflate to their own declared page plan. They are reported, not guessed at |
+| stored-uncompressed entries | a small class of resource entries stores its data uncompressed, shorter than the declared page plan — the plan states page *capacity*, not length. These are accepted verbatim (proven byte-equal to reference raw exports), and every acceptance is **counted in the run summary** |
 
 ---
 
@@ -153,11 +155,13 @@ targeted-vs-at-scale identity proven per source entry, pixels converged on the o
 downstream tools load. The corpus contract is the game's own layout: slot tree in load order,
 content keeps its in-game name, per-container folders where the game itself nests them.
 
-**Now — the long tail.** The small lanes (expressions, pose matchers, path nodes, vehicle and
-waypoint records, cloth and frag dictionaries, particles) are byte-identical against fresh
-stratified reference draws; the remaining work is the two underived particle behaviour types,
-navmesh densification, and the animation lane — the largest remaining derivation surface, run
-the same way as everything else: fresh oracles first, derive, byte-identical, then scale.
+**Now — the last two campaigns.** Every small lane is closed: byte-identical against fresh
+stratified reference draws (175/175) and extracted at corpus scale under format invariants —
+including the complete particle type surface and the expression opcode surface, both of which
+grew by derivation this cycle when at-scale runs surfaced structures the original draws never
+witnessed. What remains is navmesh densification and the animation lane — the largest remaining
+derivation surface — run the same way as everything else: fresh oracles first, derive,
+byte-identical, then scale.
 
 **Later — a C++ port.** The Python here is the prototype layer: the rule is *conform first, port
 second, re-verify after*. Nothing gets ported until it is proven against the oracles.
