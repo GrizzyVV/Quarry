@@ -676,6 +676,19 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
         sidecars = () if textures == 'none' else ytd2xml.sidecars(
             texs, stem, want_png=(textures != 'dds'), want_dds=(textures != 'png'))
         return (stem + '.ytd.xml', ytd2xml.to_xml(texs).encode('utf-8'), sidecars)
+    if blob[:10] == b'[VERSION]\n':
+        # CACHE CONTAINER - detected by its TEXTUAL magic, never by the filename, because the
+        # `.dat` extension covers a dozen unrelated families and every other one stays raw.
+        # (Matt ruled the cache files in scope 2026-08-10: "if they will positively impact the
+        # project without any negative consequences, I don't see the harm in deriving them".)
+        import cache2xml
+        cache2xml.RESIDUALS.clear()
+        xml = cache2xml.to_xml(blob, names).encode('utf-8')
+        if cache2xml.RESIDUALS and stats is not None:
+            for k, n in cache2xml.RESIDUALS.items():
+                key = 'cache %s (hash spelled, nothing invented)' % k
+                stats[key] = stats.get(key, 0) + n
+        return name + '.xml', xml, ()
     if t == 'ycd':
         # ⚠ Undecoded channels emit a visible <!-- RESIDUAL/UNPINNED --> marker in the XML - but
         # a file can carry markers and still score xml_ok, so the count must ALSO reach the

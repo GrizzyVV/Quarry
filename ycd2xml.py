@@ -2,14 +2,22 @@ r"""ycd2xml - GTA V .ycd (rage::crClipDictionary, RSC7 v46) -> RAGE .ycd.xml.
 
 CLEAN-ROOM: derived from oracle XML + game binary + our own quarry code only.
 
-STATUS (measured against all 10 oracles): 10/10 FULLY byte-identical.
-  The full pipeline - container, both dictionaries, both clip types, Properties/Tags/
-  Attributes, animation headers, BoneIds, sequences, AND every SequenceData channel body -
-  is closed.  Channel codecs verified byte-exact: StaticVector3/StaticFloat,
-  StaticQuaternion (3f + f32 reconstructed w), CachedQuaternion1, QuantizeFloat,
-  IndirectQuantizeFloat (compact AND inline-palette forms), and INLINE QuantizeFloat.
-  The per-item channel-TYPE table is SOLVED - and the true count table is EIGHT pools,
-  not six (see COUNT TABLE below).
+STATUS (2026-08-10, measured against ALL 57 oracles): 25/57 byte-identical, 0 MISSING.
+  `was:` "measured against all 10 oracles: 10/10 FULLY byte-identical" - a TRUE statement about
+  a 10-oracle board that read as a completeness claim once 47 more oracles existed. The same
+  trap the ynv lane hit (a 2-oracle base hid an entire Portals/Points surface). Re-measure or
+  do not assert.
+  CLOSED and byte-exact: container, both dictionaries, both clip types, Properties/Tags/
+  Attributes (incl. Bool and HashString), animation headers, BoneIds, sequence framing, the
+  nine-pool count table and per-item map, StaticVector3/StaticFloat, StaticQuaternion
+  (3f + f32-reconstructed w), CachedQuaternion1/2, RawFloat (frame-major, unmixed),
+  QuantizeFloat and IndirectQuantizeFloat (compact AND inline-palette).
+  OPEN - the whole remaining gap, and the ONLY cause of the 32 non-passing positions:
+  INLINE QuantizeFloat. Its variant space over the 57 oracles is 68 distinct (selector, W)
+  cells across 4,163 channels; the double-integration + single-REST rule below is proven ONLY
+  for selector 0 with W in {7,8,9}, and even there it decoded 20 channels exactly while getting
+  5 WRONG. Game-wide that pool is 3.7M channels. Undecoded channels emit a counted, visible
+  RESIDUAL - never an invented number.
 
 CONTAINER (RSC7 v46, all data in system segment):
   sys+0x00 u64 vtable
@@ -26,10 +34,15 @@ CLIP (crClipAnimation / crClipAnimationList):
   Animation:      +0x50 -> crAnimation ; +0x58 StartTime f32 ; +0x5C EndTime ; +0x60 Rate
   AnimationList:  +0x50 -> ref[] (inline, stride 0x18: Start@0,End@4,Rate@8,animptr@0x10) ;
                   +0x58 u16 count ; +0x60 Duration f32
-  <Hash> = name-stem = Name[6:-5] ; <AnimationHash> = key of the referenced crAnimation.
+  <Hash> = the CLIPS-dictionary KEY through the name table (NOT joaat(name-stem): they differ,
+  e.g. cs2_05.ycd stores key 0xF5B0F874 while joaat of its stem is 0x8DA8CB7E and the oracle
+  spells the key) ; <Name> = the full "pack:/<stem>.clip" ;
+  <AnimationHash> = key of the referenced crAnimation.
 crProperty / crTag:  +0x18 NameHash ; +0x20 Attributes atArray(ptr,count@+0x28) ; +0x38 UnkHash
   crTag also: +0x40 StartPhase f32 ; +0x44 EndPhase f32
-crPropertyAttribute: +0x08 Type (2=Int,6=Vector3,8=Vector4,1=Float) ; +0x18 NameHash ; +0x20 Value
+crPropertyAttribute: +0x08 Type (1=Float,2=Int,3=Bool,6=Vector3,8=Vector4,12=HashString) ;
+  +0x18 NameHash ; +0x20 Value.  HashString is the ONE kind spelled as ELEMENT TEXT
+  (<Value>name</Value>), every other kind is attribute-form value=.
   Int=i32@+0x20 ; Float=f32@+0x20 ; Vector3=xyz@+0x20 + Unknown2C f32@+0x2C ; Vector4=xyzw@+0x20
 
 ANIMATION (crAnimation):
@@ -49,26 +62,35 @@ SEQUENCE (crAnimSequence) @ seq :
         frame-major, each frame DWORD-aligned (framebits = roundup(sum(numBits),32)),
         LSB-first bitstream, channels in descriptor order ;
         value = float32(Offset + raw*Quantum).                          [VERIFIED 9/9]
-    quant/indirect frame value = float32(Offset + float32(raw*Quantum)).   [VERIFIED]
+    FLOAT LAW (2026-08-10, 7,413/7,413 channels exact): the RAW INTEGER is rounded to float32
+    BEFORE the multiply - value = f32(f32(Offset) + f32(f32(raw) * Quantum)), i.e. the C++
+    (float)(Offset + (float)((float)raw * Quantum)).  `was:` f32(Offset + f32(raw*Quantum)),
+    which scored 7,410/7,413 - the three misses need raw >= 2^24 (numBits >= 25).
   After the packed block: the count table then the per-item MAP region.
-COUNT TABLE - the true table is EIGHT u16 (not six), followed by a u16 separator(0):
+COUNT TABLE - NINE u16 (2026-08-10; 442/442 sequences over 53 oracles, zero NO_FIT, every
+    tuple equal to the oracle's own per-sequence channel tallies):
     [numStaticQuat, numStaticVec3, numStaticFloat, numRawFloat, numQuantizeFloat,
-     numIndirectQuantizeFloat, numInlineQuantizeFloat, numCached].
-    The legacy 6-u16 reader worked only because it treated u16[6]=numInlineQuantizeFloat
-    (0 in 9/10 files) as the first header word it required to be 0, u16[7]=numCached as
-    'nc', and u16[8]=separator as its 2nd required-0.  So for the 9 files with no inline
-    pool the two views are byte-identical (msz_from_c = 9 + Sum rup(c0..c7) == the legacy
-    3 + Sum rup(c0..c5) + rup(nc)).  The mpsecurity drinking_shots file has count[6]=7
-    (a nonzero inline-QuantizeFloat pool), which the legacy u16[6]==0 check rejected ->
-    'count table not located'.  Located by exact-fit anchor: c + (9 + Sum rup(c_i))*2 == seq_end.
-PER-ITEM MAP region (SOLVED) - ends at seq+0x10 (total size); it is [8 counts][u16 0 separator],
-    then one list per pool in count-table order (quat,vec,flt,raw,quant,indirect,INLINE-quant),
-    then a Cached list; each list = one u16 per channel = (BoneId-item-index*4 + component),
+     numIndirectQuantizeFloat, numInlineQuantizeFloat, numCachedQuaternion1,
+     numCachedQuaternion2].
+    `was:` "EIGHT u16 followed by a u16 separator(0)" - which is the SAME BYTES whenever
+    numInlineQuantizeFloat == 0 and numCachedQuaternion2 == 0, because the 8-view reads the
+    ninth count as its required-zero separator. That coincidence is why the earlier reading
+    survived a 10-file board and still refused 33,778 sequences game-wide. What distinguishes
+    a CachedQuaternion1 channel from a CachedQuaternion2 one behaviourally is NOT derived -
+    only that they are two separate lists, and reproducing them as such is byte-exact.
+    LOCATED by three constraints with a UNIQUENESS requirement, not a first match: the size
+    equation c + (9 + Sum rup(c_i))*2 == seq_end leaves 2-3 candidates on 15 of 442 sequences
+    and its lowest-offset candidate is WRONG in 14 of them, so the descriptor walk (must land
+    exactly on quantOffset) and the packed-block extent (packed + (framebits//8 + nRawFloat*4)
+    * FrameCount == c) are required too, and an ambiguous sequence REFUSES.
+PER-ITEM MAP region - ends at seq+0x10 (total size); it is [9 counts] then one list per pool in
+    count-table order (quat, vec, flt, RAW, quant, indirect, INLINE-quant, cached1, cached2);
+    each list = one u16 per channel = (BoneId-item-index*4 + component),
     padded to a multiple of 4 entries with sentinel (numBones*4).  component 0..2 for a split
     x/y/z channel (or the QuatIndex for a Cached entry), 0 for a whole static vector/quat.
     Reconstruct: group channels by item, order by component, append the Cached channel last.
 POOL LAYOUT / descriptor region (data..packed), in order: StaticQuaternion pool(12B ea),
-    StaticVector3(12B), StaticFloat(4B), [RawFloat - fmt unknown, 0 in all 10 oracles],
+    StaticVector3(12B), StaticFloat(4B), [RawFloat has NO descriptor - see RAWFLOAT below],
     QuantizeFloat descriptors(12B: numBits,Q,Off - packed in the frame-major block),
     IndirectQuantizeFloat descriptors(variable, in the frame-major block), then the INLINE
     QuantizeFloat descriptors.  The frame-major block width = Sum(quant numBits)+Sum(indirect
@@ -78,6 +100,17 @@ IndirectQuantizeFloat descriptor (variable, 0x14 + nPalWords*4): u32 slotBits, u
     min((nPalWords*32)//paletteBits, (1<<slotBits)-1); value = f32(Offset + f32(raw*Quantum));
     <Frames> = slotBits-wide slot (frame-major, DWORD-aligned).  Both the compact (nPalWords=1)
     and inline-palette (nPalWords>1) forms close.
+RAWFLOAT (derived 2026-08-10, 6 sequences / 5 witnesses) - the pool has NO descriptor at all.
+    Its values live frame-major INSIDE the packed block, after that frame's bit-packed channels:
+        value(channel c, frame f) = f32 at packed + (f*(framebits//8 + nRawFloat*4)) + c*4
+    so the packed-block frame stride grows by nRawFloat*4 bytes - which is also the third
+    locator constraint. `was:` the pool was assumed zero-sized and its map list was READ AND
+    DISCARDED: 20,734 channels across 98 files vanished from the XML with NOTHING counted, and
+    every later descriptor base was off, usually surfacing as a mis-named
+    "indirect_descriptors_unpinned" refusal (a marker naming the wrong cause is worse than none).
+    ❓ UNWITNESSED: every RawFloat witness has no bit-packed pool alongside it, so the byte
+    interleave when nRawFloat and (nQuantizeFloat|nIndirect|nInline) are BOTH nonzero is
+    underived - that combination refuses (rawfloat_mixed_block) rather than guessing.
 INLINE QuantizeFloat descriptor (variable) [emits <Type>QuantizeFloat</Type>] - SOLVED:
     u32 sizeWords(=total descriptor size in u32, incl this 16B header), u32 B,
     f32 Quantum, f32 Offset, then payload = (sizeWords-4) u32 words.
@@ -127,6 +160,19 @@ def _rup(n):
 
 # The conformant output for a .ycd whose RSC7 container is not version 46.
 DECLINED_XML = '<?xml version="1.0" encoding="UTF-8"?>\n'
+
+# INLINE QuantizeFloat: DERIVED for selector 0 (2026-08-10), REFUSED for every other selector.
+# The earlier "double-integration with one REST" rule was fitted to a single file and was NOT a
+# correctness test - measured against the oracles it decoded 20 channels exactly and 5 WRONG,
+# with nothing in the descriptor separating the two. The real format is a 64-FRAME BLOCK CODEC
+# (see _decode_inline_qz), and its accept test is STRUCTURAL: every inner block must land its bit
+# cursor EXACTLY on the next stored block offset after exactly 64 frames. That is an arithmetic
+# identity a wrong decode cannot satisfy by luck, which is why values may now be printed at all.
+# Evidence: 1,964/1,964 sel=0 channels across the 57 oracles reproduce the oracle's exact values;
+# 6,995/6,995 inner-block boundaries land exactly; 1,964/1,964 rebuilt <Item> blocks match the
+# oracle text character for character. Non-zero selectors (1,810,562 channels game-wide) share
+# the framing but not the code alphabet - they REFUSE and are counted.
+INLINE_QZ_PROVEN = True
 
 
 def declined_version(blob):
@@ -550,7 +596,7 @@ class Ycd:
                     out.append('         <Type value="QuantizeFloat" />')
                     out.append('         <Quantum value="%s" />' % fmt_num(f32(S, d + 8)))
                     out.append('         <Offset value="%s" />' % fmt_num(f32(S, d + 0xC)))
-                    vals = self._decode_inline_qz(d, framecount)
+                    vals = self._decode_inline_qz(d, framecount) if INLINE_QZ_PROVEN else None
                     if vals is None:
                         RESIDUALS["inline_quantize_undecoded"] = \
                             RESIDUALS.get("inline_quantize_undecoded", 0) + 1
@@ -630,30 +676,35 @@ class Ycd:
         return cands
 
     def _decode_inline_qz(self, desc, framecount):
-        """Decode one INLINE QuantizeFloat channel -> list of framecount float values,
-        or None when the frame budget does not close exactly (an unproven variant - the
-        caller then emits a visible residual instead of wrong values).
+        """INLINE QuantizeFloat - 64-frame BLOCK codec (derived 2026-08-10; sel == 0).
 
-        Descriptor: u32 sizeWords, u32 B, f32 Quantum, f32 Offset, then the payload.
-        B is three bytes: B&0xFF = W (prologue field width), (B>>8)&0xFF = numBits
-        (the width of the three seeded values), (B>>16)&0xFF = a further selector (0 here).
-        Payload header = 3 W-bit fields, then f0, f1, f2 (numBits each); the code stream
-        starts at 3*W + 3*numBits.
-        Codes (LSB-first): '1' -> 0 ; '0'*z '1' <sign> -> -z if sign else +z.
-        Integration (see the module docstring INLINE QuantizeFloat for the derivation):
-            raw[0] = f0 ; raw[1] = f1 ; V = f1 ; D = f1 - f0
-            per code c:  if (not yet done) and V == f2 and c == D:  emit V ; D = 0   # REST
-                         D += c ; V += D ; emit V
-        FrameCount == 2 + (FrameCount-3 codes) + 1 rest, so the budget closes exactly."""
+        Descriptor: u32 sizeWords, u32 B, f32 Quantum, f32 Offset, payload = sizeWords-4 u32.
+            W   = B & 0xFF          bit width of each block bit-offset
+            nb  = (B >> 8) & 0xFF   bit width of each block seed value
+            sel = (B >> 16) & 0xFF  UNDERIVED unless 0 -> refuse
+
+        N = ceil(framecount / 64).  Payload is an LSB-first bitstream:
+            N x W-bit block bit-offsets (off[0] == 0, strictly increasing; measured from
+            the end of the header), then N x nb-bit block seeds, then the code stream.
+            hdr = N * (W + nb).
+        Block j covers frames [64j, min(64j+64, framecount)); it decodes independently
+        from bit hdr+off[j] with V = seed[j] and D = 0 (the velocity RESETS every block):
+            emit V, then (blockframes - 1) codes
+            '1'           -> 0
+            '0'*z '1' <s> -> -z if s else +z
+            per code: D += c ; V += D ; emit V
+        Returns None whenever anything fails to close -> a counted residual, never values.
+        """
         S = self.S
         A = u32(S, desc); B = u32(S, desc + 4)
         q = f32(S, desc + 8); off = f32(S, desc + 0xC)
-        nb = (B >> 8) & 0xFF                       # width of the three seeded values
-        wp = B & 0xFF                              # width of each of the 3 prologue fields
+        W = B & 0xFF
+        nb = (B >> 8) & 0xFF
+        if (B >> 16) != 0:                     # selector (and the top byte) UNDERIVED
+            return None
         base = desc + 16
-        nbits = (desc + A * 4 - base) * 8          # payload bits
-        hdr = 3 * wp + 3 * nb
-        if nb == 0 or framecount < 3 or hdr + 1 > nbits:
+        nbits = (desc + A * 4 - base) * 8
+        if framecount < 1 or nbits <= 0:
             return None
 
         def bit(i):
@@ -665,37 +716,50 @@ class Ycd:
                 v |= bit(pos + i) << i
             return v
 
-        f0 = fld(hdr - 3 * nb, nb)                 # raw[0]
-        f1 = fld(hdr - 2 * nb, nb)                 # raw[1]  (seeds D = f1 - f0)
-        f2 = fld(hdr - nb, nb)                     # the value at the REST frame
-        # ---- code stream ----
-        codes = []; p = hdr
-        while p < nbits:
-            if bit(p):
-                codes.append(0); p += 1
-                continue
-            z = 0
-            while p < nbits and not bit(p):        # leading-zero run = magnitude
-                z += 1; p += 1
-            if p >= nbits:
-                break                              # trailing zero padding
-            p += 1                                 # the '1' terminator
-            if p >= nbits:
-                break
-            s = bit(p); p += 1
-            codes.append(-z if s else z)
-        if len(codes) != framecount - 3:
+        N = (framecount + 63) // 64
+        hdr = N * (W + nb)
+        if hdr > nbits:
             return None
-        # ---- double integration with the single REST ----
-        raw = [f0, f1]; V = f1; D = f1 - f0; rested = False
-        for c in codes:
-            if not rested and V == f2 and c == D:
-                raw.append(V); D = 0; rested = True
-            D += c; V += D; raw.append(V)
+        offs = [fld(k * W, W) for k in range(N)]
+        seeds = [fld(N * W + k * nb, nb) for k in range(N)]
+        if offs[0] != 0:
+            return None
+        for k in range(N - 1):
+            if offs[k] >= offs[k + 1]:
+                return None
+        if hdr + offs[-1] >= nbits:
+            return None
+        raw = []
+        for j in range(N):
+            nfr = min(64, framecount - j * 64)
+            p = hdr + offs[j]
+            V = seeds[j]; Dv = 0
+            raw.append(V)
+            for _ in range(nfr - 1):
+                if p >= nbits:
+                    return None
+                if bit(p):
+                    c = 0; p += 1
+                else:
+                    z = 0
+                    while p < nbits and not bit(p):
+                        z += 1; p += 1
+                    if p + 1 >= nbits:
+                        return None
+                    p += 1
+                    sgn = bit(p); p += 1
+                    c = -z if sgn else z
+                Dv += c; V += Dv
+                raw.append(V)
+            if j + 1 < N:
+                if p != hdr + offs[j + 1]:
+                    return None      # STRUCTURAL GATE: a 64-frame block must land exactly
+            elif not (0 <= nbits - p <= 31):
+                return None          # tail may only be the u32 padding of the last word
         if len(raw) != framecount:
             return None
         from meta2xml import f32 as _F
-        return [_F(_F(off) + _F(_F(rw) * q)) for rw in raw]   # see the FLOAT LAW above
+        return [_F(_F(off) + _F(_F(rw) * q)) for rw in raw]
 
     def _emit_values(self, out, vals, ind):
         if len(vals) <= 10:
