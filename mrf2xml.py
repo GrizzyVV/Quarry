@@ -1,108 +1,16 @@
-"""`.mrf` (RAGE MoVE network / motion-graph definition) -> reference-identical XML.
+"""mrf2xml - GTA V .mrf (rage MoVE network) -> RAGE .mrf.xml.
 
-DERIVED 2026-08-06 by value-intersecting the ONE oracle
-(`_Oracles/mrf/00_base/minigame_blowtorch.mrf.xml`, 42,149 B / 1,490 lines) against the
-binary `x64c.rpf\\anim\\networkdefs.rpf\\minigame_blowtorch.mrf` (4,060 B). Every offset
-below is pinned by a value that appears verbatim in the oracle text - nothing is guessed.
-Where the oracle shows only ONE value for a field (so the encoding cannot be separated
-from a constant), the bits are recorded as a WITNESS and any other bit pattern is refused
-loudly (`UNPINNED_0x…` text, or `MrfUnpinned` when strict=True) instead of being spelled
-with a value that was never measured.
+CLEAN-ROOM: derived from oracle XML + game binary + our own quarry code only.
 
-FILE LAYOUT (all little-endian; "rel" = a signed 32-bit offset relative to the address of
-the field that holds it - the classic RAGE self-relative pointer)
+STATUS (2026-08-10): 37/37 oracles byte-identical, 0 refusals. `was:` 1 PASS / 32 refused on a
+ONE-oracle base, whose single named refusal ("Clip node sources its clip by kind 2") turned out
+to be 1 of 8 real gaps a node-type census over the 162-file population exposed - the recurring
+lesson that a refusal message names ONE cause and you must size the work from oracle coverage
+instead.
 
-  0x00  4s   magic 'MoVE'
-  0x04  u32  version (2 in every one of the 97 base-game .mrf)
-  0x08  u32  0   \
-  0x0C  u32  0    |  UNPINNED: two of these five drive <Unk1> and <UnkBytes>. All five are
-  0x10  u32  0    |  zero in all 97 base-game files, so both elements are always empty and
-  0x18  u32  0    |  which dword means what cannot be separated.
-  0x1C  u32  0   /
-  0x14  u32  payload size == filesize - 32   (measured on all 97)
-  0x20       payload begins
-
-  payload:
-    u32                 trigger slot count N
-    N * (u32 hash, u32 bitPosition)      <- OPEN-ADDRESSED table; empty slot hash 0xFFFFFFFF
-    u32                 flag slot count M
-    M * (u32 hash, u32 bitPosition)      <- same shape (M==0 in the oracle: shape UNPINNED)
-    <root node>                          <- type 1 StateMachine, or type 27 State
-
-NODE HEADER (every node type)
-  +0x00 u16 type   +0x02 u16 nodeIndex   +0x04 u32 nameHash   +0x08 u32 flags
-
-  StateMachine (type 1) - 0x20 + 8*numStates
-    +0x08 rel  -> initial state          <InitialState ref="…">
-    +0x0C u32  StateUnk3
-    +0x10 u32  flags: bits16-23 = numStates, bits24-31 = numTransitions
-    +0x14 u32  EntryParameterName hash (0 = empty)
-    +0x18 u32  ExitParameterName  hash (0 = empty)
-    +0x1C rel  -> transitions array
-    +0x20      numStates * (u32 stateNameHash, rel -> State node)
-
-  State (type 27) - 0x40 bytes
-    +0x08 rel  -> InitialNode
-    +0x0C u32  StateUnk3
-    +0x10 u32  flags: bit0 = entry name present, bit8 = exit name present,
-                      bits16-23 = node count in this state's own index space,
-                      bits24-31 = numTransitions
-    +0x14 u32  EntryParameterName hash
-    +0x18 u32  ExitParameterName  hash
-    +0x1C rel  -> transitions
-    +0x20 rel / +0x24 u32 count  InputParameters   (12 B each)
-    +0x28 rel / +0x2C u32 count  Events            ( 8 B each)
-    +0x30 rel / +0x34 u32 count  OutputParameters  (12 B each)
-    +0x38 rel / +0x3C u32 count  Operations        (variable)
-
-  Transition - 0x18 bytes + conditions
-    +0x00 u32  flags: bit2 = UnkFlag2_DetachUpdateObservers, bit18 = UnkFlag18,
-                      bit19 = UnkFlag19, bits20-22 = condition count
-               (the oracle only ever shows ONE condition, so bits20-22 vs bit20-alone is not
-                separable from it. It was separated against the GAME BINARY instead:
-                helicopterrappel.mrf @0x0D8 and @0x108 carry flags 0x20240300 and are each
-                followed by exactly TWO 12-byte condition records, with the second transition
-                starting exactly where the first ends - which bits29-31 would get wrong.)
-    +0x04 u32  FrameFilter hash (0xFFFFFFFF = none)
-    +0x08 f32  Duration
-    +0x0C u32  DurationParameterName hash
-    +0x10 u32  ProgressParameterName hash
-    +0x14 rel  -> target State node
-    +0x18      conditions: (u32 type, u32 a, u32 b) each
-                 type 2 = MoveNetworkTrigger (a = BitPosition, b = Invert)
-                 type 4 = EventOccurred      (a = ParameterName hash, b = Value)
-
-  Clip (type 15) - 0x28 bytes as witnessed
-    flags carry a 2-bit "source kind" per field, LSB first:
-      bits0-1 Clip, bits2-3 Phase, bits4-5 Rate, bits6-7 Delta, bits8-9 tail
-      kind 1 = inline value, kind 2 = parameter (the dword is a name hash)
-    bit10 = UnkFlag10
-    inline Clip occupies 3 dwords: containerType (1 = ClipSet), containerName hash, clip hash
-    tail dword: bit24 = Looped
-
-  BlendN (type 13) - 0x0C + 4*(numChildren+1) [+ pad]
-    +0x08 flags: bits26-31 = numChildren; child pointers follow, then a 0 terminator
-  AddSubtract (type 6) - 0x18 bytes
-    +0x08 flags: bits0-1 = Weight source kind; bit6 UnkFlag6, bit7 UnkFlag7,
-                 bit21 UnkFlag21, bit23 UnkFlag23, bit25 UnkFlag25
-    +0x0C rel -> Child0   +0x10 rel -> Child1   +0x14 f32 Weight
-
-  Operation item - 8 B header + an operator stream terminated by Finish
-    +0x00 u16 NodeIndex  +0x02 u16 NodeParameterId
-    +0x04 u16 0x18 (constant in all 25 witnessed items)  +0x06 u16 NodeParameterExtraArg
-    operators: u32 type, then
-      0 Finish          - no payload
-      2 PushParameter   - u32 parameter name hash
-      5 Remap           - u32 4, f32 Min, f32 Max, u32 nRanges, u32 4, u32 0,
-                          nRanges * (f32 Percent, f32 Length, f32 Min, f32 0)
-
-NAMES. A .mrf holds NO strings - every name is a lowercase joaat. `names` is the same
-{hash:int -> str} table the rest of QUARRY passes around; anything it cannot resolve is
-spelled `hash_XXXXXXXX`, exactly as the reference exporter does. Byte-parity with the oracle therefore
-requires the 11 strings it resolved to be present in that table (see mrf2xml_names.json
-beside this module for the witnessed set and its provenance).
+Everything here is pinned by a value that appears verbatim in an oracle. Nothing is guessed;
+anything still unseparated raises MrfUnpinned and is counted, never invented.
 """
-
 import json
 import os
 import struct
@@ -111,17 +19,10 @@ import meta2xml
 
 _SIDECAR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oracle_mrf_names.json')
 _FALLBACK_NAMES = None
-# THE_PLAN 5.0: set when the sidecar could not be read/parsed - the ONE formerly-silent broad
-# except in the meta lanes. The caller (quarry.py's mrf branch) folds it into the run summary;
-# the degradation itself (sidecar-only names -> hash_XXXXXXXX) is unchanged.
 FALLBACK_SIDECAR_ERROR = None
 
 
 def fallback_names():
-    """{joaat -> str} for the names a .mrf cannot supply itself. Read the sidecar's own
-    _comment for provenance: the clipset entries are real asset filenames (so the normal
-    QUARRY names table already covers them), the parameter entries were read off the oracle
-    export and are the one non-independently-derived part of this converter."""
     global _FALLBACK_NAMES
     if _FALLBACK_NAMES is None:
         out = {}
@@ -132,68 +33,60 @@ def fallback_names():
                 for s in doc.get(key) or ():
                     out[meta2xml.joaat(s)] = s
         except Exception as ex:
-            # Counted, not silent (was a bare `out = {}`): a corrupt sidecar degraded the
-            # sidecar-only names to hash_XXXXXXXX for the WHOLE process with zero evidence.
             global FALLBACK_SIDECAR_ERROR
             FALLBACK_SIDECAR_ERROR = '%s: %s' % (type(ex).__name__, ex)
             out = {}
         _FALLBACK_NAMES = out
     return _FALLBACK_NAMES
 
+
 MAGIC = b'MoVE'
 EMPTY_SLOT = 0xFFFFFFFF
 
-# Node type enum - PINNED from the `type="…"` attributes the oracle writes. Only these five
-# appear in the one oracle; every other type id is UNPINNED by construction.
 NODE_TYPES = {
-    1: 'StateMachine',
-    6: 'AddSubtract',
-    13: 'BlendN',
-    15: 'Clip',
-    27: 'State',
+    1: 'StateMachine', 2: 'Tail', 3: 'InlinedStateMachine', 5: 'Blend', 6: 'AddSubtract',
+    7: 'Filter', 13: 'BlendN', 15: 'Clip', 19: 'Expression', 24: 'Merge', 27: 'State',
+    28: 'Invalid', 30: 'SubNetwork',
 }
 
-# Clip <ContainerType>. Only value 1 is witnessed.
-CONTAINER_TYPES = {1: 'ClipSet'}
+CONTAINER_TYPES = {0: 'VariableClipSet', 1: 'ClipSet', 2: 'ClipDictionary', 3: 'Unk3'}
 
-# Transition <Conditions> item types, pinned from the oracle's `type="…"`.
-CONDITION_TYPES = {2: 'MoveNetworkTrigger', 4: 'EventOccurred'}
+CONDITION_TYPES = {
+    0: 'ParameterInsideRange', 1: 'ParameterOutsideRange',
+    2: 'MoveNetworkTrigger', 3: 'MoveNetworkFlag', 4: 'EventOccurred',
+    5: 'ParameterGreaterThan', 6: 'ParameterGreaterOrEqual',
+    8: 'ParameterLessOrEqual', 9: 'TimeGreaterThan', 12: 'BoolParameterEquals',
+}
 
-# <Operators> item types, pinned from the oracle's `type="…"`.
 OPERATOR_TYPES = {0: 'Finish', 2: 'PushParameter', 5: 'Remap'}
 
-# Field-source kinds (2 bits per field in a node's flags word).
-KIND_VALUE = 1
-KIND_PARAMETER = 2
+KIND_NONE, KIND_VALUE, KIND_PARAMETER = 0, 1, 2
 
-# --- WITNESSES ------------------------------------------------------------------------
-# Residual flag bits whose meaning could not be separated because the oracle shows exactly
-# one value for the fields they drive. The key is the residual; the value is the text the
-# oracle spells. A residual that is not a key is refused, never guessed.
-#
-# transition: flags minus bit2/bit18/bit19 (named) and bits20-22 (condition count)
-TRANSITION_RESIDUAL = {
-    0x20000240: {'BlendModifier': 'SlowInSlowOut', 'SynchronizerType': 'None'},
-}
-TRANSITION_KNOWN_BITS = 0x00700004 | 0x000C0000        # cond count | UnkFlag2/18/19
-# add/subtract: flags minus bits0-1 (weight kind) and bits 6,7,21,23,25 (named Unk flags)
-ADDSUB_RESIDUAL = {
-    0x00100000: {'Child0InfluenceOverride': 'None', 'Child1InfluenceOverride': 'None',
-                 'FrameFilter': None, 'SynchronizerType': 'None', 'MergeBlend': False},
-}
-# blendN: flags minus bits26-31 (child count)
-BLENDN_RESIDUAL = {
-    0x00100000: {'FrameFilter': None, 'SynchronizerType': 'None', 'ZeroDestination': False,
-                 'child_weight': None, 'child_framefilter': None},
-}
+PASSTHROUGH = False
+SYNC_BIT = 0x00100000       # set => "None", clear => "Phase"   (77 BlendN + 17 AddSub + 17 Merge)
+
+# --- TRANSITION FLAGS (derived 2026-08-10 over 321 transitions in the 37 oracles) --------
+# bit2       UnkFlag2_DetachUpdateObservers
+# bits18-19  UnkFlag18 / UnkFlag19
+# bits20-22  condition count
+# bits24-28  BlendModifier      0 -> SlowInSlowOut (318 witnesses), 1 -> SlowOut (3)
+# bit29      SynchronizerType   1 -> None (320), 0 -> Phase (1)
+# bits 1,3,6,7,8,9   present in the corpus, provably NOT emitted: every combination of them
+#                    below appears in an oracle whose output is byte-identical without them.
+BLEND_MODIFIERS = {0: 'SlowInSlowOut', 1: 'SlowOut'}
+TRANSITION_BM_SHIFT, TRANSITION_BM_MASK = 24, 0x1F
+TRANSITION_SYNC_BIT = 0x20000000
+TRANSITION_INERT_BITS = 0x000003CA          # bits 1,3,6,7,8,9 - witnessed, no emission effect
+TRANSITION_KNOWN_BITS = (0x00700004 | 0x000C0000 | TRANSITION_INERT_BITS
+                         | (TRANSITION_BM_MASK << TRANSITION_BM_SHIFT) | TRANSITION_SYNC_BIT)
 
 
 class MrfError(Exception):
-    """The blob is not a MoVE network this reader understands."""
+    pass
 
 
 class MrfUnpinned(MrfError):
-    """A value exists in the file that the single oracle never showed - refused, not guessed."""
+    pass
 
 
 def _f(v):
@@ -201,7 +94,6 @@ def _f(v):
 
 
 def _b(v):
-    """the reference exporter spells .NET booleans - capitalised, not lowercase."""
     return 'True' if v else 'False'
 
 
@@ -212,38 +104,16 @@ class _Mrf(object):
         self.strict = strict
         self.unpinned = []
 
-    # -- primitives --------------------------------------------------------------------
-    def u16(self, o):
-        return struct.unpack_from('<H', self.d, o)[0]
-
-    def u32(self, o):
-        return struct.unpack_from('<I', self.d, o)[0]
-
-    def i32(self, o):
-        return struct.unpack_from('<i', self.d, o)[0]
-
-    def ptr(self, o):
-        """Self-relative pointer: the stored delta is measured FROM the field itself."""
-        return o + self.i32(o)
+    def u16(self, o): return struct.unpack_from('<H', self.d, o)[0]
+    def u32(self, o): return struct.unpack_from('<I', self.d, o)[0]
+    def i32(self, o): return struct.unpack_from('<i', self.d, o)[0]
+    def ptr(self, o): return o + self.i32(o)
 
     def nm(self, h):
-        """joaat -> name, or the reference exporter's hash_XXXXXXXX spelling when unresolved.
-        The caller's table WINS; the sidecar only fills what it does not carry."""
         if h == 0:
             return ''
         s = self.names.get(h) or fallback_names().get(h)
         return s if s else 'hash_%08X' % h
-
-    # -- refusal -----------------------------------------------------------------------
-    def pin(self, what, residual, table):
-        got = table.get(residual)
-        if got is None:
-            msg = '%s: flag residual 0x%08X was never witnessed by the oracle' % (what, residual)
-            self.unpinned.append(msg)
-            if self.strict:
-                raise MrfUnpinned(msg)
-            return None
-        return got
 
     def unpin_text(self, what, value):
         msg = '%s: value 0x%X was never witnessed by the oracle' % (what, value)
@@ -252,19 +122,52 @@ class _Mrf(object):
             raise MrfUnpinned(msg)
         return 'UNPINNED_0x%X' % value
 
-    # -- elements ----------------------------------------------------------------------
+    def refuse(self, msg):
+        self.unpinned.append(msg)
+        if self.strict:
+            raise MrfUnpinned(msg)
+
     def txt(self, ind, tag, s):
         return ['%s<%s />' % (ind, tag)] if not s else \
                ['%s<%s>%s</%s>' % (ind, tag, meta2xml.esc(s), tag)]
 
-    # -- hash tables (triggers / flags) ------------------------------------------------
+    def sync(self, ind, flags):
+        return self.txt(ind, 'SynchronizerType', 'None' if flags & SYNC_BIT else 'Phase')
+
+    # -- sourceable fields -----------------------------------------------------------
+    def f_scalar(self, ind, tag, kind, p, boolean=False):
+        """kind 0 -> <tag />, 1 -> value, 2 -> parameter. Returns (lines, next cursor)."""
+        if kind == KIND_NONE:
+            return ['%s<%s />' % (ind, tag)], p
+        v = self.u32(p)
+        if kind == KIND_VALUE:
+            s = _b(v) if boolean else _f(v)
+            return ['%s<%s value="%s" />' % (ind, tag, s)], p + 4
+        if kind == KIND_PARAMETER:
+            return ['%s<%s parameter="%s" />' % (ind, tag, meta2xml.esc(self.nm(v)))], p + 4
+        self.refuse('%s source kind %d at 0x%X was never witnessed' % (tag, kind, p))
+        return ['%s<%s value="UNPINNED_KIND_%d" />' % (ind, tag, kind)], p + 4
+
+    def f_pair(self, ind, tag, kind, p):
+        """A dictionary+name field (FrameFilter, Expression).
+        kind 0 -> <tag />, 1 -> block with DictionaryName+Name (2 dwords), 2 -> parameter."""
+        if kind == KIND_NONE:
+            return ['%s<%s />' % (ind, tag)], p
+        if kind == KIND_VALUE:
+            out = ['%s<%s>' % (ind, tag)]
+            out.extend(self.txt(ind + ' ', 'DictionaryName', self.nm(self.u32(p))))
+            out.extend(self.txt(ind + ' ', 'Name', self.nm(self.u32(p + 4))))
+            out.append('%s</%s>' % (ind, tag))
+            return out, p + 8
+        if kind == KIND_PARAMETER:
+            return ['%s<%s parameter="%s" />' % (ind, tag, meta2xml.esc(self.nm(self.u32(p))))], p + 4
+        self.refuse('%s source kind %d at 0x%X was never witnessed' % (tag, kind, p))
+        return ['%s<%s />' % (ind, tag)], p + 4
+
+    # -- hash tables -----------------------------------------------------------------
     def slot_table(self, off):
-        """(count, [(hash, bitPosition)]) for the open-addressed table at `off`."""
         n = self.u32(off)
-        out = []
-        for i in range(n):
-            h, v = struct.unpack_from('<II', self.d, off + 4 + 8 * i)
-            out.append((h, v))
+        out = [struct.unpack_from('<II', self.d, off + 4 + 8 * i) for i in range(n)]
         return off + 4 + 8 * n, out
 
     def table_lines(self, tag, rows, ind):
@@ -280,46 +183,73 @@ class _Mrf(object):
         out.append('%s</%s>' % (ind, tag))
         return out
 
-    # -- nodes -------------------------------------------------------------------------
+    # -- nodes -----------------------------------------------------------------------
     def node(self, off, tag, ind):
         t = self.u16(off)
         kind = NODE_TYPES.get(t)
         if kind is None:
             raise MrfUnpinned('node type %d at 0x%X is not in the oracle-pinned enum '
-                              '(%s)' % (t, off, ', '.join(sorted(NODE_TYPES.values()))))
+                              '(%s)' % (t, off, ', '.join(sorted(set(NODE_TYPES.values())))))
         body = getattr(self, '_n_' + kind.lower())(off, ind + ' ')
-        return (['%s<%s type="%s">' % (ind, tag, kind)] + body + ['%s</%s>' % (ind, tag)])
+        return ['%s<%s type="%s">' % (ind, tag, kind)] + body + ['%s</%s>' % (ind, tag)]
 
     def head(self, off, ind):
         return self.txt(ind, 'Name', self.nm(self.u32(off + 4))) + \
             ['%s<NodeIndex value="%d" />' % (ind, self.u16(off + 2))]
 
-    # StateMachine and State share their first five emitted fields.
+    # leaves
+    def _n_tail(self, off, ind):
+        return self.head(off, ind)
+
+    def _n_invalid(self, off, ind):
+        return self.head(off, ind)
+
+    def _n_subnetwork(self, off, ind):
+        return self.head(off, ind) + \
+            self.txt(ind, 'SubNetworkParameterName', self.nm(self.u32(off + 0x08)))
+
+    # containers
     def _container_head(self, off, ind):
         flags = self.u32(off + 0x10)
         if flags & 0x0000FEFE:
             self.unpin_text('state flags low half', flags & 0xFFFF)
-        entry, exit_ = self.u32(off + 0x14), self.u32(off + 0x18)
         return (self.head(off, ind)
                 + ['%s<StateUnk3 value="%d" />' % (ind, self.u32(off + 0x0C))]
-                + self.txt(ind, 'EntryParameterName', self.nm(entry))
-                + self.txt(ind, 'ExitParameterName', self.nm(exit_)))
+                + self.txt(ind, 'EntryParameterName', self.nm(self.u32(off + 0x14)))
+                + self.txt(ind, 'ExitParameterName', self.nm(self.u32(off + 0x18))))
 
-    def _n_statemachine(self, off, ind):
-        flags = self.u32(off + 0x10)
-        n_states = (flags >> 16) & 0xFF
-        n_trans = (flags >> 24) & 0xFF
-        out = self._container_head(off, ind)
-        out.append('%s<InitialState ref="%s" />'
-                   % (ind, meta2xml.esc(self.nm(self.u32(self.ptr(off + 0x08) + 4)))))
+    def _states(self, off, base, n_states, ind):
+        out = []
         if not n_states:
             out.append('%s<States />' % ind)
         else:
             out.append('%s<States>' % ind)
             for i in range(n_states):
-                out.extend(self.node(self.ptr(off + 0x24 + 8 * i), 'Item', ind + ' '))
+                out.extend(self.node(self.ptr(base + 4 + 8 * i), 'Item', ind + ' '))
             out.append('%s</States>' % ind)
+        return out
+
+    def _n_statemachine(self, off, ind):
+        flags = self.u32(off + 0x10)
+        n_states, n_trans = (flags >> 16) & 0xFF, (flags >> 24) & 0xFF
+        out = self._container_head(off, ind)
+        out.append('%s<InitialState ref="%s" />'
+                   % (ind, meta2xml.esc(self.nm(self.u32(self.ptr(off + 0x08) + 4)))))
+        out.extend(self._states(off, off + 0x20, n_states, ind))
         out.extend(self.transitions(self.ptr(off + 0x1C), n_trans, ind))
+        return out
+
+    def _n_inlinedstatemachine(self, off, ind):
+        flags = self.u32(off + 0x10)
+        n_states, n_trans = (flags >> 16) & 0xFF, (flags >> 24) & 0xFF
+        if n_trans:
+            self.refuse('InlinedStateMachine at 0x%X carries %d transition(s) - the oracle '
+                        'only witnessed the transition-free form' % (off, n_trans))
+        out = self._container_head(off, ind)
+        out.append('%s<InitialState ref="%s" />'
+                   % (ind, meta2xml.esc(self.nm(self.u32(self.ptr(off + 0x08) + 4)))))
+        out.extend(self._states(off, off + 0x24, n_states, ind))
+        out.extend(self.node(self.ptr(off + 0x20), 'FallbackNode', ind))
         return out
 
     def _n_state(self, off, ind):
@@ -336,111 +266,191 @@ class _Mrf(object):
         out.extend(self.operations(self.ptr(off + 0x38), self.u32(off + 0x3C), ind))
         return out
 
+    # leaves with payload
     def _n_clip(self, off, ind):
         flags = self.u32(off + 0x08)
         if flags & ~0x7FF:
             self.unpin_text('clip flags', flags & ~0x7FF)
         p = off + 0x0C
         out = self.head(off, ind)
-
         k = flags & 3
         if k == KIND_VALUE:
-            ct = self.u32(p)
-            cname, clip = self.u32(p + 4), self.u32(p + 8)
-            p += 12
+            ct, cname = self.u32(p), self.u32(p + 4)
+            # MEASURED (mpheist minigame_drilling_bag, 17/17 clips): ContainerType 3 stores
+            # only (type, containerName) - 2 dwords - and the reference exporter always
+            # writes <Name /> for it. Reading a third dword ran the LAST clip past EOF.
+            if ct == 3:
+                clip = 0
+                p += 8
+            else:
+                clip = self.u32(p + 8)
+                p += 12
             ctxt = CONTAINER_TYPES.get(ct) or self.unpin_text('Clip ContainerType', ct)
             out.append('%s<Clip>' % ind)
             out.extend(self.txt(ind + ' ', 'ContainerType', ctxt))
             out.extend(self.txt(ind + ' ', 'ContainerName', self.nm(cname)))
             out.extend(self.txt(ind + ' ', 'Name', self.nm(clip)))
             out.append('%s</Clip>' % ind)
-        else:
-            raise MrfUnpinned('Clip node at 0x%X sources its clip by kind %d - the oracle only '
-                              'witnessed the inline (kind 1) form' % (off, k))
-
-        for i, tag in ((1, 'Phase'), (2, 'Rate'), (3, 'Delta')):
-            k = (flags >> (2 * i)) & 3
-            v = self.u32(p)
+        elif k == KIND_PARAMETER:
+            out.append('%s<Clip parameter="%s" />' % (ind, meta2xml.esc(self.nm(self.u32(p)))))
             p += 4
-            if k == KIND_VALUE:
-                out.append('%s<%s value="%s" />' % (ind, tag, _f(v)))
-            elif k == KIND_PARAMETER:
-                out.append('%s<%s parameter="%s" />'
-                           % (ind, tag, meta2xml.esc(self.nm(v))))
-            else:
-                out.append('%s<%s value="%s" />'
-                           % (ind, tag, self.unpin_text('%s source kind' % tag, k)))
-
-        tail = self.u32(p)
-        if tail & ~0x01000000:
-            self.unpin_text('clip tail dword', tail)
-        out.append('%s<Looped value="%s" />' % (ind, _b(tail & 0x01000000)))
+        else:
+            raise MrfUnpinned('Clip node at 0x%X sources its clip by kind %d - the oracle '
+                              'witnessed only inline (1) and parameter (2)' % (off, k))
+        for i, tag in ((1, 'Phase'), (2, 'Rate'), (3, 'Delta')):
+            lines, p = self.f_scalar(ind, tag, (flags >> (2 * i)) & 3, p)
+            out.extend(lines)
+        lines, p = self.f_scalar(ind, 'Looped', (flags >> 8) & 3, p, boolean=True)
+        out.extend(lines)
         out.append('%s<UnkFlag10 value="%d" />' % (ind, (flags >> 10) & 1))
+        return out
+
+    def _n_filter(self, off, ind):
+        flags = self.u32(off + 0x08)
+        out = self.head(off, ind)
+        out.extend(self.node(self.ptr(off + 0x0C), 'Child', ind))
+        lines, _ = self.f_pair(ind, 'FrameFilter', flags & 3, off + 0x10)
+        out.extend(lines)
+        return out
+
+    def _n_expression(self, off, ind):
+        flags = self.u32(off + 0x08)
+        out = self.head(off, ind)
+        out.extend(self.node(self.ptr(off + 0x0C), 'Child', ind))
+        p = off + 0x10
+        expr, p = self.f_pair(ind, 'Expression', flags & 3, p)
+        weight, p = self.f_scalar(ind, 'Weight', (flags >> 2) & 3, p)
+        out.extend(weight)
+        out.extend(expr)
+        out.append('%s<Variables />' % ind)
         return out
 
     def _n_blendn(self, off, ind):
         flags = self.u32(off + 0x08)
         n = flags >> 26
-        w = self.pin('BlendN', flags & 0x03FFFFFF, BLENDN_RESIDUAL) or {}
+        resid = flags & 0x03FFFFFF & ~SYNC_BIT
+        if resid:
+            self.unpin_text('BlendN flags', resid)
         out = self.head(off, ind)
-        out.extend(self.txt(ind, 'FrameFilter', w.get('FrameFilter')))
-        out.extend(self.txt(ind, 'SynchronizerType', w.get('SynchronizerType')))
-        out.append('%s<ZeroDestination value="%s" />' % (ind, _b(w.get('ZeroDestination'))))
+        out.append('%s<FrameFilter />' % ind)
+        out.extend(self.sync(ind, flags))
+        out.append('%s<ZeroDestination value="False" />' % ind)
         if not n:
             out.append('%s<Children />' % ind)
             return out
+        # PER-CHILD SOURCE KINDS. After the n child pointers comes a byte per child
+        # (packed 4 per dword): bits0-1 = Weight kind, bits4-5 = FrameFilter kind. It reads
+        # 0 whenever every child is plain, which is why it looked like "a 0 terminator".
+        # MEASURED: taskambientlowriderarm BlendN @0x1C0 - ptrs 0x1CC/0x1D0, kinds 0x1D4 =
+        # 0x00002020 (both children FrameFilter kind 2), payloads 0x1D8/0x1DC = 0x3273E937.
+        kw = off + 0x0C + 4 * n
+        nkw = (n + 3) // 4
+        p = kw + 4 * nkw
+        kinds = []
+        for i in range(n):
+            kinds.append((self.u32(kw + 4 * (i // 4)) >> (8 * (i % 4))) & 0xFF)
+        if n > 4 and any(kinds):
+            self.refuse('BlendN at 0x%X has %d children AND a non-zero child-kind word - '
+                        'only the <=4-child packing was witnessed' % (off, n))
         out.append('%s<Children>' % ind)
         for i in range(n):
+            kb = kinds[i]
+            if kb & ~0x33:
+                self.unpin_text('BlendN child kind byte', kb)
             out.append('%s <Item>' % ind)
-            out.extend(self.txt(ind + '  ', 'Weight', w.get('child_weight')))
-            out.extend(self.txt(ind + '  ', 'FrameFilter', w.get('child_framefilter')))
+            wl, p = self.f_scalar(ind + '  ', 'Weight', kb & 3, p)
+            fl, p = self.f_pair(ind + '  ', 'FrameFilter', (kb >> 4) & 3, p)
+            out.extend(wl)
+            out.extend(fl)
             out.extend(self.node(self.ptr(off + 0x0C + 4 * i), 'Node', ind + '  '))
             out.append('%s </Item>' % ind)
         out.append('%s</Children>' % ind)
         return out
 
-    def _n_addsubtract(self, off, ind):
+    def _two_child(self, off, ind, weight, merge_blend):
         flags = self.u32(off + 0x08)
-        w = self.pin('AddSubtract', flags & ~0x00A000C3, ADDSUB_RESIDUAL) or {}
         out = self.head(off, ind)
         out.extend(self.node(self.ptr(off + 0x0C), 'Child0', ind))
         out.extend(self.node(self.ptr(off + 0x10), 'Child1', ind))
-        out.extend(self.txt(ind, 'Child0InfluenceOverride', w.get('Child0InfluenceOverride')))
-        out.extend(self.txt(ind, 'Child1InfluenceOverride', w.get('Child1InfluenceOverride')))
-        k = flags & 3
-        if k == KIND_VALUE:
-            out.append('%s<Weight value="%s" />' % (ind, _f(self.u32(off + 0x14))))
-        elif k == KIND_PARAMETER:
-            out.append('%s<Weight parameter="%s" />'
-                       % (ind, meta2xml.esc(self.nm(self.u32(off + 0x14)))))
+        out.extend(self.txt(ind, 'Child0InfluenceOverride', 'None'))
+        out.extend(self.txt(ind, 'Child1InfluenceOverride', 'None'))
+        p = off + 0x14
+        if weight:
+            wl, p = self.f_scalar(ind, 'Weight', flags & 3, p)
+            out.extend(wl)
+            ffk = (flags >> 2) & 3
         else:
-            out.append('%s<Weight value="%s" />'
-                       % (ind, self.unpin_text('AddSubtract Weight source kind', k)))
-        out.extend(self.txt(ind, 'FrameFilter', w.get('FrameFilter')))
-        out.extend(self.txt(ind, 'SynchronizerType', w.get('SynchronizerType')))
-        out.append('%s<MergeBlend value="%s" />' % (ind, _b(w.get('MergeBlend'))))
+            ffk = flags & 3
+        ff, p = self.f_pair(ind, 'FrameFilter', ffk, p)
+        out.extend(ff)
+        out.extend(self.sync(ind, flags))
+        if merge_blend:
+            out.append('%s<MergeBlend value="False" />' % ind)
         out.append('%s<UnkFlag6 value="%s" />' % (ind, _b((flags >> 6) & 1)))
         out.append('%s<UnkFlag7 value="%d" />' % (ind, (flags >> 7) & 1))
         out.append('%s<UnkFlag21 value="%d" />' % (ind, (flags >> 21) & 1))
-        out.append('%s<UnkFlag23 value="%d" />' % (ind, (flags >> 23) & 1))
-        out.append('%s<UnkFlag25 value="%s" />' % (ind, _b((flags >> 25) & 1)))
+        if merge_blend:
+            out.append('%s<UnkFlag23 value="%d" />' % (ind, (flags >> 23) & 1))
+            out.append('%s<UnkFlag25 value="%s" />' % (ind, _b((flags >> 25) & 1)))
         return out
 
+    def _n_addsubtract(self, off, ind):
+        return self._two_child(off, ind, weight=True, merge_blend=True)
+
+    def _n_blend(self, off, ind):
+        return self._two_child(off, ind, weight=True, merge_blend=True)
+
+    def _n_merge(self, off, ind):
+        return self._two_child(off, ind, weight=False, merge_blend=False)
+
     # -- state sub-arrays --------------------------------------------------------------
+    def cond_stride(self, off):
+        """Condition records are VARIABLE width, by shape:
+             8 B  value_float  (TimeGreaterThan)     MEASURED weapon.mrf 0x42C..0x434
+            12 B  bit / param_bool / param_float
+            16 B  param_range  (Min AND Max)         MEASURED mpheist task_mp_pointing 0x1E8
+        A fixed 12 walked the next record into garbage in both directions."""
+        shape = COND_SHAPE.get(CONDITION_TYPES.get(self.u32(off)))
+        return {'value_float': 8, 'param_range': 16}.get(shape, 12)
+
+    def cond_block(self, off, n):
+        """-> [(offset, stride)] for the n conditions starting at off, and the end offset."""
+        out = []
+        for _ in range(n):
+            s = self.cond_stride(off)
+            out.append(off)
+            off += s
+        return out, off
+
     def transitions(self, off, n, ind):
         if not n:
             return ['%s<Transitions />' % ind]
         out = ['%s<Transitions>' % ind]
         for _ in range(n):
             out.extend(self.transition(off, ind + ' '))
-            off += 0x18 + 12 * ((self.u32(off) >> 20) & 7)
+            _, end = self.cond_block(off + 0x18, (self.u32(off) >> 20) & 7)
+            off = end
         out.append('%s</Transitions>' % ind)
         return out
 
     def transition(self, off, ind):
         flags = self.u32(off)
         n_cond = (flags >> 20) & 7
-        w = self.pin('Transition', flags & ~TRANSITION_KNOWN_BITS, TRANSITION_RESIDUAL) or {}
+        resid = flags & ~TRANSITION_KNOWN_BITS
+        if PASSTHROUGH:
+            w = {'BlendModifier': 'R%08X' % resid, 'SynchronizerType': 'S%08X' % resid}
+        else:
+            if resid:
+                self.refuse('Transition at 0x%X: flag bits 0x%08X outside the derived '
+                            'layout were never witnessed' % (off, resid))
+            bm = (flags >> TRANSITION_BM_SHIFT) & TRANSITION_BM_MASK
+            bmt = BLEND_MODIFIERS.get(bm)
+            if bmt is None:
+                self.refuse('Transition at 0x%X: BlendModifier %d was never witnessed '
+                            '(only 0=SlowInSlowOut, 1=SlowOut)' % (off, bm))
+                bmt = 'UNPINNED_BM_%d' % bm
+            w = {'BlendModifier': bmt,
+                 'SynchronizerType': 'None' if flags & TRANSITION_SYNC_BIT else 'Phase'}
         ff = self.u32(off + 0x04)
         i2 = ind + ' '
         out = ['%s<Item>' % ind,
@@ -459,8 +469,9 @@ class _Mrf(object):
             out.append('%s<Conditions />' % i2)
         else:
             out.append('%s<Conditions>' % i2)
-            for i in range(n_cond):
-                out.extend(self.condition(off + 0x18 + 12 * i, i2 + ' '))
+            offs, _ = self.cond_block(off + 0x18, n_cond)
+            for o in offs:
+                out.extend(self.condition(o, i2 + ' '))
             out.append('%s</Conditions>' % i2)
         out.append('%s</Item>' % ind)
         return out
@@ -469,20 +480,31 @@ class _Mrf(object):
         t, a, b = struct.unpack_from('<III', self.d, off)
         kind = CONDITION_TYPES.get(t)
         if kind is None:
-            raise MrfUnpinned('transition condition type %d at 0x%X is not in the oracle-pinned '
-                              'enum (%s)' % (t, off, ', '.join(sorted(CONDITION_TYPES.values()))))
+            raise MrfUnpinned('transition condition type %d at 0x%X is not in the '
+                              'oracle-pinned enum' % (t, off))
         out = ['%s<Item type="%s">' % (ind, kind)]
-        if kind == 'MoveNetworkTrigger':
+        shape = COND_SHAPE[kind]
+        if shape == 'bit':
             out.append('%s <BitPosition value="%d" />' % (ind, a))
             out.append('%s <Invert value="%s" />' % (ind, _b(b)))
-        else:                                            # EventOccurred
+        elif shape == 'param_bool':
             out.extend(self.txt(ind + ' ', 'ParameterName', self.nm(a)))
             out.append('%s <Value value="%s" />' % (ind, _b(b)))
+        elif shape == 'param_float':
+            out.extend(self.txt(ind + ' ', 'ParameterName', self.nm(a)))
+            out.append('%s <Value value="%s" />' % (ind, _f(b)))
+        elif shape == 'param_range':
+            # MEASURED (mpheist task_mp_pointing @0x1E8/0x7EC/0xE18): the record stores
+            # MAX at +0x08 and MIN at +0x0C - the reverse of the emitted order.
+            out.extend(self.txt(ind + ' ', 'ParameterName', self.nm(a)))
+            out.append('%s <Min value="%s" />' % (ind, _f(self.u32(off + 12))))
+            out.append('%s <Max value="%s" />' % (ind, _f(b)))
+        elif shape == 'value_float':
+            out.append('%s <Value value="%s" />' % (ind, _f(a)))
         out.append('%s</Item>' % ind)
         return out
 
     def params(self, off, n, ind, tag, name_tag, side):
-        """InputParameters / OutputParameters - same 12-byte record, mirrored element names."""
         if not n:
             return ['%s<%s />' % (ind, tag)]
         out = ['%s<%s>' % (ind, tag)]
@@ -543,15 +565,12 @@ class _Mrf(object):
             raise MrfUnpinned('operator type %d at 0x%X is not in the oracle-pinned enum '
                               '(%s)' % (t, off, ', '.join(sorted(OPERATOR_TYPES.values()))))
         if kind == 'Finish':
-            # MEASURED: the reference exporter writes the open and close tags on their OWN lines for an
-            # operator with no fields - it is NOT collapsed to a self-closing element.
             return (['%s<Item type="Finish">' % ind, '%s</Item>' % ind], off + 4, True)
         if kind == 'PushParameter':
             out = ['%s<Item type="PushParameter">' % ind]
             out.extend(self.txt(ind + ' ', 'ParameterName', self.nm(self.u32(off + 4))))
             out.append('%s</Item>' % ind)
             return out, off + 8, False
-        # Remap
         a, mn, mx, cnt, b, c = struct.unpack_from('<IIIIII', self.d, off + 4)
         if (a, b, c) != (4, 4, 0):
             self.unpin_text('Remap constants', (a << 40) | (b << 8) | c)
@@ -576,7 +595,6 @@ class _Mrf(object):
         out.append('%s</Item>' % ind)
         return out, p + 16 * cnt, False
 
-    # -- top level ---------------------------------------------------------------------
     def lines(self):
         if self.d[:4] != MAGIC:
             raise MrfError('not a MoVE network: magic %r' % (self.d[:4],))
@@ -588,9 +606,6 @@ class _Mrf(object):
             raise MrfError('payload size %d does not match blob %d' % (size, len(self.d)))
         for o in (0x08, 0x0C, 0x10, 0x18, 0x1C):
             if self.u32(o):
-                # Two of these five drive <Unk1>/<UnkBytes>; all are zero in every witnessed
-                # file, so a non-zero one means the tail elements are NOT empty and this
-                # emitter would silently drop their content.
                 self.unpin_text('MoVE header dword at +0x%02X' % o, self.u32(o))
         p, trig = self.slot_table(0x20)
         p, flags = self.slot_table(p)
@@ -604,18 +619,21 @@ class _Mrf(object):
         return out
 
 
-def convert(name, blob, names=None, strict=False):
-    """`.mrf` blob -> reference-identical XML text (CRLF, trailing newline).
+COND_SHAPE = {
+    'MoveNetworkTrigger': 'bit', 'MoveNetworkFlag': 'bit',
+    'EventOccurred': 'param_bool', 'BoolParameterEquals': 'param_bool',
+    'ParameterGreaterThan': 'param_float', 'ParameterGreaterOrEqual': 'param_float',
+    'ParameterLessThan': 'param_float', 'ParameterLessOrEqual': 'param_float',
+    'ParameterInsideRange': 'param_range', 'ParameterOutsideRange': 'param_range',
+    'TimeGreaterThan': 'value_float', 'TimeLessThan': 'value_float',
+}
 
-    names  : {joaat:int -> str} - the same table the rest of QUARRY passes around.
-    strict : refuse (raise MrfUnpinned) instead of writing an `UNPINNED_0x…` marker when a
-             value appears that the single oracle never showed.
-    """
+
+def convert(name, blob, names=None, strict=False):
     m = _Mrf(blob, names, strict)
     return '\r\n'.join(m.lines()) + '\r\n'
 
 
 def convert_with_report(name, blob, names=None, strict=False):
-    """convert(), plus the list of values that were refused rather than guessed."""
     m = _Mrf(blob, names, strict)
     return '\r\n'.join(m.lines()) + '\r\n', list(m.unpinned)

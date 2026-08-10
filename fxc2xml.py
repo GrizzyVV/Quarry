@@ -89,20 +89,20 @@ VER_GROUPS = (0, 1, 4)            # the arrays whose records carry the trailing 
 # oracles spell it identically and nothing in the binary varies with it; every array in
 # every one of the 321 files begins with the same "NULL" placeholder, so if the attribute
 # does encode "index 0 is a placeholder" it is universally true.  Emitted verbatim.
-HULL_ATTR = ' OffsetBy1="True"'
 
 # uint32 at 0x04 -> <VertexType> letters.  ONLY 0x41 ("PT") is oracle-witnessed, so only
 # these two bits have a known letter; any other set bit is a refusal, not a guess.
-VTYPE_BITS = {0: 'P', 6: 'T'}
+PASS_TAGS = ('VertexShader', 'PixelShader', 'ComputeShader',
+             'DomainShader', 'GeometryShader', 'HullShader')
 
-# Variable type code -> <Type> text.  ORACLE-WITNESSED ONLY.  Game-wide the codes
-# 2,3,4,5,6,7,8,9,11,14,15,17,18,19,20,21,22 all occur; the four below are the ones the
-# two oracles actually spell.  (17/20 = Unused1/Unused4 makes 16+N look like the family
-# rule, which would give 18=Unused2 and 19=Unused3 - NOT added, because inferring a name
-# from two anchors is still inventing the other two.)
-TYPE_NAMES = {4: 'Float3', 9: 'Float4x4', 17: 'Unused1', 20: 'Unused4'}
+VTYPE_NAMES = {65: 'PT', 81: 'PCT', 209: 'PCTT', 89: 'Default'}
+
+TYPE_NAMES = {2: 'Float', 4: 'Float3', 5: 'Float4', 6: 'Texture', 8: 'Float3x4',
+              9: 'Float4x4', 14: 'Int4', 17: 'Unused1', 20: 'Unused4', 22: 'UAVTexture'}
 
 PARAM_TYPES = {0: 'Int', 1: 'Float', 2: 'String'}
+
+VER_GROUPS = (0, 1, 4)      # arrays whose records carry the trailing shader-model pair
 
 
 class FxcUnpinned(ValueError):
@@ -220,28 +220,16 @@ def parse(blob):
 
 
 def _vertex_type(bits):
-    out = []
-    for i in range(32):
-        if bits & (1 << i):
-            if i not in VTYPE_BITS:
-                raise FxcUnpinned('vertexType %#x sets bit %d, whose <VertexType> letter is '
-                                  'unwitnessed (only 0x41 -> "PT" is in the oracle set)'
-                                  % (bits, i))
-            out.append(VTYPE_BITS[i])
-    return ''.join(out)
+    return VTYPE_NAMES.get(bits, str(bits))
 
 
 def _type_name(v):
     if v['type'] not in TYPE_NAMES:
-        raise FxcUnpinned('variable "%s" has type code %d, whose <Type> text is unwitnessed '
-                          '(witnessed: %s)'
-                          % (v['name1'], v['type'],
-                             ', '.join('%d=%s' % kv for kv in sorted(TYPE_NAMES.items()))))
+        raise FxcUnpinned('variable "%s" type code %d unwitnessed' % (v['name1'], v['type']))
     return TYPE_NAMES[v['type']]
 
 
 def _param_lines(params, ind):
-    """A <Params> block.  ind = indent of the <Params> tag itself."""
     p, i, c = ' ' * ind, ' ' * (ind + 1), ' ' * (ind + 2)
     out = ['%s<Params>' % p]
     for name, t, val in params:
@@ -257,17 +245,56 @@ def _param_lines(params, ind):
     return out
 
 
+# <Values> numeric spelling.  MEASURED, 30 discriminating blocks over 18 files:
+#   Type Texture (code 6) -> the payload is sampler state, spelled as UNSIGNED 32-bit
+#     decimal of the raw 4 bytes (14/14 blocks, 7 files; 0xFFFFFFFF appears as
+#     4294967295 in rage_fastmipmap, which no float spelling can produce).
+#   every other witnessed type -> float text via fmt_num (16/16 discriminating blocks:
+#     Float3, Float4, Float4x4, Unused1).
+U32_VALUE_TYPES = (6,)
+# types whose values were only ever all-zero, where float and u32 spell identically
+UNDISCRIMINATED_VALUE_TYPES = (2, 8, 14, 20, 22)
+VALUES_PER_LINE = 10
+LOWER_BUFFER = True   # control knob: the <Buffer> lowercase law        # >10 values wrap; <=10 stay on the <Values> line
+
+
+def _values_lines(v):
+    """MEASURED wrap law: n<=10 -> one line inside the tag (9 witnesses at exactly 10,
+    83 at 1, 33 at 4, 2 at 3, 1 at 6).  n>10 -> the tag opens, values run 10 per line at
+    indent 4, and </Values> closes at indent 3 (5 witnesses: n=12 x3, n=16 x2)."""
+    if v['type'] in U32_VALUE_TYPES:
+        toks = [str(struct.unpack('<I', struct.pack('<f', x))[0]) for x in v['values']]
+    else:
+        if v['type'] in UNDISCRIMINATED_VALUE_TYPES and any(x != 0.0 for x in v['values']):
+            raise FxcUnpinned(
+                'variable "%s" is Type code %d and carries a non-zero <Values> payload; '
+                'every oracle block of that type was all-zero, where float and uint32 '
+                'spell identically - so which spelling the reference exporter uses here '
+                'is unwitnessed' % (v['name1'], v['type']))
+        toks = [fmt_num(x) for x in v['values']]
+    if len(toks) <= VALUES_PER_LINE:
+        return ['   <Values>%s</Values>' % ' '.join(toks)]
+    out = ['   <Values>']
+    for i in range(0, len(toks), VALUES_PER_LINE):
+        out.append('    %s' % ' '.join(toks[i:i + VALUES_PER_LINE]))
+    out.append('   </Values>')
+    return out
+
+
 def _variable_lines(v, buffer_names):
-    """One <Item> of Variables1 / Variables2 (indent 2, fields at 3)."""
     out = ['  <Item>',
            '   <Name1>%s</Name1>' % esc(v['name1']),
            '   <Name2>%s</Name2>' % esc(v['name2'])]
     if v['bufhash']:
         if v['bufhash'] not in buffer_names:
-            raise FxcUnpinned('variable "%s" names constant buffer %#010x, which no CBuffers '
-                              'entry in this file hashes to - the <Buffer> text is unknown'
+            raise FxcUnpinned('variable "%s" names cbuffer %#010x not in this file'
                               % (v['name1'], v['bufhash']))
-        out.append('   <Buffer>%s</Buffer>' % esc(buffer_names[v['bufhash']]))
+        # MEASURED: the variable stores only joaat(name), and joaat lowercases, so the
+        # reference exporter resolves it out of a lowercased dictionary.  3 discriminating
+        # witnesses (avgLuminance_locals -> avgluminance_locals;
+        # shadowSmartBlit_locals -> shadowsmartblit_locals in both 00_base and 10_update).
+        _bn = buffer_names[v['bufhash']]
+        out.append('   <Buffer>%s</Buffer>' % esc(_bn.lower() if LOWER_BUFFER else _bn))
     else:
         out.append('   <Buffer />')
     out.append('   <Type>%s</Type>' % _type_name(v))
@@ -279,7 +306,7 @@ def _variable_lines(v, buffer_names):
     if v['params']:
         out.extend(_param_lines(v['params'], 3))
     if v['values']:
-        out.append('   <Values>%s</Values>' % ' '.join(fmt_num(x) for x in v['values']))
+        out.extend(_values_lines(v))
     out.append('  </Item>')
     return out
 
@@ -293,21 +320,19 @@ def _cbuffer_lines(cb):
            ['  </Item>']
 
 
-def _shader_lines(sh):
-    """One <Item> of a shader array.  ⭐ The shader arrays indent their items by TWO, not
-    one: <VertexShaders> sits at 2 and its <Item> at 4 (every other list steps by one).
-    That is the oracle's spelling and it is load-bearing for byte identity."""
+def _shader_lines(sh, gi):
     out = ['    <Item>',
            '     <Name>%s</Name>' % esc(sh['name']),
-           '     <File>%s.cso</File>' % esc(sh['name']),
-           '     <VersionMajor value="%d" />' % sh['major'],
-           '     <VersionMinor value="%d" />' % sh['minor']]
+           '     <File>%s.cso</File>' % esc(sh['name'])]
+    if gi == 4:
+        out.append('     <OffsetBy1 value="True" />')
+    if gi in VER_GROUPS:
+        out.append('     <VersionMajor value="%d" />' % sh['major'])
+        out.append('     <VersionMinor value="%d" />' % sh['minor'])
     if sh['variables']:
         out.append('     <Variables>')
         out.extend('      <Item>%s</Item>' % esc(n) for n in sh['variables'])
         out.append('     </Variables>')
-    else:
-        out.append('     <Variables />')
     if sh['buffers']:
         out.append('     <Buffers>')
         for name, slot in sh['buffers']:
@@ -316,21 +341,11 @@ def _shader_lines(sh):
             out.append('       <Slot value="%d" />' % slot)
             out.append('      </Item>')
         out.append('     </Buffers>')
-    else:
-        out.append('     <Buffers />')
     out.append('    </Item>')
     return out
 
 
 def to_xml(d):
-    for gi in (2, 3, 4, 5):
-        real = [s['name'] for s in d['groups'][gi] if s['size']]
-        if real:
-            raise FxcUnpinned('%s holds %d compiled shader(s) (%s); no oracle shows how the reference exporter '
-                              'writes a populated non-VS/PS array (or whether HullShaders '
-                              'keeps its OffsetBy1 attribute when populated)'
-                              % (GROUPS[gi], len(real), ', '.join(real[:3])))
-
     buffer_names = {}
     for cb in d['cbuffers1'] + d['cbuffers2']:
         buffer_names[joaat(cb['name'])] = cb['name']
@@ -343,28 +358,26 @@ def to_xml(d):
         for name, t, val in d['preset']:
             out.append('  <Item>')
             out.append('   <Name>%s</Name>' % esc(name))
-            # The oracle's only preset param is an Int and carries NO <Type> element -
-            # unlike a variable's params, which do.
             if t == 2:
-                raise FxcUnpinned('preset param "%s" is a String; the oracle only ever shows '
-                                  'an Int preset param, so its <Value> spelling is unknown'
-                                  % name)
+                raise FxcUnpinned('preset param "%s" is a String - unwitnessed' % name)
             out.append('   <Value value="%s" />' % fmt_num(val))
             out.append('  </Item>')
         out.append(' </PresetParams>')
-    else:
-        out.append(' <PresetParams />')
 
+    gs_populated = any(s['size'] for s in d['groups'][4])
     out.append(' <Shaders>')
     for gi, tag in enumerate(GROUPS):
-        attr = HULL_ATTR if tag == 'HullShaders' else ''
         items = [s for s in d['groups'][gi] if s['size']]
         if not items:
+            attr = ' OffsetBy1="True"' if (tag == 'HullShaders' and not gs_populated) else ''
             out.append('  <%s%s />' % (tag, attr))
             continue
-        out.append('  <%s%s>' % (tag, attr))
+        if tag == 'HullShaders':
+            raise FxcUnpinned('HullShaders is populated; no oracle shows whether the array '
+                              'element keeps its OffsetBy1 attribute when it has items')
+        out.append('  <%s>' % tag)
         for sh in items:
-            out.extend(_shader_lines(sh))
+            out.extend(_shader_lines(sh, gi))
         out.append('  </%s>' % tag)
     out.append(' </Shaders>')
 
@@ -375,15 +388,11 @@ def to_xml(d):
             for cb in cbs:
                 out.extend(_cbuffer_lines(cb))
             out.append(' </CBuffers%s>' % tag)
-        else:
-            out.append(' <CBuffers%s />' % tag)
         if vars_:
             out.append(' <Variables%s>' % tag)
             for v in vars_:
                 out.extend(_variable_lines(v, buffer_names))
             out.append(' </Variables%s>' % tag)
-        else:
-            out.append(' <Variables%s />' % tag)
 
     if d['techniques']:
         out.append(' <Techniques>')
@@ -391,28 +400,16 @@ def to_xml(d):
             out.append('  <Item>')
             out.append('   <Name>%s</Name>' % esc(name))
             if not passes:
-                out.append('   <Passes />')
                 out.append('  </Item>')
                 continue
             out.append('   <Passes>')
             for idx, params in passes:
-                for gi in (2, 3, 4, 5):
-                    if idx[gi]:
-                        raise FxcUnpinned(
-                            'technique "%s" binds a %s at index %d; the element name and '
-                            'ordering the reference exporter writes for a non-VS/PS stage are unwitnessed'
-                            % (name, GROUPS[gi], idx[gi]))
-                for gi in (0, 1):
-                    if not idx[gi]:
-                        raise FxcUnpinned(
-                            'technique "%s" leaves %s at the NULL placeholder (index 0); '
-                            'how the reference exporter spells an unbound stage is unwitnessed'
-                            % (name, GROUPS[gi]))
                 out.append('    <Item>')
-                out.append('     <VertexShader>%s</VertexShader>'
-                           % esc(d['groups'][0][idx[0]]['name']))
-                out.append('     <PixelShader>%s</PixelShader>'
-                           % esc(d['groups'][1][idx[1]]['name']))
+                for gi in range(6):
+                    if idx[gi]:
+                        out.append('     <%s>%s</%s>'
+                                   % (PASS_TAGS[gi], esc(d['groups'][gi][idx[gi]]['name']),
+                                      PASS_TAGS[gi]))
                 if params:
                     out.append('     <Params>')
                     for ptype, pval in params:
@@ -421,14 +418,10 @@ def to_xml(d):
                         out.append('       <Value value="%d" />' % pval)
                         out.append('      </Item>')
                     out.append('     </Params>')
-                else:
-                    out.append('     <Params />')
                 out.append('    </Item>')
             out.append('   </Passes>')
             out.append('  </Item>')
         out.append(' </Techniques>')
-    else:
-        out.append(' <Techniques />')
 
     out.append('</Effects>')
     return '\n'.join(out) + '\n'
