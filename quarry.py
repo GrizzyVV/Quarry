@@ -3191,6 +3191,19 @@ def cmd_view(a):
     # lesson: mpheist4 ships dlc.rpf + dlc1.rpf + dlc2.rpf; taking only dlc.rpf silently
     # dropped 7.2 GB). A view whose source set differs from extract's would certify the
     # wrong universe.
+    #
+    # ⛔ DLC LOAD ORDER IS NOT COSMETIC (fixed 2026-08-11, Matt: "DLC needs to be loaded in a
+    # specific order based on when it was published... We have no choice but TO RESPECT THAT
+    # LOAD ORDER, PERIOD").
+    # `was:` view enumerated the packs in discovery order and numbered its 20_dlc slots from that,
+    # while `init` and `extract` both call order_dlc() to apply the game's OWN dlclist.xml - so
+    # 83 of 92 packs got a different ordinal from the two halves of the same tool. The corpus was
+    # never wrong (extract decides winners), but the manifest's ordinals disagreed with the game,
+    # and the proposed "document the number as a label" was the wrong answer: the ordinal is load
+    # order, and it has to BE load order. Same call, same source of truth, both sides.
+    dlc, dlc_authoritative = order_dlc(dlc, read_dlclist(a.game, keys, tables, oodle))
+    print('dlc order: ' + ("from the game's own dlclist.xml (authoritative)" if dlc_authoritative
+                           else 'HEURISTIC - dlclist.xml unreadable, so the ordinals are a guess'))
     names = [os.path.basename(d) for d in dlc]
     jobs = [(os.path.join(a.game, n), '00_base') for n in base]
     jobs += [(p, '10_update') for p in upd]
