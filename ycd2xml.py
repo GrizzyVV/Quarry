@@ -704,12 +704,13 @@ class Ycd:
         return cands
 
     def _decode_inline_qz(self, desc, framecount):
-        """INLINE QuantizeFloat - 64-frame BLOCK codec (derived 2026-08-10; sel == 0).
+        """INLINE QuantizeFloat - 64-frame BLOCK codec, Rice(k = selector).
 
         Descriptor: u32 sizeWords, u32 B, f32 Quantum, f32 Offset, payload = sizeWords-4 u32.
-            W   = B & 0xFF          bit width of each block bit-offset
-            nb  = (B >> 8) & 0xFF   bit width of each block seed value
-            sel = (B >> 16) & 0xFF  UNDERIVED unless 0 -> refuse
+            W   = B & 0xFF           bit width of each block bit-offset
+            nb  = (B >> 8) & 0xFF    bit width of each block seed value
+            sel = (B >> 16) & 0xFF   RICE PARAMETER k of the code alphabet
+            hi  = (B >> 24) & 0xFF   0 on every witness -> refuse if set
 
         N = ceil(framecount / 64).  Payload is an LSB-first bitstream:
             N x W-bit block bit-offsets (off[0] == 0, strictly increasing; measured from
@@ -717,10 +718,11 @@ class Ycd:
             hdr = N * (W + nb).
         Block j covers frames [64j, min(64j+64, framecount)); it decodes independently
         from bit hdr+off[j] with V = seed[j] and D = 0 (the velocity RESETS every block):
-            emit V, then (blockframes - 1) codes
-            '1'           -> 0
-            '0'*z '1' <s> -> -z if s else +z
+            emit V, then (blockframes - 1) codes.  One code, k = sel:
+                [k-bit remainder, LSB-first][unary quotient: q zeros then a 1][sign if m]
+                m = (q << k) | rem ;  c = -m if signbit else +m ;  m == 0 carries NO sign
             per code: D += c ; V += D ; emit V
+        k = 0 is exactly the previously proven selector-0 code (no remainder field).
         Returns None whenever anything fails to close -> a counted residual, never values.
         """
         S = self.S
@@ -728,10 +730,16 @@ class Ycd:
         q = f32(S, desc + 8); off = f32(S, desc + 0xC)
         W = B & 0xFF
         nb = (B >> 8) & 0xFF
-        if (B >> 16) != 0:                     # selector (and the top byte) UNDERIVED
+        k = (B >> 16) & 0xFF
+        if (B >> 24) != 0:                     # top byte UNDERIVED (0 on all 4,086 witnesses)
             return None
+        if k > 13:                             # UNWITNESSED selector: the census tops out at
+            return None                        # 13 and all 14 values have oracle witnesses
         base = desc + 16
-        nbits = (desc + A * 4 - base) * 8
+        end = desc + A * 4
+        if A < 4 or end > len(S):
+            return None
+        nbits = (end - base) * 8
         if framecount < 1 or nbits <= 0:
             return None
 
@@ -748,12 +756,12 @@ class Ycd:
         hdr = N * (W + nb)
         if hdr > nbits:
             return None
-        offs = [fld(k * W, W) for k in range(N)]
-        seeds = [fld(N * W + k * nb, nb) for k in range(N)]
+        offs = [fld(i * W, W) for i in range(N)]
+        seeds = [fld(N * W + i * nb, nb) for i in range(N)]
         if offs[0] != 0:
             return None
-        for k in range(N - 1):
-            if offs[k] >= offs[k + 1]:
+        for i in range(N - 1):
+            if offs[i] >= offs[i + 1]:
                 return None
         if hdr + offs[-1] >= nbits:
             return None
@@ -764,20 +772,27 @@ class Ycd:
             V = seeds[j]; Dv = 0
             raw.append(V)
             for _ in range(nfr - 1):
+                if p + k > nbits:
+                    return None
+                rem = fld(p, k) if k else 0
+                p += k
+                z = 0
+                while p < nbits and not bit(p):
+                    z += 1; p += 1
                 if p >= nbits:
                     return None
-                if bit(p):
-                    c = 0; p += 1
-                else:
-                    z = 0
-                    while p < nbits and not bit(p):
-                        z += 1; p += 1
-                    if p + 1 >= nbits:
+                p += 1
+                m = (z << k) | rem
+                if m:
+                    if p >= nbits:
                         return None
+                    c = -m if bit(p) else m
                     p += 1
-                    sgn = bit(p); p += 1
-                    c = -z if sgn else z
+                else:
+                    c = 0
                 Dv += c; V += Dv
+                if V < 0:                      # raws are unsigned quantiser indices:
+                    return None                # measured >= 0 on 4,086/4,086 witnesses
                 raw.append(V)
             if j + 1 < N:
                 if p != hdr + offs[j + 1]:
