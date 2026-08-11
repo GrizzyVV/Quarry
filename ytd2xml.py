@@ -241,6 +241,23 @@ def dds_header(w, h, mips, fmt, blk, bpp):
     dxgi = DXGI_BY_FOURCC.get(struct.pack("<I", fmt)) if blk is not None else None
     if blk is not None:
         fourcc = b"DX10" if dxgi else struct.pack("<I", fmt)
+        # BC5: the reference writes the MODERN alias `BC5U` where the game stores the legacy
+        # `ATI2`, and the spec is the reference. `was:` we packed the source u32 verbatim and an
+        # agent exempted the difference as PASS_FOURCC_ALIAS on the grounds that ours is
+        # "source-faithful" - but exemptions are Matt's to grant, not an agent's, and the full
+        # population census counts 787 files carrying this. Witnessed by
+        # _Oracles/dds/00_base/mp_noise_concrete.dds (the one BC5 sidecar in the store).
+        # ⚠ THE BC4 MIRROR (ATI1 -> BC4U) IS DELIBERATELY NOT DONE. It is the obvious symmetry
+        # and there is ZERO oracle for it - and a rule fitted to a symmetry rather than a witness
+        # is exactly how this project keeps shipping single-witness laws. It stays source-faithful
+        # and COUNTED until an ATI1 oracle exists (Session B budgets one).
+        if fourcc == b"ATI2":
+            fourcc = b"BC5U"
+            FOURCC_ALIASED["ATI2->BC5U (witnessed)"] = \
+                FOURCC_ALIASED.get("ATI2->BC5U (witnessed)", 0) + 1
+        elif fourcc == b"ATI1":
+            FOURCC_ALIASED["ATI1 kept verbatim (BC4U mirror UNWITNESSED - no oracle)"] = \
+                FOURCC_ALIASED.get("ATI1 kept verbatim (BC4U mirror UNWITNESSED - no oracle)", 0) + 1
         pf = struct.pack("<2I4s5I", 32, DDPF_FOURCC, fourcc, 0, 0, 0, 0, 0)
     elif fmt == 25:
         # ⛔ A1R5G5B5 IS 16 bpp AND MUST NOT FALL THROUGH TO THE 32-bit else-branch (fixed
@@ -272,6 +289,10 @@ def dds_header(w, h, mips, fmt, blk, bpp):
 # ---------------------------------------------------------------- dictionary
 # Refused TEXTURES, counted so the gap is never silent. Same idiom as ydr2xml.REFUSALS: the key is
 # the CLASS of refusal (so a new unmapped format shows up as its own line with a count), the detail
+# Counted fourCC aliasing, so a header rewrite is never silent: the reference's own spelling
+# is the spec, and any place we deviate from the source bytes must be visible in the run.
+FOURCC_ALIASED = {}
+
 # names one example. A caller that wants to report them reads TEXTURE_REFUSALS.
 TEXTURE_REFUSALS = collections.Counter()
 TEXTURE_REFUSAL_EXAMPLE = {}
