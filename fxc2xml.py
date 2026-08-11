@@ -54,15 +54,22 @@ WHOLE-FILE LAYOUT (all little-endian; "str" = uint8 length INCLUDING the NUL, th
                    type 1 = Float  -> float32 -> <Value value="N" />
                    type 2 = String -> str     -> <Value>text</Value>
 
-WHAT THIS MODULE REFUSES RATHER THAN GUESS (see FxcUnpinned):
-  * a vertexType bit other than 0/6 - the oracle only ever spells "PT", so only those two
-    letters are known.  42/321 files stay inside it.
-  * a variable type code outside TYPE_NAMES - 17 codes exist game-wide, 4 are witnessed.
-  * a populated ComputeShaders/DomainShaders/GeometryShaders/HullShaders array, or a
-    technique pass that references one - the element names/order the reference exporter writes there are
-    unwitnessed.
-  * a param type code above 2.
-Each refusal names the exact missing datum so one more oracle export closes it.
+ENVELOPE (2026-08-11 re-derivation, 114 oracle exports):
+  Every emission-relevant branch value that occurs anywhere in the 1,446 game .fxc is
+  witnessed by at least THREE distinct oracle files - 0 unwitnessed, 0 single-witness.
+  All 1,446 convert with 0 refusals and 0 errors.  The emitter therefore extrapolates on
+  no axis; see dev_fxc/coverage.py for the closure table.
+
+WHAT THIS MODULE STILL REFUSES RATHER THAN GUESS (see FxcUnpinned):
+  * a variable type code outside TYPE_NAMES (all 17 game-wide codes are witnessed, so this
+    can only fire on a modded//future file).
+  * a vertexType value that is neither in the witnessed name table nor in the witnessed
+    decimal-fallback set.  ⭐ Spelling an unknown value decimal is NOT safe: the table is a
+    whole-value lookup, and 21 of the 35 values in the game DO have a name.
+  * a non-zero <Values> payload on Float3x4/Int4/UAVBuffer/UAVTexture - those four types are
+    all-zero in every one of the 1,446 files, where float and uint32 spell identically, so
+    the reference's choice for them has never been shown.
+  * a param type code above 2, and a String-typed preset param.
 
 Reuses: fmt_num / esc / joaat from meta2xml (the proven float-text + XML-escape laws).
 """
@@ -85,20 +92,36 @@ GROUPS = ('VertexShaders', 'PixelShaders', 'ComputeShaders',
 GS_GROUP = 4                      # the array whose records carry the extra byte
 VER_GROUPS = (0, 1, 4)            # the arrays whose records carry the trailing version pair
 
-# <HullShaders OffsetBy1="True" /> - MEASURED CONSTANT, not read from the file.  Both
-# oracles spell it identically and nothing in the binary varies with it; every array in
-# every one of the 321 files begins with the same "NULL" placeholder, so if the attribute
-# does encode "index 0 is a placeholder" it is universally true.  Emitted verbatim.
+# OffsetBy1 - MEASURED: the marker appears exactly ONCE per file.  It rides the FIRST
+# <GeometryShaders> item when that array has any real shader, and otherwise becomes an
+# attribute on the <HullShaders> element (self-closing or open form alike).  Nothing in
+# the binary varies with it - the GS record's spare byte is 0 in all 3,383 GS records
+# game-wide - so it is emitted positionally, not read.  Witnesses: 90 empty-GS files,
+# 13 populated-GS files (nGS = 1, 3 and 4), 7 GS-empty-but-HS-populated files.
 
 # uint32 at 0x04 -> <VertexType> letters.  ONLY 0x41 ("PT") is oracle-witnessed, so only
 # these two bits have a known letter; any other set bit is a refusal, not a guess.
 PASS_TAGS = ('VertexShader', 'PixelShader', 'ComputeShader',
              'DomainShader', 'GeometryShader', 'HullShader')
 
-VTYPE_NAMES = {65: 'PT', 81: 'PCT', 209: 'PCTT', 89: 'Default'}
+# MEASURED value->text table.  114 oracles cover all 35 distinct vertexType values that
+# occur in the 1,446 game .fxc: 21 have a name, 14 spell decimal.  It is a whole-value
+# LOOKUP, not a bit decode - 113 (bits 0,4,5,6) spells "113" while 121 (bits 0,3,4,5,6)
+# spells "PNCCT"; a bit decode would have named both.
+VTYPE_NAMES = {17: 'PC', 25: 'PNC', 65: 'PT', 81: 'PCT', 89: 'Default', 121: 'PNCCT',
+               193: 'PTT', 209: 'PCTT', 217: 'PNCTT', 249: 'PNCCTT', 473: 'PNCTTT',
+               985: 'PNCTTTT', 1017: 'PNCCTTTT', 16473: 'DefaultEx', 16505: 'PNCCTX',
+               16601: 'PNCTTX', 16633: 'PNCCTTX', 16857: 'PNCTTTX', 17017: 'PNCCTTX_2',
+               17113: 'PNCTTTX_3', 17145: 'PNCCTTTX'}
+# values that MEASURE to a decimal spelling (so the fallback is witnessed, not assumed):
+VTYPE_DECIMAL = {1, 23, 113, 153, 201, 465, 961, 2009, 16457, 16889, 17401, 28921,
+                 49273, 65649}
 
-TYPE_NAMES = {2: 'Float', 4: 'Float3', 5: 'Float4', 6: 'Texture', 8: 'Float3x4',
-              9: 'Float4x4', 14: 'Int4', 17: 'Unused1', 20: 'Unused4', 22: 'UAVTexture'}
+# all 17 codes that occur game-wide, each 1:1 against reference output
+TYPE_NAMES = {2: 'Float', 3: 'Float2', 4: 'Float3', 5: 'Float4', 6: 'Texture',
+              7: 'Boolean', 8: 'Float3x4', 9: 'Float4x4', 11: 'Int', 14: 'Int4',
+              15: 'Buffer', 17: 'Unused1', 18: 'Unused2', 19: 'Unused3', 20: 'Unused4',
+              21: 'UAVBuffer', 22: 'UAVTexture'}
 
 PARAM_TYPES = {0: 'Int', 1: 'Float', 2: 'String'}
 
@@ -220,7 +243,13 @@ def parse(blob):
 
 
 def _vertex_type(bits):
-    return VTYPE_NAMES.get(bits, str(bits))
+    if bits in VTYPE_NAMES:
+        return VTYPE_NAMES[bits]
+    if bits in VTYPE_DECIMAL:
+        return str(bits)
+    raise FxcUnpinned('vertexType %d is neither in the witnessed name table nor in the '
+                      'witnessed decimal-fallback set - an unwitnessed value may well have '
+                      'a name, and spelling it decimal would be a silent wrong value' % bits)
 
 
 def _type_name(v):
@@ -251,9 +280,11 @@ def _param_lines(params, ind):
 #     4294967295 in rage_fastmipmap, which no float spelling can produce).
 #   every other witnessed type -> float text via fmt_num (16/16 discriminating blocks:
 #     Float3, Float4, Float4x4, Unused1).
-U32_VALUE_TYPES = (6,)
-# types whose values were only ever all-zero, where float and u32 spell identically
-UNDISCRIMINATED_VALUE_TYPES = (2, 8, 14, 20, 22)
+U32_VALUE_TYPES = (6, 7, 11)          # Texture, Boolean, Int
+# types whose <Values> were only ever all-zero, where float and u32 spell identically.
+# Game-wide these NEVER carry a non-zero payload, so the refusal below cannot fire on
+# any shipped file - it exists so a future file cannot smuggle in a guessed spelling.
+UNDISCRIMINATED_VALUE_TYPES = (8, 14, 21, 22)
 VALUES_PER_LINE = 10
 LOWER_BUFFER = True   # control knob: the <Buffer> lowercase law        # >10 values wrap; <=10 stay on the <Values> line
 
@@ -265,7 +296,8 @@ def _values_lines(v):
     if v['type'] in U32_VALUE_TYPES:
         toks = [str(struct.unpack('<I', struct.pack('<f', x))[0]) for x in v['values']]
     else:
-        if v['type'] in UNDISCRIMINATED_VALUE_TYPES and any(x != 0.0 for x in v['values']):
+        if v['type'] in UNDISCRIMINATED_VALUE_TYPES and any(
+                struct.unpack('<I', struct.pack('<f', x))[0] for x in v['values']):
             raise FxcUnpinned(
                 'variable "%s" is Type code %d and carries a non-zero <Values> payload; '
                 'every oracle block of that type was all-zero, where float and uint32 '
@@ -320,11 +352,15 @@ def _cbuffer_lines(cb):
            ['  </Item>']
 
 
-def _shader_lines(sh, gi):
+def _shader_lines(sh, gi, first=False):
     out = ['    <Item>',
            '     <Name>%s</Name>' % esc(sh['name']),
            '     <File>%s.cso</File>' % esc(sh['name'])]
-    if gi == 4:
+    if gi == GS_GROUP and first:
+        # MEASURED: the OffsetBy1 marker appears ONCE per file, on the FIRST
+        # GeometryShaders item - never repeated on later items (witnessed at
+        # nGS = 1, 3 and 4).  When the GS array is empty it moves onto the
+        # <HullShaders> element as an attribute instead (see to_xml).
         out.append('     <OffsetBy1 value="True" />')
     if gi in VER_GROUPS:
         out.append('     <VersionMajor value="%d" />' % sh['major'])
@@ -368,16 +404,14 @@ def to_xml(d):
     out.append(' <Shaders>')
     for gi, tag in enumerate(GROUPS):
         items = [s for s in d['groups'][gi] if s['size']]
+        # the marker lands on <HullShaders> only when the GS array had no item to carry it
+        attr = ' OffsetBy1="True"' if (tag == 'HullShaders' and not gs_populated) else ''
         if not items:
-            attr = ' OffsetBy1="True"' if (tag == 'HullShaders' and not gs_populated) else ''
             out.append('  <%s%s />' % (tag, attr))
             continue
-        if tag == 'HullShaders':
-            raise FxcUnpinned('HullShaders is populated; no oracle shows whether the array '
-                              'element keeps its OffsetBy1 attribute when it has items')
-        out.append('  <%s>' % tag)
-        for sh in items:
-            out.extend(_shader_lines(sh, gi))
+        out.append('  <%s%s>' % (tag, attr))
+        for i, sh in enumerate(items):
+            out.extend(_shader_lines(sh, gi, first=(i == 0)))
         out.append('  </%s>' % tag)
     out.append(' </Shaders>')
 

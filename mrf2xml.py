@@ -17,7 +17,7 @@ import struct
 
 import meta2xml
 
-_SIDECAR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oracle_mrf_names.json')
+_SIDECAR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oracle_mrf_names.json')  # LAB: sidecar stays in the vault
 _FALLBACK_NAMES = None
 FALLBACK_SIDECAR_ERROR = None
 
@@ -62,6 +62,19 @@ OPERATOR_TYPES = {0: 'Finish', 2: 'PushParameter', 5: 'Remap'}
 
 KIND_NONE, KIND_VALUE, KIND_PARAMETER = 0, 1, 2
 
+# ---- DERIVED 2026-08-11 over the FULL 162-file population (measure-only lab) ---------------
+# Each of these is a SHAPE rule (how many bytes a record occupies). Every one was pinned by a
+# structural test a wrong answer cannot pass by luck, never by a refusal message:
+#   * every transition TargetState pointer must land on a real node header,
+#   * every condition code in a list must stay a small pinned integer,
+#   * the operation-record header word at +0x04 must equal 8 x (number of operators in the
+#     chain) - an accounting identity over 3,875 records with ZERO mismatches.
+BLENDN_EXTRA_BIT = 0x00080000       # BlendN: +1 dword at +0x0C  (218 witnesses / 0 oracles)
+TRANS_TAIL_BIT = 0x40000000         # transition: +2 dwords after the conditions (169 / 0)
+TRANS_TAIL_DWORDS = 2
+COND_STRIDE_EXTRA = {7: 12, 10: 8}  # code 7: 155 witnesses/26 files; code 10: 8/6. 0 oracles.
+OPERATOR_SIZES = {4: 8}             # operator code 4 record size (90 witnesses / 0 oracles)
+
 PASSTHROUGH = False
 SYNC_BIT = 0x00100000       # set => "None", clear => "Phase"   (77 BlendN + 17 AddSub + 17 Merge)
 
@@ -74,11 +87,16 @@ SYNC_BIT = 0x00100000       # set => "None", clear => "Phase"   (77 BlendN + 17 
 # bits 1,3,6,7,8,9   present in the corpus, provably NOT emitted: every combination of them
 #                    below appears in an oracle whose output is byte-identical without them.
 BLEND_MODIFIERS = {0: 'SlowInSlowOut', 1: 'SlowOut'}
-TRANSITION_BM_SHIFT, TRANSITION_BM_MASK = 24, 0x1F
+TRANSITION_BM_SHIFT, TRANSITION_BM_MASK = 24, 0x0F
+# R7: bit28 is NOT part of BlendModifier. Folding it in manufactured fake enum values 16
+# and 17 (427 witnesses / 24 files). Measured (bits24-27, bit28) over 7,646 transitions:
+# (0,0) x7148, (0,1) x301, (1,0) x64, (1,1) x126, (2,0) x7. Bits 26-27 never set.
+TRANSITION_BIT28 = 0x10000000
 TRANSITION_SYNC_BIT = 0x20000000
 TRANSITION_INERT_BITS = 0x000003CA          # bits 1,3,6,7,8,9 - witnessed, no emission effect
 TRANSITION_KNOWN_BITS = (0x00700004 | 0x000C0000 | TRANSITION_INERT_BITS
                          | (TRANSITION_BM_MASK << TRANSITION_BM_SHIFT) | TRANSITION_SYNC_BIT)
+TRANSITION_KNOWN_BITS |= 0x40000000     # bit30 - shape derived, spelling NOT oracled
 
 
 class MrfError(Exception):
@@ -188,8 +206,11 @@ class _Mrf(object):
         t = self.u16(off)
         kind = NODE_TYPES.get(t)
         if kind is None:
-            raise MrfUnpinned('node type %d at 0x%X is not in the oracle-pinned enum '
-                              '(%s)' % (t, off, ', '.join(sorted(set(NODE_TYPES.values())))))
+            # LAB: named, counted, and TRAVERSAL-STOPPING for this branch only - siblings keep
+            # walking, so one file reports EVERY un-oracled node type it carries instead of the
+            # first. Sizing from the first refusal is the mistake this lane already paid for.
+            self.refuse('node type %d at 0x%X has no oracle witness' % (t, off))
+            return ['%s<%s type="UNPINNED_NODE_%d" />' % (ind, tag, t)]
         body = getattr(self, '_n_' + kind.lower())(off, ind + ' ')
         return ['%s<%s type="%s">' % (ind, tag, kind)] + body + ['%s</%s>' % (ind, tag)]
 
@@ -328,7 +349,17 @@ class _Mrf(object):
     def _n_blendn(self, off, ind):
         flags = self.u32(off + 0x08)
         n = flags >> 26
-        resid = flags & 0x03FFFFFF & ~SYNC_BIT
+        # DERIVED 2026-08-11, 218 witnesses in 21 files, 0 oracles: bit19 inserts ONE extra
+        # dword at +0x0C ahead of the child pointers, value 0x00000060 in 218/218. Reading the
+        # children without it walked child[0] into garbage in 57 of the 162 population files
+        # and produced BOTH hard crashes; it is also why "node types 0 and 36" appeared to
+        # exist - they are phantoms of this desync, not real codes.
+        blendn_extra = 4 if flags & BLENDN_EXTRA_BIT else 0
+        if blendn_extra:
+            v = self.u32(off + 0x0C)
+            self.refuse('BlendN at 0x%X sets flag bit19 (extra dword 0x%08X) - no oracle '
+                        'witnesses how the reference exporter spells it' % (off, v))
+        resid = flags & 0x03FFFFFF & ~SYNC_BIT & ~BLENDN_EXTRA_BIT
         if resid:
             self.unpin_text('BlendN flags', resid)
         out = self.head(off, ind)
@@ -343,7 +374,7 @@ class _Mrf(object):
         # 0 whenever every child is plain, which is why it looked like "a 0 terminator".
         # MEASURED: taskambientlowriderarm BlendN @0x1C0 - ptrs 0x1CC/0x1D0, kinds 0x1D4 =
         # 0x00002020 (both children FrameFilter kind 2), payloads 0x1D8/0x1DC = 0x3273E937.
-        kw = off + 0x0C + 4 * n
+        kw = off + 0x0C + blendn_extra + 4 * n
         nkw = (n + 3) // 4
         p = kw + 4 * nkw
         kinds = []
@@ -362,7 +393,7 @@ class _Mrf(object):
             fl, p = self.f_pair(ind + '  ', 'FrameFilter', (kb >> 4) & 3, p)
             out.extend(wl)
             out.extend(fl)
-            out.extend(self.node(self.ptr(off + 0x0C + 4 * i), 'Node', ind + '  '))
+            out.extend(self.node(self.ptr(off + 0x0C + blendn_extra + 4 * i), 'Node', ind + '  '))
             out.append('%s </Item>' % ind)
         out.append('%s</Children>' % ind)
         return out
@@ -410,7 +441,10 @@ class _Mrf(object):
             12 B  bit / param_bool / param_float
             16 B  param_range  (Min AND Max)         MEASURED mpheist task_mp_pointing 0x1E8
         A fixed 12 walked the next record into garbage in both directions."""
-        shape = COND_SHAPE.get(CONDITION_TYPES.get(self.u32(off)))
+        t = self.u32(off)
+        if t in COND_STRIDE_EXTRA:
+            return COND_STRIDE_EXTRA[t]
+        shape = COND_SHAPE.get(CONDITION_TYPES.get(t))
         return {'value_float': 8, 'param_range': 16}.get(shape, 12)
 
     def cond_block(self, off, n):
@@ -428,7 +462,10 @@ class _Mrf(object):
         out = ['%s<Transitions>' % ind]
         for _ in range(n):
             out.extend(self.transition(off, ind + ' '))
-            _, end = self.cond_block(off + 0x18, (self.u32(off) >> 20) & 7)
+            flags = self.u32(off)
+            _, end = self.cond_block(off + 0x18, (flags >> 20) & 7)
+            if flags & TRANS_TAIL_BIT:
+                end += 4 * TRANS_TAIL_DWORDS
             off = end
         out.append('%s</Transitions>' % ind)
         return out
@@ -443,6 +480,9 @@ class _Mrf(object):
             if resid:
                 self.refuse('Transition at 0x%X: flag bits 0x%08X outside the derived '
                             'layout were never witnessed' % (off, resid))
+            if flags & TRANSITION_BIT28:
+                self.refuse('Transition at 0x%X sets flag bit28 - an independent flag, not part '
+                            'of BlendModifier; no oracle witnesses it' % off)
             bm = (flags >> TRANSITION_BM_SHIFT) & TRANSITION_BM_MASK
             bmt = BLEND_MODIFIERS.get(bm)
             if bmt is None:
@@ -451,6 +491,11 @@ class _Mrf(object):
                 bmt = 'UNPINNED_BM_%d' % bm
             w = {'BlendModifier': bmt,
                  'SynchronizerType': 'None' if flags & TRANSITION_SYNC_BIT else 'Phase'}
+        if flags & TRANS_TAIL_BIT:
+            _, tend = self.cond_block(off + 0x18, n_cond)
+            self.refuse('Transition at 0x%X sets flag bit30: a 2-dword tail (0x%08X, 0x%08X) '
+                        'follows the conditions - no oracle witnesses how it is spelled'
+                        % (off, self.u32(tend), self.u32(tend + 4)))
         ff = self.u32(off + 0x04)
         i2 = ind + ' '
         out = ['%s<Item>' % ind,
@@ -480,8 +525,8 @@ class _Mrf(object):
         t, a, b = struct.unpack_from('<III', self.d, off)
         kind = CONDITION_TYPES.get(t)
         if kind is None:
-            raise MrfUnpinned('transition condition type %d at 0x%X is not in the '
-                              'oracle-pinned enum' % (t, off))
+            self.refuse('transition condition type %d at 0x%X has no oracle witness' % (t, off))
+            return ['%s<Item type="UNPINNED_COND_%d" />' % (ind, t)]
         out = ['%s<Item type="%s">' % (ind, kind)]
         shape = COND_SHAPE[kind]
         if shape == 'bit':
@@ -539,19 +584,29 @@ class _Mrf(object):
         out = ['%s<Operations>' % ind]
         for _ in range(n):
             idx, pid, mark, extra = struct.unpack_from('<HHHH', self.d, off)
-            if mark != 0x18:
+            # DERIVED: mark == 8 * (number of operators in this record chain) - 3,875/3,875
+            # records, ZERO mismatches, values 24/32/40/64 for chains of 3/4/5/8. Only 24 is
+            # oracle-witnessed, so it is CHECKED, not emitted.
+            if mark % 8 or not (8 <= mark <= 512):
                 self.unpin_text('operation header word at +4', mark)
+            n_ops_declared = mark // 8
             out.append('%s <Item>' % ind)
             out.append('%s  <NodeIndex value="%d" />' % (ind, idx))
             out.append('%s  <NodeParameterId value="%d" />' % (ind, pid))
             out.append('%s  <NodeParameterExtraArg value="%d" />' % (ind, extra))
             out.append('%s  <Operators>' % ind)
             p = off + 8
+            seen_ops = 0
             while True:
                 lines, p, done = self.operator(p, ind + '   ')
                 out.extend(lines)
+                seen_ops += 1
                 if done:
                     break
+            if seen_ops != n_ops_declared:
+                self.refuse('Operations record at 0x%X walked %d operators but its header '
+                            'declares %d (header word 0x%X)'
+                            % (off, seen_ops, n_ops_declared, mark))
             out.append('%s  </Operators>' % ind)
             out.append('%s </Item>' % ind)
             off = p
@@ -562,10 +617,18 @@ class _Mrf(object):
         t = self.u32(off)
         kind = OPERATOR_TYPES.get(t)
         if kind is None:
+            if t in OPERATOR_SIZES:
+                self.refuse('operator type %d at 0x%X has no oracle witness' % (t, off))
+                return (['%s<Item type="UNPINNED_OP_%d" />' % (ind, t)],
+                        off + OPERATOR_SIZES[t], False)
             raise MrfUnpinned('operator type %d at 0x%X is not in the oracle-pinned enum '
                               '(%s)' % (t, off, ', '.join(sorted(OPERATOR_TYPES.values()))))
         if kind == 'Finish':
-            return (['%s<Item type="Finish">' % ind, '%s</Item>' % ind], off + 4, True)
+            # +8, not +4. On the ONLY chain the oracles witness - (PushParameter, Remap,
+            # Finish) - this lands byte-for-byte where the old (Remap 28+16n, Finish 4)
+            # arithmetic landed, because 24+16n+8 == 28+16n+4. It differs only on the longer
+            # chains no oracle carries, and there the old arithmetic desynchronised.
+            return (['%s<Item type="Finish">' % ind, '%s</Item>' % ind], off + 8, True)
         if kind == 'PushParameter':
             out = ['%s<Item type="PushParameter">' % ind]
             out.extend(self.txt(ind + ' ', 'ParameterName', self.nm(self.u32(off + 4))))
@@ -584,7 +647,11 @@ class _Mrf(object):
             out.append('%s <Ranges>' % ind)
             for i in range(cnt):
                 pc, ln, rmn, pad = struct.unpack_from('<IIII', self.d, p + 16 * i)
-                if pad:
+                # MEASURED: that 4th dword is 0 in 7,749/7,749 NON-last ranges, but in the LAST
+                # range it is the NEXT OPERATOR OPCODE (0 Finish x3837, 2 PushParameter x54,
+                # 5 Remap x13). It was never padding - the range array ends 4 bytes before
+                # 16*cnt. Calling it an unpinned pad was the old model's artefact.
+                if pad and i != cnt - 1:
                     self.unpin_text('Remap range trailing dword', pad)
                 out.append('%s  <Item>' % ind)
                 out.append('%s   <Percent value="%s" />' % (ind, _f(pc)))
@@ -593,7 +660,7 @@ class _Mrf(object):
                 out.append('%s  </Item>' % ind)
             out.append('%s </Ranges>' % ind)
         out.append('%s</Item>' % ind)
-        return out, p + 16 * cnt, False
+        return out, p + 16 * cnt - (4 if cnt else 0), False
 
     def lines(self):
         if self.d[:4] != MAGIC:
