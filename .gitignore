@@ -12,7 +12,7 @@ resources/magic.dat
 
 # ⛔ NOT PUBLISHED. Files stay on disk (nothing is deleted) - they are simply not in the public
 # repo, because each is a distinct exposure:
-#  * unpack_magic.ps1.REMOVED_CW_DEPENDENCY - reads a resource out of a local third-party tool DLL and
+#  * the archived unpack_magic helper - reads a resource out of a local third-party tool's DLL and
 #    hardcodes the author's own desktop path. Publishing it would contradict the ZERO-third-party-tool-
 #    affiliation rule in the most literal way possible, and leak a personal path.
 #  * findkeys / recover_keys / try_variants / derive_entry / probe_* - key-RECOVERY research.

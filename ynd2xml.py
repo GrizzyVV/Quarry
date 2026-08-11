@@ -8,6 +8,9 @@ Reuses:  Res (RSC7 container + tagged-pointer deref) from ydr2xml;
          fmt_num / esc from meta2xml (the proven float-text + XML-escape laws).
 """
 import sys, os, struct
+
+# Counted refusal classes, cleared per file by the caller and folded into the run summary.
+RESIDUALS = {}
 sys.path.insert(0, r'B:\ClaudeCode_Projects\_UEFiveMTool\quarry')
 from ydr2xml import Res
 from meta2xml import fmt_num, esc
@@ -94,8 +97,20 @@ def convert(path):
         out.append('  </Item>')
 
     out.append(' </Nodes>')
-    out.append(' <Junctions />')       # empty in both oracles (constant)
-    out.append(' <JunctionRefs />')    # empty in both oracles (constant)
+    # ⛔ NOT A CONSTANT - THIS LANE IS KNOWINGLY INCOMPLETE (2026-08-11).
+    # `was:` "empty in both oracles (constant)". Both halves of that were wrong at population:
+    # the full-population census measured 738 of 1,027 files carrying 12,273 junctions and 372
+    # files carrying 40,197 ped nodes, and ALL 13 oracles happen to have none - which is exactly
+    # why byte-identity could never see it. A converter that drops a section still matches its
+    # oracle whenever the oracle lacks that section.
+    # The junction/ped-node SECTIONS ARE NOT DECODED: the header field that declares them has
+    # never been located, so we cannot even say per-file whether this one carries any. Emitting
+    # the empty element preserves parity with the 13 witnesses; the COUNTER is what stops it
+    # being a silent lie. It fires on every file, unconditionally, because the honest statement
+    # is "this lane does not read these sections at all" - not "this file had none".
+    RESIDUALS['ynd_junction_sections_not_decoded'] =         RESIDUALS.get('ynd_junction_sections_not_decoded', 0) + 1
+    out.append(' <Junctions />')       # UNDECODED - see the counter above
+    out.append(' <JunctionRefs />')    # UNDECODED - see the counter above
     out.append('</NodeDictionary>')
     return '\n'.join(out) + '\n'
 

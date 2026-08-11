@@ -721,9 +721,17 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
         return stem + '.yfd.xml', yfd2xml.yfd_to_xml(
             ydr2xml.Res.from_bytes(blob)).encode('utf-8'), ()
     if t == 'ynd':
+        # The junction/ped-node sections are NOT decoded and the lane says so on every file - a
+        # counted class, not a silent empty element. See ynd2xml for why byte-identity could not
+        # have caught it (all 13 oracles carry zero junctions; 738 of 1,027 real files do not).
         import ydr2xml, ynd2xml
-        return stem + '.ynd.xml', ynd2xml.convert(
-            ydr2xml.Res.from_bytes(blob)).encode('utf-8'), ()
+        ynd2xml.RESIDUALS.clear()
+        xml = ynd2xml.convert(ydr2xml.Res.from_bytes(blob)).encode('utf-8')
+        if ynd2xml.RESIDUALS and stats is not None:
+            for k, n in ynd2xml.RESIDUALS.items():
+                key = 'ynd %s (section skipped, and counted)' % k
+                stats[key] = stats.get(key, 0) + n
+        return stem + '.ynd.xml', xml, ()
     if t == 'ynv':
         import ynv2xml
         return stem + '.ynv.xml', ynv2xml.convert(name, blob, names=names).encode('utf-8'), ()

@@ -107,7 +107,7 @@ SCHEMA = {
     ]),
 }
 # Interchange (nopixel) PSCH struct emission order:
-CW_SCHEMA_ORDER = [H_AABB, H_REGIONDEF, H_GROUP, H_MANIFEST]
+REFERENCE_SCHEMA_ORDER = [H_AABB, H_REGIONDEF, H_GROUP, H_MANIFEST]
 
 class PsoError(Exception):
     pass
@@ -276,7 +276,7 @@ def read_manifest(path_or_bytes, strict_schema=True):
     return m
 
 # ---------------------------------------------------------------- writer (interchange)
-def _emit_pschema(order=CW_SCHEMA_ORDER):
+def _emit_pschema(order=REFERENCE_SCHEMA_ORDER):
     head = struct.pack('>I', len(order))
     defs, offs = b'', {}
     base = 8 + 4 + 8*len(order)              # section-relative offset of first def
