@@ -775,14 +775,37 @@ class Emitter:
         out.append("%s</%s>" % (ind, name))
         return out
 
+    # A scalar array renders space-joined in the tag body — on ONE line up to 10 elements, and
+    # WRAPPED into rows of 10 (remainder last) from 11 up. Rows sit one space deeper than the tag.
+    #
+    # ⭐ THE BOUNDARY WAS UNWITNESSED UNTIL IT WAS MINTED FOR (2026-08-11). The 25 pre-existing cut
+    # oracles had a hole exactly at the decision point: the largest count still on one line was 9,
+    # the smallest wrapped was 11, and count == 10 appeared in NEITHER form — while 314 places at
+    # population sit exactly on it. Interpolating "wrap at 10" between 9 and 11 would have been a
+    # guess dressed as a rule, so 13 files carrying a 10-element array were exported through the
+    # reference and read: `scratchpad/wrap10_verdict.py` → **count == 10 is ONE-LINE, 26 witnesses
+    # across 13 files, zero counter-examples.** The threshold is > 10, not >= 10.
+    # Row widths measured over all 53 wrapped arrays in the 38 oracles
+    # (`scratchpad/wrap_rowwidths.py`): rows of 10 with the remainder last, 0 disagreements, up to
+    # a 113-element array (12 rows). Boundary table after minting: every count 2..10 one-line
+    # (0 wrapped), every count 11..113 wrapped (0 one-line).
+    # ⚠ Vector arrays (`<vCorners>`, comma-separated triples) are a DIFFERENT emitter and must not
+    # be used as evidence here — a regex without a numeric-token filter matches them too.
+    WRAP_AT = 10
+
     def _emit_scalar_array(self, name, ind, et, esub, buf, o, count):
-        # MEASURED: a scalar array renders space-joined in the tag body, one line
-        # (.cut iCutsceneFlags "268452352 0 0 0"; iObjectIdList "3").
         if count == 0:
             return ["%s<%s />" % (ind, name)]
         sz = self._SCALAR_SIZE.get(et, 4)
         parts = [self._scalar_str(et, esub, buf, o + i * sz) for i in range(count)]
-        return ["%s<%s>%s</%s>" % (ind, name, " ".join(parts), name)]
+        if len(parts) <= self.WRAP_AT:
+            return ["%s<%s>%s</%s>" % (ind, name, " ".join(parts), name)]
+        f = ind + " "
+        out = ["%s<%s>" % (ind, name)]
+        for i in range(0, len(parts), self.WRAP_AT):
+            out.append(f + " ".join(parts[i:i + self.WRAP_AT]))
+        out.append("%s</%s>" % (ind, name))
+        return out
 
     def emit_array(self, sdef, e, buf, base, depth, name, ind):
         # refTypeIdx = low 16 bits of extra; the element descriptor is another entry of THIS
