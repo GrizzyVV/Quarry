@@ -752,8 +752,22 @@ class Emitter:
             return ["%s<%s />" % (ind, name)]
         f = " " * (depth + 1)
         out = ["%s<%s>" % (ind, name)]
+        # ⛔ esub 0x02 AND 0x03 ARE DIFFERENT WIDTHS (derived 2026-08-10, applied 2026-08-11).
+        # `was:` one 8-byte law for 0x01/0x02/0x03, generalised from the carcols `liveryNames`
+        # witness — which is esub 0x02 and IS genuinely 8-byte. esub 0x03 is a SIXTEEN-byte slot:
+        #     {u32 metaptr, u32 pad=0, u16 capacity=len+1, u16 length, u32 pad=0}
+        # so an 8-byte walk read every second slot's pad as a null pointer and emitted <Item></Item>.
+        # Witness: hs4f_app_heli.cut cRemoveBoneNameList, count 2 —
+        #     stride  8 -> ['rotor_main_slow', '']                  (what we shipped)
+        #     stride 16 -> ['rotor_main_slow', 'rotor_rear_slow']   (what the oracle spells)
+        # ⭐ WIDENED PAST ITS WITNESSES, and on a test a wrong stride cannot pass by luck: over
+        # 331 .cut files, 25 esub-0x03 arrays / 79 elements, stride 16 gives 25/25 arrays clean
+        # with strlen == u16@+10 on 79/79 elements and every pad zero, across 6 distinct string
+        # lengths; stride 8 fails 15/25. Derivation + data:
+        # `output/stage_d_grade/_derivation_reports_20260810b/lt_cut/NOTES.md` §2 (+ widen.json).
+        # ❓ esub 0x01 is UNWITNESSED either way and stays on the inherited 8 — not a measurement.
         ptrform = esub in (0x01, 0x02, 0x03)
-        stride = 8 if ptrform else 4
+        stride = 16 if esub == 0x03 else (8 if ptrform else 4)
         for i in range(count):
             v = struct.unpack_from(">I", buf, o + i * stride)[0]
             s = self._string_at_ptr(v) if ptrform else self.resolve_hashstring(v)
