@@ -93,6 +93,35 @@ def oodle_dll(game_root, explicit=None):
     return None
 
 
+# Where per-file refusal detail is written. Set by cmd_extract/cmd_export from the output root;
+# when it is None the counters still report truthfully and only the per-file detail is skipped.
+REFUSAL_SIDECAR_DIR = None
+
+
+def _mrf_refusal_sidecar(name, unpinned, visible):
+    """Record WHICH mrf refusals happened and whether each was visible in the document.
+
+    A count alone cannot be acted on: 1,713 report-only refusals told nobody WHICH file or WHICH
+    field. This writes one JSONL row per converted file that refused anything, so a reader can go
+    straight to the field. It is deliberately a SIDECAR and not an inline XML comment: the
+    reference emits nothing at these positions, so a comment would make us differ from an oracle
+    we may be matching exactly. Disclosure outside the document satisfies "no silent drops"
+    without breaking "byte-identical to the oracle".
+    """
+    if not REFUSAL_SIDECAR_DIR or not unpinned:
+        return
+    try:
+        os.makedirs(REFUSAL_SIDECAR_DIR, exist_ok=True)
+        row = {'file': name, 'refusals': len(unpinned), 'visibleMarkers': visible,
+               'reportOnly': max(0, len(unpinned) - visible), 'detail': list(unpinned)[:64]}
+        with open(os.path.join(REFUSAL_SIDECAR_DIR, '_MRF_REFUSALS.jsonl'), 'a',
+                  encoding='utf-8') as fh:
+            fh.write(json.dumps(row) + '\n')
+    except Exception as ex:
+        # a failed sidecar must never take the conversion down, but it must not be silent either
+        sys.stderr.write('WARN: mrf refusal sidecar not written for %s: %s\n' % (name, ex))
+
+
 def _deflate_span(buf):
     """(input bytes consumed, output bytes produced) for the raw-DEFLATE stream that starts at
     buf[0], or None when buf does not hold one COMPLETE stream.
@@ -787,9 +816,34 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
         xml, unpinned = mrf2xml.convert_with_report(name, blob, names=names)
         if stats is not None:
             if unpinned:
-                stats['mrf UNPINNED values emitted as markers (single-oracle gaps)'] = \
-                    stats.get('mrf UNPINNED values emitted as markers (single-oracle gaps)', 0) \
-                    + len(unpinned)
+                # ⛔ THE OLD LABEL ASSERTED THE OPPOSITE OF WHAT HAPPENS (fixed 2026-08-12).
+                # It read "mrf UNPINNED values emitted as markers", counting the whole `unpinned`
+                # list. MEASURED over the full 162-file population: the list holds 1,713 entries
+                # while the emitted XML carries 417 markers — so 1,296 refusals were being
+                # reported as "emitted as markers" when nothing was emitted for them at all, and
+                # 24 files reported a refusal while writing a completely clean document. A label
+                # that says the opposite of the truth is the RANK-1 cache_y.dat defect shape.
+                #
+                # There are genuinely TWO classes and they must be counted apart:
+                #   VISIBLE   an unknown node/condition/operator/blend-modifier TYPE — the emitter
+                #             writes `UNPINNED_<KIND>_<n>` into the document, so a reader sees it.
+                #   REPORT-ONLY  an unwitnessed FLAG BIT — we emit our best-known spelling and only
+                #             suspect it is wrong. ⚠ These deliberately do NOT get an inline
+                #             comment: the reference emits nothing there, so adding one would make
+                #             us differ from an oracle we may well be matching. Byte-identity and
+                #             no-silent-drops are both Matt's laws, and the way to honour both is
+                #             to disclose OUTSIDE the document — which is what this counter and
+                #             the `_MRF_REFUSALS.jsonl` sidecar below now do.
+                visible = xml.count('UNPINNED_')
+                report_only = max(0, len(unpinned) - visible)
+                if visible:
+                    k = 'mrf UNPINNED values emitted as VISIBLE markers in the XML'
+                    stats[k] = stats.get(k, 0) + visible
+                if report_only:
+                    k = ('mrf refusals that are REPORT-ONLY - counted here, NOT visible in the '
+                         'XML (unwitnessed flag bits; see _MRF_REFUSALS.jsonl)')
+                    stats[k] = stats.get(k, 0) + report_only
+                _mrf_refusal_sidecar(name, unpinned, visible)
             if mrf2xml.FALLBACK_SIDECAR_ERROR:
                 stats['mrf name sidecar unreadable - sidecar-only names degrade to hash_'] = \
                     stats.get('mrf name sidecar unreadable - sidecar-only names degrade to hash_', 0) + 1
@@ -3479,6 +3533,8 @@ def cmd_export(a):
     invocation, not a fork. Meta lanes get their names from the view manifest,
     freshness-gated; no pre-built corpus is read, ever."""
     META_KINDS = ('ytyp', 'ymap', 'ymt')
+    global REFUSAL_SIDECAR_DIR
+    REFUSAL_SIDECAR_DIR = getattr(a, 'out', None)
     entries = list(a.entry or [])
     if a.list:
         with open(a.list, encoding='utf-8') as f:
@@ -3711,6 +3767,10 @@ def cmd_init(a):
 def cmd_extract(a):
     title, exe = detect_title(a.game)
     base, upd, dlc = find_sources(a.game)
+
+    # per-file refusal detail lands beside the corpus, so "counted" also means "locatable"
+    global REFUSAL_SIDECAR_DIR
+    REFUSAL_SIDECAR_DIR = getattr(a, 'out', None)
 
     # ---- key acquisition: NO --keys required for a normal user -------------------------------
     # Priority: existing key files (fast / the option-B path) -> the bundled game-gated blob opened
