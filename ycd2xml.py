@@ -233,7 +233,8 @@ def atmap(S, bucket_ptr, nbuckets):
 # HashString reads u32 @attr+0x20 and spells it as ELEMENT TEXT `<Value>%s</Value>` through the
 # name table - it is the ONE attribute kind that is not attribute-form, so do not fold it into
 # the generic path.
-ATTR_TYPE = {2: "Int", 6: "Vector3", 8: "Vector4", 1: "Float", 3: "Bool", 12: "HashString"}
+ATTR_TYPE = {2: "Int", 6: "Vector3", 8: "Vector4", 1: "Float", 3: "Bool", 4: "String",
+             12: "HashString"}
 
 
 def _witnessed_names():
@@ -396,8 +397,31 @@ class Ycd:
             if tn == "Bool":
                 out.append('       <Value value="%d" />' % u32(S, a + 0x20))
             elif tn == "HashString":
-                # the ONE attribute kind spelled as element TEXT, not a value= attribute
+                # one of TWO attribute kinds spelled as element TEXT, not a value= attribute
                 out.append('       <Value>%s</Value>' % esc(self.hstr(u32(S, a + 0x20))))
+            elif tn == "String":
+                # Type 4 = String, derived 2026-08-12. It was the ONLY unwitnessed attribute code
+                # in the whole game (234 markers in 60 files, all Type 4 — no second code exists).
+                # LAYOUT, read off the bytes: atArray<char> at +0x20 — u64 ptr, u16 Count(=strlen),
+                # u16 Size(=Count+1). Proven the hard way rather than assumed: for all 234 the
+                # actual text length at the pointer equals the stored Count exactly and the byte
+                # past it is NUL. Control: the same test run against the 3,613 HashString
+                # attributes (whose value is a plain number, not a pointer) FAILS — so the test
+                # discriminates and is not just agreeing with itself.
+                # Spelled as element TEXT like HashString: <Clips> byte-exact on 6/6 oracles,
+                # with `<Value value=...>` as the must-fail control at 0/6.
+                _s = cstr(S, P(u32(S, a + 0x20)))
+                if "\r" in _s or "\n" in _s:
+                    # ⚠ CARVE-OUT, deliberately still refusing: 124 of the 234 game-wide values
+                    # contain a raw 0x0D and NO reference export anywhere witnesses one (1,941
+                    # oracle XML scanned: zero lone CR, zero &#xD;). esc() would write it bare and
+                    # we would be guessing the reference's escaping. Refuse until an oracle lands.
+                    RESIDUALS["attr_string_control_char"] = \
+                        RESIDUALS.get("attr_string_control_char", 0) + 1
+                    out.append('       <!-- RESIDUAL: String value contains a control byte; '
+                               'no oracle shows how the reference escapes it -->')
+                else:
+                    out.append('       <Value>%s</Value>' % esc(_s))
             elif tn == "Int":
                 out.append('       <Value value="%d" />' % i32(S, a + 0x20))
             elif tn == "Float":
@@ -478,14 +502,20 @@ class Ycd:
         data = seq + 0x20
         packed = data + u32(S, seq + 0x0C)
 
-        cands = self._locate_counts(seq)
+        cands = self._locate_counts(seq, nbones)
         if len(cands) != 1:
             # UNIQUENESS IS THE TEST, not existence: the size equation alone leaves 2-3
             # candidates on 15 of 442 sequences and the lowest-offset one is WRONG in 14 of
             # them, so a first-match-wins scan emits a plausible, unmarked, WRONG channel map.
             # Refuse loudly instead, and say how many candidates survived.
             out.append("     <SequenceData>")
-            out.append("      <!-- count table not located (%d candidates) -->" % len(cands))
+            # ⛔ THE OLD MESSAGE NAMED THE WRONG FAILURE. It read "(N candidates)" and the comment
+            # above describes AMBIGUITY — but all 265 markers in the corpus reported ZERO, i.e.
+            # nothing survived, the opposite problem. The lane was sized off a message that did
+            # not measure what it printed. Say which failure it actually is.
+            out.append("      <!-- count table not located (%s) -->"
+                       % ("no candidate survived the constraints" if not cands
+                          else "%d candidates survived; ambiguous" % len(cands)))
             RESIDUALS["count_table_not_located"] = RESIDUALS.get("count_table_not_located", 0) + 1
             out.append("     </SequenceData>")
             out.append("    </Item>")
@@ -646,7 +676,7 @@ class Ycd:
         out.append("    </Item>")
         return True
 
-    def _locate_counts(self, seq):
+    def _locate_counts(self, seq, nbones):
         """Every surviving count-table candidate for one sequence, under THREE constraints.
 
         C1 size equation: c + (9 + sum(rup(count_i)))*2 == seq_end, with all nine counts <= 400.
@@ -665,7 +695,15 @@ class Ycd:
         cands = []
         for c in range(packed, seq_end - 18, 2):
             cc = tuple(u16(S, c + k * 2) for k in range(9))
-            if max(cc) > 400:
+            # ⛔ `was:` max(cc) > 400 — a MAGIC NUMBER with no meaning in the format, and the SOLE
+            # cause of all 265 "count table not located" refusals across 51 files. Those files are
+            # large destruction and cutscene animations whose real pool counts routinely exceed
+            # it (largest measured: 889 channels on a 262-bone skeleton), so the TRUE table was
+            # being discarded and nothing survived. The structural bound is the number of
+            # addressable channel slots, because every map entry is itemIndex*4 + component.
+            # Measured headroom: worst real ratio max(count)/(nBones*4) = 0.848 over 4,281
+            # sequences.
+            if nbones and max(cc) > nbones * 4:
                 continue
             if c + (9 + sum(_rup(x) for x in cc)) * 2 != seq_end:
                 continue
@@ -700,6 +738,35 @@ class Ycd:
             framebits = ((fb + 31) // 32) * 32
             if packed + (framebits // 8 + nr * 4) * framecount != c:
                 continue
+            # C4 — MAP-LIST RANGE + SENTINEL. The constraint a wrong offset cannot satisfy by
+            # luck, and the reason the cap above could be removed safely. DERIVED from reference
+            # data, not assumed: walking the nine map lists from c+18 over the 57 ledgered
+            # oracles' 442 sequences, all 3,782 PAD slots equal nBones*4 with NO other value
+            # occurring at all, and 0 of 32,314 REAL entries ever reach it.
+            # It SEPARATES rather than merely closing: against the size equation alone it
+            # rejected 15 of 15 known-wrong candidates across 14 sequences with zero false
+            # rejects, taking candidate counts from {1:428, 2:13, 3:1} to {1:442}.
+            # ⚠ A STRICTER RULE THAT LOOKED STRUCTURAL WAS FALSE and only the control caught it:
+            # also requiring sum(counts) <= nBones*4 cost a passing oracle
+            # (switch@michael@on_set_w_jmy.ycd), because channels are NOT unique per
+            # (item, component) — a cached quaternion can share a slot. Max-per-list holds; the
+            # sum does not.
+            if nbones:
+                m = c + 18
+                ok = True
+                for cnt in cc:
+                    if m + _rup(cnt) * 2 > len(S):
+                        ok = False
+                        break
+                    if any(u16(S, m + i * 2) >= nbones * 4 for i in range(cnt)):
+                        ok = False
+                        break
+                    if any(u16(S, m + i * 2) != nbones * 4 for i in range(cnt, _rup(cnt))):
+                        ok = False
+                        break
+                    m += _rup(cnt) * 2
+                if not ok:
+                    continue
             cands.append((c, cc, qz_d, ind_d, inl_d, framebits))
         return cands
 
@@ -763,7 +830,31 @@ class Ycd:
         for i in range(N - 1):
             if offs[i] >= offs[i + 1]:
                 return None
-        if hdr + offs[-1] >= nbits:
+        # ⛔ `>=` REFUSED A LEGAL LAYOUT — and the marker it produced named the wrong cause for
+        # 724 channels across 274 files (derived + fixed 2026-08-12).
+        #
+        # The marker read "inline QuantizeFloat variant B=0x.. sizeWords=N not decoded", which
+        # implied an undecoded FORMAT. It was not: B is already correctly split above into
+        # W / nb / k, and the SAME (B, sizeWords) pairs decode fine elsewhere — 91 of 104
+        # reproduced refusals share an identical pair with a channel that decodes, 99 of them in
+        # the same file. There was never an unwitnessed variant to derive.
+        #
+        # THE REAL SHAPE: when FrameCount % 64 == 1 the final block holds exactly ONE frame — the
+        # seed alone, zero codes, therefore ZERO BITS — so its stored start position legally
+        # equals the payload's bit length. Roughly one time in 32 the payload also ends flush on a
+        # 32-bit word, and then offs[-1] + hdr == nbits exactly. `>=` called that out of range.
+        # Measured: ALL 724 corpus markers have FrameCount % 64 == 1 (base rate 21.5%), and the
+        # overshoot `hdr + offs[-1] - nbits` is EXACTLY 0 on 104/104 reproduced refusals — one
+        # distinct value, never positive. 104 of the 3,288 fc%64==1 channels = 3.16%, against the
+        # 1/32 = 3.125% a zero-slack final word predicts.
+        #
+        # A genuinely overrunning block is still refused: the per-frame reads below bounds-check
+        # in both the k>0 and k==0 paths, so relaxing only the boundary case cannot let a real
+        # overrun through.
+        # Evidence: 103/103 previously-refused channels now emit token-for-token what the
+        # reference exporter wrote; 25/26 whole files byte-identical (the 26th differs only on a
+        # name-table hash, not the codec); all 15,160 already-decoding channels unchanged.
+        if hdr + offs[-1] > nbits:
             return None
         raw = []
         for j in range(N):
