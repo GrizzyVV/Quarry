@@ -1712,8 +1712,57 @@ def drawable_lines(res, name, base=0, allow_empty=False, include_bounds=True,
     return L
 
 
+def drawable_name_slot(res):
+    """The `<Name>` string at drawable+0xA8 - and the ONE field v164 does not have.
+
+    ⭐⭐ v164 = THE OLDER-BUILD DRAWABLE STAMP, SAME LAYOUT AS v165 (measured 2026-08-15).
+    The game holds exactly 13 v164 `.ydr` against 86,677 v165 (whole-game RSC7 version census,
+    347,980 resource entries; the census key set reconciles EXACTLY with the 86,690-key
+    population enumeration, 0 difference either way). All 13 sit in the six older-build
+    0x18-header archives; none outside. ⚠ The scoped-run figure of "14 in x64f" is REFUTED -
+    x64f holds 12, x64j holds 1.
+
+    THE LAYOUT IS v165's, and the tests that could have refused it did not:
+      * every tagged header pointer resolves inside the segment its tag names (13/13)
+      * every model count == its capacity, every geometry count <= its capacity, and every
+        model/geometry array fits the space its count claims (13/13)
+      * BoundingBoxMin <= Max on all three axes, sphere radius plausible, and the LodDist
+        quartet reads 0x461C3800 == 9998.0 - the same constant the v165 controls carry
+      * `+0xA0` is the byte-identical alias of `+0x50` in both versions
+      * ROUND-TRIP, the primary measure, through the COMPLETELY UNMODIFIED writer
+        (`ydr_write.read_ydr` has no version check at all): **10 of 13 byte-exact**; the other
+        three leave 168 / 417 / 189 residual bytes, i.e. the small-residual class the v165
+        population also shows - not a structural failure.
+      * every one of the 13 converts with its geometry count equal to what its own model
+        records declare (`drawable_lines` refuses on any shortfall; none refused)
+    ⭐ PRECEDENT IN THE SAME FAMILY: `yft2xml` already accepts v160 beside v162, and all 66
+    v160 fragments in the game are byte-exact at population. The version nibble is a BUILD
+    stamp, not a resource shape.
+
+    ⛔ THE ONE REAL DIFFERENCE, and why this function exists: **a v164 drawable carries no name.**
+    `.#dr` appears nowhere in any of the 13 system segments, while all four v165 controls hold it
+    exactly at the `+0xA8` target. The v164 `+0xA8` holds a small 16-byte-aligned UNTAGGED
+    integer (288/528/736/1536/1952/2112/2672/4224/31680) that is not a pointer: read as a raw
+    system offset it lands on float data in some files and on an array descriptor in another, and
+    it equals none of nverts / nindices / index bytes / geometry count / segment length on all 13.
+    ⛔ Do NOT resolve it as a pointer - `cstr` would count 13 false `cstr_pointer_unresolved`
+    declines for a field that is not a string pointer in this version. The stem substitution is
+    the CORRECT reading, and it is COUNTED so the class stays visible."""
+    if res.version != 165:
+        _refuse("drawable_v164_has_no_name_field_stem_substituted", res.name or "?")
+        return ""
+    return res.cstr(res.ptr(0xA8))
+
+
 def to_xml(res, name):
-    res.require_version(165, "Legacy drawable")
+    # v164 = the older-build drawable stamp: SAME layout as 165, measured 13/13 - see
+    # drawable_name_slot for the whole derivation. Accepted AND COUNTED, exactly as
+    # yft2xml.convert accepts the v160 mod-part stamp, so a rising count stays visible.
+    try:
+        res.require_version(165, "Legacy drawable")
+    except ValueError:
+        res.require_version(164, "Legacy drawable (v164 older-build stamp)")
+        _refuse("drawable_v164_accepted_same_layout_as_165", res.name or name)
     L = ['<?xml version="1.0" encoding="UTF-8"?>', "<Drawable>"]
     L.extend(drawable_lines(res, name))
     L.append("</Drawable>")
@@ -1724,7 +1773,7 @@ def convert(path):
     res = Res(path)
     stem = os.path.splitext(os.path.basename(path))[0]
     # real drawables name themselves "<stem>.#dr"; keep the convention
-    inner = res.cstr(res.ptr(0xA8)) or (stem + ".#dr")
+    inner = drawable_name_slot(res) or (stem + ".#dr")
     return to_xml(res, inner), stem
 
 

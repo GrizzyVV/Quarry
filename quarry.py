@@ -868,7 +868,12 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
     if t == 'ydr':
         import ydr2xml, ytd2xml
         res = ydr2xml.Res.from_bytes(blob)
-        inner = res.cstr(res.ptr(0xA8)) or (stem + '.#dr')
+        # ⭐ NOT `res.cstr(res.ptr(0xA8))` DIRECTLY: the 13 older-build v164 drawables have no
+        # name field there at all, and reading it as a pointer counts 13 false decode failures
+        # for a field that is not a string pointer in that version. See
+        # ydr2xml.drawable_name_slot for the whole v164-vs-v165 derivation.
+        res.name = name
+        inner = ydr2xml.drawable_name_slot(res) or (stem + '.#dr')
         # ⭐ A drawable can carry its OWN textures (ShaderGroup+0x08). 33.9% of them do, and 18.2%
         # of all texture requests are satisfiable only from there - see ydr2xml.embedded_textures.
         # The XML lists them; these sidecars are the pixels behind those names, written to the same
