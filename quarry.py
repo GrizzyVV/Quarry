@@ -56,6 +56,32 @@ def detect_title(game_root):
 def find_sources(game_root):
     """Base archives, the update archive(s), and DLC packs - by directory listing only."""
     base = sorted(os.path.basename(p) for p in glob.glob(os.path.join(game_root, '*.rpf')))
+
+    # ⛔ LOOSE ARCHIVES IN SUBFOLDERS WERE NEVER DISCOVERED (found 2026-08-13 by cross-checking
+    # our enumeration against an INDEPENDENT one - the reference tool's file index. Our own
+    # coverage check could not see it: it measures the corpus against OUR manifest, and the
+    # manifest is built from this same function, so the hole was invisible by construction.)
+    #   179 .rpf exist on disk; this function found 123. All 56 missing sit under x64\audio\ :
+    #   x64\audio\occlusion.rpf, x64\audio\audio_rel.rpf, and 54 under x64\audio\sfx\.
+    # Contents, counted through the reference index (reconciles EXACTLY with the 4,781-file
+    # enumeration delta): awc 4,292 - ymt 471 - rel 17 - txt 1.
+    # ✅ The READER was never the problem: pointed straight at occlusion.rpf, QUARRY opens it and
+    # enumerates 471 .ymt, matching the reference to the file. Discovery only.
+    #
+    # ⭐ APPENDED, NOT SORTED IN (agent call 2026-08-13, attributed - Matt asked for the gate to
+    # settle the blast radius). Walk order decides which same-named instance wins a corpus path
+    # and which take ~N ranks, so inserting these into the sorted base list would renumber
+    # existing files. Appending leaves every existing archive at its current walk position, so
+    # nothing already filed can move. If the corpus is later restructured to mirror the game -
+    # Matt's standing rule, and the reason ~N exists at all - this ordering stops mattering.
+    seen = set(n.lower() for n in base)
+    extra = []
+    for p in sorted(glob.glob(os.path.join(game_root, 'x64', '**', '*.rpf'), recursive=True)):
+        rel = os.path.relpath(p, game_root)
+        if rel.lower() not in seen:
+            extra.append(rel)
+    base = base + extra
+
     upd = sorted(glob.glob(os.path.join(game_root, 'update', '*.rpf')))
     dlc = sorted(d for d in glob.glob(os.path.join(game_root, 'update', 'x64', 'dlcpacks', '*'))
                  if os.path.isdir(d))
@@ -579,12 +605,16 @@ def type_of(name):
     return ext or 'other'
 
 
-def sidecar_into(out_root, slot, type_dir, relpath, blob):
-    """Write a companion file that belongs WITH a converted asset (a ytd's .dds payload) under
-    the asset's own type folder. Kept separate from file_into because the type folder is the
-    asset's, not the sidecar's - a .dds must not be filed under `dds/`, or the XML's relative
-    FileName reference breaks."""
-    target = os.path.join(out_root, slot, type_dir, relpath.replace('/', os.sep))
+def sidecar_into(out_root, slot, asset_dir, relpath, blob):
+    """Write a companion file that belongs WITH a converted asset (a ytd's .dds payload) beside
+    that asset. Kept separate from file_into because the folder is the ASSET's, not the
+    sidecar's - a .dds must not be filed by its own type, or the XML's relative FileName
+    reference breaks.
+
+    ⭐ Under the pure game mirror (Matt, 2026-08-13) `asset_dir` is the asset's ARCHIVE CHAIN,
+    not a type folder, so a sidecar lands in the same game directory as the file it belongs to."""
+    target = os.path.join(out_root, slot, (asset_dir or '').replace('/', os.sep),
+                          relpath.replace('/', os.sep))
     os.makedirs(os.path.dirname(target), exist_ok=True)
     with open(target, 'wb') as f:
         f.write(blob)
@@ -1066,25 +1096,44 @@ def provenance_index(out_root):
 
 def file_into(out_root, slot, name, blob, stats=None, skip_existing=False, chain=None,
               refresh=False, subdir=None, overwrite=False):
-    """File one blob by type into a precedence slot.
+    """File one blob at its GAME PATH inside a precedence slot.
 
-    Filing is FLAT by basename inside <slot>/<ext>/, which means two same-named files from
-    different archives in the SAME slot collide. That is not hypothetical: the 24 base
-    archives share one namespace and there are ~84k ydrs across the game. Silently
-    overwriting loses build-accurate data with no trace, so a collision now keeps the FIRST
-    copy, writes the loser as <stem>~<n><ext>, and is COUNTED so the run reports it.
-    (Load-order precedence ACROSS slots is still what the numbered tree encodes; this only
-    disambiguates within one slot.)
+    ⭐⭐ PURE GAME MIRROR — Matt's ruling 2026-08-13, and it supersedes the type-first layout:
+        <slot> / <archive chain> / <in-archive folder> / <name>
+    The filename is the GAME's filename, always. Verbatim: *"All files should carry their same
+    name from the game files, period."* and *"Corpus should mirror the game in structure...
+    Rockstar has that structure to prevent collisions, like the _manifest files."*
 
-    ⭐ `subdir` = the game's OWN in-archive folder for this leaf (per-ped-per-DLC layout,
-    Matt's determined ruling): filing becomes <slot>/<ext>/<subdir>/<name> — identity in the
-    FOLDER, the filename untouched. Same-named files of DIFFERENT peds stop colliding because
-    the game itself files them apart; a collision INSIDE one subdir still takes the ~N path
-    (same ped, same name, different bytes = still build-accurate data to keep).
+    ⛔ `was:` <slot>/<type_of(name)>/<subdir>/<name>. That grouped by TYPE and carried only the
+    in-archive folder, never the ARCHIVE CHAIN - so `plg_01.rpf/_manifest.ymf` and
+    `plg_02.rpf/_manifest.ymf` landed in ONE directory and the loser was RENAMED `~1`. Measured
+    2026-08-13: **22,918 files (6%) carried an invented ~N suffix**, gxt2 worst at 17,862 of
+    19,477 (92%), and 83% of the corpus was filed flat. We flattened the game's own structure and
+    then patched the damage we had caused.
+
+    ✅ PROVEN, not hoped: keying on the game path gives **389,309 distinct paths for 389,309
+    files - zero collisions**, so ~N is not mitigated here, it is ELIMINATED. The `~N` branch
+    below is retained ONLY as a counted safety net; if it ever fires, the mirror assumption has
+    been broken and the run must say so rather than silently overwrite.
+
+    ⭐ THE PRINCIPLE (Matt, same ruling): *"the tools that surface the information visually make
+    the data human friendly, so let's make sure to separate the two concepts appropriately."*
+    Structure carries FIDELITY; a future explorer carries convenience (flatten-by-DLC with
+    latest-wins, filter by type). ⛔ Never bend the layout to make it browsable.
     """
-    d = os.path.join(out_root, slot, type_of(name))
+    d = os.path.join(out_root, slot)
+    if chain:
+        d = os.path.join(d, str(chain).replace('/', os.sep))
     if subdir:
         d = os.path.join(d, subdir.replace('/', os.sep))
+    # The ledger's `file` is the path UNDER the slot, so it stays the authority for "where did
+    # this land" now that the answer is a whole game path rather than a bare basename. Built
+    # once here so all five provenance sites cannot drift from each other.
+    _pfx = ''
+    if chain:
+        _pfx += str(chain).replace('\\', '/').strip('/') + '/'
+    if subdir:
+        _pfx += subdir.replace('\\', '/').strip('/') + '/'
     os.makedirs(d, exist_ok=True)
     target = os.path.join(d, name)
     if overwrite:
@@ -1122,8 +1171,7 @@ def file_into(out_root, slot, name, blob, stats=None, skip_existing=False, chain
                                 _s, _e = split_type_ext(name)
                                 stats.setdefault('provenance', []).append(
                                     {'slot': slot, 'type': type_of(name),
-                                     'file': (subdir + '/' if subdir else '')
-                                             + os.path.basename(target),
+                                     'file': _pfx + os.path.basename(target),
                                      'qualifiedName': '%s~%s%s'
                                                       % (_s, source_tag(chain, blob), _e),
                                      'sourceName': name, 'archive': chain,
@@ -1141,7 +1189,7 @@ def file_into(out_root, slot, name, blob, stats=None, skip_existing=False, chain
                 _s, _e = split_type_ext(name)
                 stats.setdefault('provenance', []).append(
                     {'slot': slot, 'type': type_of(name),
-                     'file': (subdir + '/' if subdir else '') + os.path.basename(target),
+                     'file': _pfx + os.path.basename(target),
                      'qualifiedName': '%s~%s%s' % (_s, source_tag(chain, blob), _e),
                      'sourceName': name, 'archive': chain,
                      'sha1': hashlib.sha1(blob).hexdigest()})
@@ -1208,7 +1256,7 @@ def file_into(out_root, slot, name, blob, stats=None, skip_existing=False, chain
             # the ledger's `file` value carries the subdir for ped-foldered content, so the
             # refresh key must too - a bare basename would be ambiguous across ped folders again
             key = (slot, type_of(name),
-                   (subdir + '/' if subdir else '') + os.path.basename(target))
+                   _pfx + os.path.basename(target))
             prior = idx.get(key)
             same_source = prior is not None and prior == chain
             if stats is not None and not same_source:
@@ -1241,7 +1289,7 @@ def file_into(out_root, slot, name, blob, stats=None, skip_existing=False, chain
                     _stem, _ext = split_type_ext(name)
                     stats.setdefault('provenance', []).append(
                         {'slot': slot, 'type': type_of(name),
-                         'file': (subdir + '/' if subdir else '') + written,
+                         'file': _pfx + written,
                          'qualifiedName': '%s~%s%s' % (_stem, source_tag(chain, blob), _ext),
                          'sourceName': name, 'archive': chain,
                          'sha1': hashlib.sha1(blob).hexdigest()})
@@ -1306,7 +1354,7 @@ def file_into(out_root, slot, name, blob, stats=None, skip_existing=False, chain
         stem, ext = split_type_ext(name)
         stats.setdefault('provenance', []).append(
             {'slot': slot, 'type': type_of(name),
-             'file': (subdir + '/' if subdir else '') + written,
+             'file': _pfx + written,
              'qualifiedName': f'{stem}~{source_tag(chain, blob)}{ext}',
              'sourceName': name, 'archive': chain,
              'sha1': hashlib.sha1(blob).hexdigest()})
@@ -1349,10 +1397,18 @@ def walk_archive(r, oodle, depth=0, max_depth=2, stats=None, path='', nested_onl
     # files are not copies — each belongs to a particular ped, and the game says WHOSE in its
     # own TOC: streamedpedprops-class archives file every leaf under a per-ped DIRECTORY
     # (player_zero_p/p_ears_000.ydd). The walk therefore yields that in-archive folder so
-    # filing can MIRROR the game structure (folder identity, filenames untouched). Top-level
-    # archives' folders (data/, levels/…) are organizational, not identity — the caller only
-    # applies the folder for leaves of NESTED archives (depth ≥ 1).
-    folders = _tree_paths(r.entries) if depth >= 1 else None
+    # filing can MIRROR the game structure (folder identity, filenames untouched).
+    #
+    # ⛔ `was:` `_tree_paths(r.entries) if depth >= 1 else None`, on the reasoning that "top-level
+    # archives' folders (data/, levels/...) are organizational, not identity". THAT WAS WRONG, and
+    # the first mirrored run proved it within minutes: `common.rpf` ships EIGHT distinct
+    # `blunt.xml` — `data/glass/pane/0x0`, `pane/1x1`, `pane/2x2`, `pane/3x3`, and the same four
+    # under `pane_weak/` — different glass configurations, identical filename. Dropping the folder
+    # at depth 0 collapsed all eight into one directory and renamed seven of them `blunt~1..~7`.
+    # The folder IS identity, at every depth; the game does not keep a directory tree for
+    # decoration. Matt, 2026-08-13: "All files should carry their same name from the game files,
+    # period." A file cannot keep its own name if we throw away the folder that made it unique.
+    folders = _tree_paths(r.entries)
     for i, e in enumerate(r.entries):
         if e['dir']:
             continue
@@ -1406,8 +1462,20 @@ def walk_archive(r, oodle, depth=0, max_depth=2, stats=None, path='', nested_onl
                 import fnmatch as _fn
                 if _fn.fnmatch(name.lower(), nested_only.lower()):
                     sub_filter = None       # matched: the whole subtree is in scope
+            # ⛔ THE CHAIN MUST KEEP THE NESTED ARCHIVE'S OWN FOLDER, not just its name.
+            # `was:` f'{path}/{name}' — which dropped every directory BETWEEN archives, so
+            # `update.rpf/dlc_patch/mpapartment/x64/data/lang/chinesesimpdlc.rpf` and the fifty
+            # other `chinesesimpdlc.rpf` under different dlc_patch folders all collapsed to
+            # `update.rpf/chinesesimpdlc.rpf` — 51 identical `global.gxt2` in one directory,
+            # 50 of them renamed. Measured on the second mirrored run, 2026-08-13.
+            # ⭐ THE VIEW WALKER ALREADY DID THIS CORRECTLY (`_view_walk`: "the chain keeps the
+            # nested archive's FOLDER inside its parent, not just its name"), so the two walkers
+            # had silently disagreed about what an archive chain IS. The manifest was right and
+            # the corpus was wrong, which is exactly why a corpus-vs-manifest join needed the
+            # `rpf_chain()` reducer to paper over it. Both now build the chain the same way.
+            hop = f'{folders[i]}/{name}' if folders and folders[i] else name
             yield from walk_archive(sub, oodle, depth + 1, max_depth, stats,
-                                    f'{path}/{name}', sub_filter)
+                                    f'{path}/{hop}', sub_filter)
             continue
         yield name, blob, path, (folders[i] if folders else '')
 
@@ -3912,10 +3980,28 @@ def cmd_extract(a):
             skipped += 1
             continue
         n = 0
+        # ⭐ SHARDING (2026-08-13): process only every Nth file of this archive.
+        # WHY IT IS SAFE NOW AND WAS NOT BEFORE: filing used to depend on WALK ORDER, because
+        # same-named files collided and took ~1/~2 ranks - so splitting an archive across
+        # processes would have scrambled which instance won which name. Under Matt's pure game
+        # mirror a file's destination is a pure function of its source path (389,309 files ->
+        # 389,309 distinct paths, proven), so any subset can be converted by any process in any
+        # order and the result is identical.
+        # This is what lets one 18,219-file archive (x64c: 10,604 of them animations) be split
+        # across workers instead of pinning the whole run to a single core for six hours.
+        _shard = getattr(a, 'shard', None)
+        _sh_i, _sh_n = (0, 1)
+        if _shard:
+            _sh_i, _sh_n = (int(x) for x in str(_shard).split('/'))
+        _seq = -1
         for name, blob, chain, pedsub in walk_archive(r, oodle, 0, max_depth, stats,
                                                       os.path.basename(path),
                                                       getattr(a, 'nested_only', None)):
             if want is not None and type_of(name) not in want:
+                continue
+            # counted AFTER the type filter so a --types run shards evenly too
+            _seq += 1
+            if _sh_n > 1 and (_seq % _sh_n) != _sh_i:
                 continue
             if pedsub and stats is not None:
                 stats['filed under game folder (per-ped layout)'] = \
@@ -3955,7 +4041,7 @@ def cmd_extract(a):
                                 written = xml_name
                                 stats['resumed_sidecars'] = stats.get('resumed_sidecars', 0) + 1
                             written_path = os.path.join(
-                                a.out, slot, type_of(name),
+                                a.out, slot, (chain or '').replace('/', os.sep),
                                 *( [pedsub.replace('/', os.sep)] if pedsub else [] ), written)
                             # The pixel folder must follow the XML that was ACTUALLY written: on
                             # a basename collision the XML becomes foo~1.ytd.xml, and a sidecar
@@ -3975,7 +4061,7 @@ def cmd_extract(a):
                                 if orig and rel.startswith(orig):
                                     rel = folder + rel[len(orig):]
                                 # sidecars live BESIDE their XML — under the same ped folder
-                                sidecar_into(a.out, slot, type_of(name),
+                                sidecar_into(a.out, slot, chain,
                                              (pedsub + '/' + rel) if pedsub else rel, payload)
                                 stats['xml_sidecars'] = stats.get('xml_sidecars', 0) + 1
                             stats['xml_ok'] = stats.get('xml_ok', 0) + 1

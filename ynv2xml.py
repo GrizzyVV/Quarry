@@ -7,6 +7,15 @@ counts 1..30, every ContentFlags value, Portals/Points carriers, all 19 slots an
 named vehicle family - 40/40 whole-file byte-identical in the derivation harness.
 No third-party tool / RAGE source consulted.
 
+⚠⚠ "40/40 BYTE-IDENTICAL" MEANS WE AGREE WITH THE REFERENCE - IT DOES NOT MEAN THE LANE IS
+COMPLETE. Measured 2026-08-13 by ROUND-TRIP (binary -> model -> written back -> compare):
+this lane started at 86.4% byte coverage, i.e. **13.6% of every .ynv was read by NEITHER
+exporter**. Parity is blind to a gap both readers share. Two concrete examples from this very
+file: the EDGE stride is 8 (derivable from the block-capacity table below - 16384/2048 - but a
+writer first assumed 4 and silently dropped half of every edge record), and the sector POLY-ID
+list documented "(not emitted)" was never read by anyone. See `quarry/ynv_write.py` and
+`ENGINEERING_LOG § 2026-08-13`. The lane is now ~99.99% covered; the last 0.008% is OPEN_ITEMS M.
+
 Reuses:  Res (RSC7 container + tagged-pointer deref) from ydr2xml;
          fmt_num / esc from meta2xml (the proven float-text + XML-escape laws).
 

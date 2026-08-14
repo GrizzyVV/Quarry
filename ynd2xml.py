@@ -108,9 +108,72 @@ def convert(path):
     # the empty element preserves parity with the 13 witnesses; the COUNTER is what stops it
     # being a silent lie. It fires on every file, unconditionally, because the honest statement
     # is "this lane does not read these sections at all" - not "this file had none".
-    RESIDUALS['ynd_junction_sections_not_decoded'] =         RESIDUALS.get('ynd_junction_sections_not_decoded', 0) + 1
-    out.append(' <Junctions />')       # UNDECODED - see the counter above
-    out.append(' <JunctionRefs />')    # UNDECODED - see the counter above
+    # ✅ JUNCTION + JUNCTION-REF SECTIONS - DECODED 2026-08-13.
+    # `was:` both emitted empty with a counted residual, because "the header field that declares
+    # them has never been located". It was never a format problem: ALL 13 oracles happened to
+    # carry zero junctions, so byte-identity was structurally blind to a section we did not read
+    # (738 of 1,027 files carry 12,273 of them). The full-game sweep produced 728 references that
+    # DO carry them, and the layout fell out of value-intersection against those.
+    #
+    #   0x38 -> junction array, 12-byte records      0x50 -> junction-ref array, 8-byte records
+    #   0x40 -> heightmap blob                       0x60 -> count (SHARED by both arrays)
+    #   0x64 -> total heightmap bytes
+    #
+    # Junction record:
+    #   +0x00 s16 MaxZ/32 | +0x02 s16 PosX*0.25 | +0x04 s16 PosY*0.25 | +0x06 s16 MinZ/32
+    #   +0x08 u16 heightmap offset | +0x0A u8 SizeX | +0x0B u8 SizeY
+    # ⭐ MaxZ is the FIRST field, which is why it hid: a search for the coordinates lands 2 bytes
+    # into the record, so the "spare" u16 at the end was the NEXT record's MaxZ.
+    # ⭐ MinZ/MaxZ are SIGNED - a real junction sits below zero and overflowed an unsigned read.
+    # ⭐ The heightmap offset is self-proving: offsets run 0, 36, 60 for 6*6, 4*6, 8*6 grids, and
+    # the running total equals 0x64 exactly.
+    njunc = r.u32(0x60)
+    jbuf, joff = r.deref(r.ptr(0x38), njunc * 12) if njunc else (None, 0)
+    hbuf, hoff = r.deref(r.ptr(0x40), r.u32(0x64)) if njunc else (None, 0)
+    rbuf, roff = r.deref(r.ptr(0x50), njunc * 8) if njunc else (None, 0)
+    if njunc and (jbuf is None or rbuf is None):
+        # REFUSE rather than emit a half-read section - and COUNT it, so the run says so.
+        RESIDUALS['ynd_junction_array_did_not_resolve'] = \
+            RESIDUALS.get('ynd_junction_array_did_not_resolve', 0) + 1
+        out.append(' <Junctions />')
+        out.append(' <JunctionRefs />')
+    elif not njunc:
+        out.append(' <Junctions />')
+        out.append(' <JunctionRefs />')
+    else:
+        out.append(' <Junctions>')
+        for i in range(njunc):
+            p = joff + i * 12
+            maxz = struct.unpack_from('<h', jbuf, p + 0x00)[0] * Z_SCALE
+            px = struct.unpack_from('<h', jbuf, p + 0x02)[0] * XY_SCALE
+            py = struct.unpack_from('<h', jbuf, p + 0x04)[0] * XY_SCALE
+            minz = struct.unpack_from('<h', jbuf, p + 0x06)[0] * Z_SCALE
+            hmo = struct.unpack_from('<H', jbuf, p + 0x08)[0]
+            sx, sy = jbuf[p + 0x0A], jbuf[p + 0x0B]
+            out.append('  <Item>')
+            out.append('   <Position x="%s" y="%s" />' % (fmt_num(px), fmt_num(py)))
+            out.append('   <MinZ value="%s" />' % fmt_num(minz))
+            out.append('   <MaxZ value="%s" />' % fmt_num(maxz))
+            out.append('   <SizeX value="%d" />' % sx)
+            out.append('   <SizeY value="%d" />' % sy)
+            out.append('   <Heightmap>')
+            for row in range(sy):
+                s = hoff + hmo + row * sx
+                out.append('    ' + ' '.join('%02X' % b for b in hbuf[s:s + sx]))
+            out.append('   </Heightmap>')
+            out.append('  </Item>')
+        out.append(' </Junctions>')
+        out.append(' <JunctionRefs>')
+        for i in range(njunc):
+            p = roff + i * 8
+            a, nd, jid, u0 = struct.unpack_from('<HHHH', rbuf, p)
+            out.append('  <Item>')
+            out.append('   <AreaID value="%d" />' % a)
+            out.append('   <NodeID value="%d" />' % nd)
+            out.append('   <JunctionID value="%d" />' % jid)
+            out.append('   <Unk0 value="%d" />' % u0)
+            out.append('  </Item>')
+        out.append(' </JunctionRefs>')
     out.append('</NodeDictionary>')
     return '\n'.join(out) + '\n'
 
