@@ -33,6 +33,46 @@ bound, which cost that root its AABB array and its BVH in silence.
 composites are simply where the missing composite BVH and the mis-discriminated type both bit
 hardest. ⛔ A worst-list that shares a name is a lead about WHERE a defect lands, never evidence
 that the format has a special case.
+=========================== THIRD PASS, 2026-08-14 (LATEST) ================================
+⭐ ITS RESULT IS ZERO BYTES, AND THAT IS THE REPORT. Three claim-REMOVING changes were applied,
+each measured on its own at POPULATION (all 15,139 files, not a draw). The lane's numbers did not
+move by one byte, and the per-file diff is identical in all 15,139:
+    population   BEFORE 14,255 / 15,139 (94.1608%), mean 99.9987%, min 99.3774%, 44,356 B unread
+                 AFTER  14,255 / 15,139 (94.1608%), mean 99.9987%, min 99.3774%, 44,356 B unread
+    board        BEFORE 208/250, mean 99.9961%, min 99.905%    AFTER  identical
+⛔⛔ **BUT ONE OF THEM WAS LOAD-BEARING FOR EVERY FILE IN THE GAME, AND ONLY DELETING IT SHOWED
+THAT.** `write()` stamped a computed page-count word over an allocation the walk had never
+visited. Removing it and adding NOTHING: **14,255 -> 0 of 15,139 byte-exact**, residual 44,356 ->
+59,495 bytes = **exactly one extra byte per file, 15,139 of 15,139**. Every byte-exact `.ybn` in
+the population was resting on a synthesised value. `_pagemap` models the block map and earns all
+14,255 back honestly. ⭐ THE MEAN MOVED 99.9987% -> 99.9974%: a defect one byte deep and PRESENT
+IN EVERY FILE IS INVISIBLE TO A MEAN. Byte-exact count is what found it.
+Each change, measured separately (population, byte-exact / mean / residual bytes):
+ 1. DELETE THE PAGE-COUNT WRITE, MODEL THE BLOCK MAP ..... 14,255 -> 0 -> 14,255, net 0 bytes
+    Worth zero coverage and everything in trust. See `_pagemap`.
+ 2. PER-TYPE BOUND SPANS RE-MEASURED AT POPULATION ....... 0 files, 0 bytes
+    ⭐ THE FINDING IS A NEGATIVE ONE: `.ybn` HAS ONLY TWO BOUND TYPES. Over **71,912 bounds in
+    all 15,139 files**, type 8 (56,773) and type 10 (15,139) are the whole lane; sphere, capsule,
+    box, geometry-4 and cylinder occur ZERO times. Both spans already equalled the room to the
+    next allocation and over-claimed on **0 of 71,912**. The drawable lanes' table - where a flat
+    0x180 ran past the next allocation on 10,322 of 10,322 BOXES - had nothing to fix here,
+    because this lane has no boxes. See BOUND_SPAN_BY_TYPE.
+ 3. READ +0x130 ONLY ON TYPE 8, +0xA8 ONLY ON TYPE 10 .... 0 bounds, 0 bytes
+    The `geom` plausibility gate and the type gate agree on 71,912 of 71,912. Applied anyway: a
+    type-4 record ends AT 0x130, and these offsets are shared with `ydr_write`, where type 4 does
+    occur. Pinned by a test that could have refused - see the +0x130 note in `_bound`.
+⭐⭐ THE CONTROL THAT MAKES A CLAIM-REMOVING CHANGE SHIPPABLE: a WHOLE-POPULATION per-file diff,
+**0 regressions in 15,139**, run across two independent instruments (a payload cache graded by
+`scratchpad/ybn3_grade.py`, and `tools/roundtrip_population_all.py` walking the game itself). The
+cache was proven free first: it reproduced the previous population checkpoint in 15,139 of 15,139
+keys with zero divergence before it was used to measure anything.
+⚠ **AND A CORRECTION TO A CLAIM IMPORTED FROM THE DRAWABLE LANE.** "type 8 == vtable 0x4062fae8,
+type 10 == 0x4062bac8" (5 subjects) does NOT generalise: at population each type carries FOUR
+distinct vtables. The two SETS are disjoint (overlap 0 of 71,912), so the vtable corroborates the
+type byte - but it is not a constant, and THE TYPE BYTE IS THE DISCRIMINATOR.
+⚠ THE REMAINDER IS UNCHANGED at 884 files / 44,356 bytes - see REMAINING GAP below.
+============================================================================================
+
 COVERAGE 2026-08-14, second pass. Reproduce:
 `python tools/roundtrip_coverage.py --lane ybn --limit 147`      (the lane sample)
 `python tools/roundtrip_population_all.py --run --lanes ybn --out <dir>` then `--report` (all of it)
@@ -97,8 +137,37 @@ past the end of a polygon array, with the matching per-polygon material bytes af
     capacity-exceeds-count pattern the BVH node array has, but with no capacity field located.
   * ⛔ **NOT CLOSED BY FILLING** to the next region, which would read 100% and understand nothing.
 
-⚠ Same scope as the other writers: inflated SYSTEM SEGMENT only; the page-count record at
-`ptr@0x08 +8` is COMPUTED (the law from `meta_write`, confirmed on ynd and ynv).
+⭐ Δ 2026-08-14 (third pass) - THE REMAINDER RE-MEASURED OVER **ALL 884 SHORT FILES**, not the 34
+worst, and the attribution now RECONCILES TO THE BYTE with the independently-measured population
+residual (`scratchpad/ybn3_probe_tail.py`; 44,356 = 44,356):
+    polygon-array tail  40,020 B (90.2%)  ·  poly-material tail  2,429 B (5.5%)  ·  other 1,907 B
+The earlier 94.7 / 5.3 / 0.0 split came from the 34 WORST files and slightly over-weighted the
+polygon tail; the shape of the finding is unchanged and 1,006 under-read polygon arrays were
+located. Surplus is 1-4 records on 888 of them.
+⛔ FOUR MORE HYPOTHESES TESTED AND **ALL FOUR REFUTED**, in a deliberately DIFFERENT search space
+from the exhausted field-sweep (which is not repeated). Scored over all 1,006 arrays:
+    H1 the ALLOCATION `(npolys+surplus)*16` rounds to K bytes ..... 32:52.6% 64:29.1% 128:12.8%
+       256:8.5% 512:5.4% 1024:3.7% - HALVING AT EVERY STEP, which is exactly what CHANCE looks
+       like for a rounding rule, not a law. (`npolys*16` is already 16-aligned, so "the totals
+       share no modulus" had NOT ruled this out - it needed its own test.)
+    H2 `(npolys+surplus)` is a multiple of K (would size the poly-material array too) .. same
+       chance curve, 52.6% down to 3.7%.
+    H3 ANOTHER BOUND SHARES THE ALLOCATION with a larger npolys - i.e. the surplus is somebody
+       else's polygons and no field in THIS record would ever have stated it ....... 0 / 1,006
+    H4 the BVH NODE-ARRAY CAPACITY predicts the surplus ........................... 0 / 1,006
+⚠ AND A REVERSAL I ALMOST BANKED: scored by uncovered EXTENT, 19 arrays with 372-1,811 surplus
+records looked like 87.5% of the residual and a whole second defect class. Counting the bytes the
+MEASURE actually uses - non-zero only, since an uncovered ZERO byte still matches a zero-filled
+image - they are **2.5%**, and the 1-99 class is 97.5%. Those big allocations are reserved space
+that is almost entirely UNWRITTEN. ⭐ It is the same trap as an over-wide span: I measured a
+property the measure does not use, and it manufactured a finding. (The `wellformed` test in the
+probe had the twin of that flaw - an all-zero record passed every clause - and now rejects zero.)
+⇒ The reservation is real and much larger than "1-10 slots" - up to 1,811 records - which
+STRENGTHENS the allocated-but-uncounted reading while still locating no field that states it.
+
+⚠ Same scope as the other writers: inflated SYSTEM SEGMENT only. ⛔ Δ THE PAGE-COUNT RECORD AT
+`ptr@0x08 +8` IS NO LONGER COMPUTED - it is READ, as part of the block map `_pagemap` models.
+See `_pagemap` for why a computed value there was masking an unread allocation in every file.
 ASCII output only.
 """
 import os
@@ -132,8 +201,29 @@ from ydr2xml import Res  # noqa: E402
 # ⚠ Only types 10 and 8 occur in this lane (268 and 853 in the measured 268 files). Any other
 # type falls back to the largest MEASURED span rather than to a bigger guess, and that fallback is
 # a statement about the sample, not about the format.
+# ⭐ Δ 2026-08-14 (third pass) - THE TABLE IS NOW RE-MEASURED AT **POPULATION**, and the headline
+# result is a NEGATIVE one: the two spans this lane actually uses were already exact.
+# `scratchpad/ybn3_probe_span.py`, ALL 15,139 files / **71,912 bounds** (not a draw - the whole
+# lane), taking each walked bound's room to the next modelled structure:
+#     type  8 geometry-BVH  0x150   room 0x150 in 56,455 of 56,773   min 0x150   over-claims 0
+#     type 10 composite     0x0B0   room 0x0B0 in 15,139 of 15,139   min 0x0B0   over-claims 0
+# ⇒ NEITHER span runs past the next allocation ANYWHERE in the game, and the 318 type-8 bounds
+# with a wider room (0x160/0x170/0x180) are padding, not a bigger record.
+# ⛔⛔ AND THE REAL FINDING: **`.ybn` CONTAINS ONLY TWO BOUND TYPES.** Sphere (0), capsule (1),
+# box (3), geometry (4) and cylinder (13) occur **ZERO** times in 71,912 bounds. The per-type
+# table the drawable lanes measured - where a flat 0x180 ran past the next allocation on 10,322
+# of 10,322 boxes - has nothing to correct here, because this lane has no boxes. A table imported
+# without re-measuring would have looked like a fix and been worth nothing.
+# ⚠ THE ENTRIES BELOW FOR TYPES 0/1/3/4/13 ARE **NOT MEASURED IN THIS LANE** - they are the
+# drawable lanes' figures (`ydr_write.BOUND_SPAN_BY_TYPE`, 11,626 bounds in 150 files), carried
+# here so that a type this lane has never seen cannot fall back to a span 0xE0 too wide. They fire
+# on 0 of 71,912 bounds today. ⛔ `4: 0x130` CORRECTS a stale `4: 0x150` that was never measured
+# on any `.ybn`: a type-4 record is 0x130, so 0x150 claimed 0x20 bytes past its end - and +0x130
+# is exactly where the type-8 BVH slot lives, which is why that slot is now gated on the type.
+# ⚠ The fallback is the LARGEST MEASURED span, and that is a statement about the sample, not the
+# format. Re-measure before widening the table.
 BOUND_SPAN = 0x150                       # fallback / largest measured
-BOUND_SPAN_BY_TYPE = {10: 0x0B0, 4: 0x150, 8: 0x150}
+BOUND_SPAN_BY_TYPE = {0: 0x70, 1: 0x80, 3: 0x70, 4: 0x130, 8: 0x150, 10: 0x0B0, 13: 0x80}
 
 
 class Ybn:
@@ -143,6 +233,7 @@ class Ybn:
         self.size = len(res.sys)
         self.regions = []
         self._seen = set()
+        self._pagemap()
         self._bound(0)
 
     def _off(self, ptr):
@@ -160,6 +251,60 @@ class Ybn:
         """Capture a span at an ABSOLUTE offset (already resolved), not via a tagged pointer."""
         if nbytes > 0 and off + nbytes <= self.size:
             self.regions.append((off, bytes(self.res.sys[off:off + nbytes])))
+
+    def _pagemap(self):
+        """`resource+0x08` -> THE BLOCK MAP: a 16-byte header plus one 8-byte record per page.
+
+            +0x00 u32 / +0x04 u32 ..... zero in 400/400
+            +0x08 u8 SYSTEM page count | +0x09 u8 GRAPHICS page count
+            +0x10 .. one 8-byte record per page, `sysPages + gfxPages` of them
+
+        ⛔⛔ WHY THIS EXISTS, and it is the same defect class the `+0x130` blind fill was.
+        `write()` used to STAMP the +0x08 word with a value recomputed from the RSC7 flags. That
+        write was not reproducing a byte the walk had read - it was standing in for an allocation
+        the walk had NEVER VISITED, and it hid it perfectly, because the rest of the block map is
+        zero and the comparison image is zero-filled, so only the single non-zero page-count byte
+        could ever have shown as a difference.
+        ⭐ MEASURED, and the number is the whole argument: deleting the write and adding NOTHING
+        took this lane from **14,255 of 15,139 byte-exact to 0 of 15,139**, and the residual grew
+        by exactly 15,139 bytes - ONE BYTE PER FILE, in every file in the game. Every byte-exact
+        `.ybn` in the population was resting on a computed word rather than on a modelled
+        structure. The mean coverage moved only 99.9987% -> 99.9974%, which is precisely why a
+        mean cannot be trusted to find this: the defect is one byte deep and universal.
+        ⭐ THE SIZE LAW IS PINNED BY THE ALLOCATION, and by a test THREE WRONG ANSWERS FAIL.
+        Measured over 400 files drawn evenly across the cached population (probe prints its sample
+        size), scoring four candidate strides against the room to the next modelled structure:
+            stride    fits the room    EQUALS it exactly    tail all zero
+              4 B       400 / 400          0 / 400            400 / 400
+            **8 B**   **400 / 400**    **202 / 400**        **400 / 400**
+             12 B        31 / 400          3 / 400             31 / 400
+             16 B        27 / 400         20 / 400             27 / 400
+        Only 8 both fits everywhere AND accounts for the extent; 12 and 16 overrun the next
+        structure on more than 90% of files, and 4 never explains the extent at all. The 198 that
+        are not exact are padding to the next 16-byte boundary (every observed room is a multiple
+        of 16), and that padding is ZERO in 400/400 - so the arithmetic is confirmed by the extent
+        and contradicted nowhere. The padding is deliberately NOT claimed.
+        ⚠ HONEST ABOUT WHAT IS NOT KNOWN: the per-page records are zero in 400/400 here, so their
+        8-byte stride is pinned by the ALLOCATION EXTENT, not by their content. This claims the
+        block map's SIZE; it is not a reading of its records.
+        ⚠ `.ybn` carries no graphics segment: `+0x09` is 0 in 400/400, so `sysPages + gfxPages`
+        is `sysPages` in this lane. The sum is kept because it is the format's, not the lane's.
+        ⛔ `_flat_at` REFUSES rather than clamps, so a misread count costs coverage instead of
+        inventing it - the same discipline `_bvh` and `_octant_map` already use.
+        """
+        try:
+            buf, o = self.res.deref(self.res.ptr(0x08), 16)
+        except (struct.error, IndexError):
+            return
+        if buf is not self.res.sys:
+            return
+        self._flat_at(o, 16)
+        try:
+            n = self.res.sys[o + 8] + self.res.sys[o + 9]
+        except IndexError:
+            return
+        if 0 < n <= 512:
+            self._flat_at(o + 16, n * 8)
 
     def _octant_map(self, off, n=8):
         """phBound +0xC0 / +0xC8 - THE OCTANT MAP, SELF-DESCRIBING.
@@ -370,7 +515,40 @@ class Ybn:
             if nmatcol:
                 self._flat(struct.unpack_from('<I', s, off + 0xF8)[0], nmatcol * 4)
 
-        if geom:
+        # ⛔ Δ 2026-08-14 (third pass) - THE SLOT IS READ ONLY WHERE THE RECORD HAS ONE.
+        # `was:` `if geom: self._bvh(off)`, i.e. gated on the geometry PLAUSIBILITY flag, which
+        # covers types 4 AND 8. A type-4 geometry record is **0x130 bytes**, so on a type 4
+        # `+0x130` is the FIRST BYTE PAST THE RECORD and a pointer read there is a pointer read
+        # out of the next structure. `_bvh`'s four laws would almost certainly refuse whatever
+        # came back, but "the laws will probably catch it" is not a reason to make the read - a
+        # claim must be aimed at ground the record actually owns.
+        # ⭐ MEASURED over ALL 15,139 files / 71,912 bounds (`scratchpad/ybn3_probe_slots.py`),
+        # and the change alters **ZERO bounds in this lane** - which is the finding, not a
+        # disappointment:
+        #     type-8 bounds where `geom` is TRUE (read either way) ....... 56,773 / 56,773
+        #     type-8 bounds where `geom` is FALSE (would have been missed) ......... 0
+        #     non-type-8 bounds the old gate would read +0x130 on .................. 0
+        #     non-type-10 bounds the old gate would read +0xA8 on .................. 0
+        # It is applied anyway because the gate is now a statement about the RECORD rather than
+        # about how plausible its counts looked, and because these offsets are shared with
+        # `ydr_write`, where a drawable's embedded graph does carry type 4.
+        # ⭐⭐ AND THE SLOTS ARE PINNED BY A TEST THAT COULD HAVE REJECTED THEM. Every bound in the
+        # population was checked for a LAW-PASSING BVH block at BOTH slots, so a block on the
+        # wrong slot would have shown up:
+        #     type  8 : +0x130 -> a block in 56,773 / 56,773 .... +0xA8 -> a block in 0
+        #     type 10 : +0x130 -> a block in 0 .................. +0xA8 -> a block in 3,476 / 15,139
+        # Each slot belongs to exactly one type and NEITHER ever carries a block on the other's
+        # slot. (3,476 of 15,139 composites carry one; it is optional, and the laws are what tell
+        # the two cases apart - there is no presence flag.)
+        # ⭐ INDEPENDENT WITNESS, and it CORRECTS a narrower claim carried over from the drawable
+        # lane. The vtable at `+0x00` is written by the game's packer, not by us. Over the same
+        # 71,912 bounds the type-8 and type-10 vtable SETS ARE DISJOINT - overlap 0 - so the type
+        # byte is corroborated by a field nobody chose. But there is NOT one vtable per type:
+        #     type  8 : 0x4062dab8, 0x4062fab8, 0x4062fac8, 0x4062fae8   (four)
+        #     type 10 : 0x40629aa8, 0x4062b5d8, 0x4062baa8, 0x4062bac8   (four)
+        # ⛔ So "type 8 == vtable 0x4062fae8" (5 subjects, drawable lane) does not generalise: it
+        # is one of four. THE TYPE BYTE IS THE DISCRIMINATOR; the vtable only corroborates it.
+        if btype == 8:
             self._bvh(off)
 
         # composite children
@@ -395,10 +573,15 @@ class Ybn:
         if not geom and 0 < n <= 4096:
             self._flat(struct.unpack_from('<I', s, off + 0x88)[0], n * 32)
             # ⭐ AND +0xA8 ON A COMPOSITE IS THE SAME BVH BLOCK the geometry bounds carry at
-            # +0x130 - a BVH over the CHILDREN. Same reader, same four laws. Gated on `not geom`
-            # for the same reason the AABB array above is: on a geometry bound +0xA8 is inside the
-            # GeometryCenter vec4, so the discriminators are opposite and cannot collide.
-            self._bvh(off, 0xA8)
+            # +0x130 - a BVH over the CHILDREN. Same reader, same four laws.
+            # ⛔ Δ 2026-08-14 (third pass) - gated on `btype == 10`, not on `not geom`. On a
+            # GEOMETRY bound +0xA8 is inside the GeometryCentre vec4, and `not geom` is every type
+            # that is not 4 or 8 *plus* any type-4/8 bound whose counts failed the plausibility
+            # window - so the old gate could aim this read at the middle of a float. See the
+            # population measurement in the +0x130 note above: the change alters 0 of 71,912
+            # bounds here, and a law-passing block was found at +0xA8 on a non-composite in 0.
+            if btype == 10:
+                self._bvh(off, 0xA8)
         coff = self._off(carr)
         if coff is None:
             return
@@ -417,15 +600,6 @@ class Ybn:
         for off, data in self.regions:
             if off is not None and data:
                 img[off:off + len(data)] = data
-        try:
-            import meta_write
-            buf, o = self.res.deref(self.res.ptr(0x08), 16)
-            if buf is not None and o + 12 <= len(img):
-                val = ((meta_write.page_count(self.sys_flags) & 0xFF)
-                       | ((meta_write.page_count(self.gfx_flags) & 0xFF) << 8))
-                img[o + 8:o + 12] = struct.pack('<I', val)
-        except Exception:
-            pass
         return bytes(img)
 
     def unreached(self):
