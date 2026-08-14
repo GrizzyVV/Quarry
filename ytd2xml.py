@@ -209,8 +209,49 @@ def level_sizes(w, h, mips, blk, bpp):
     overlaps the next payload (0/13,221 and 0/555). It is also <= the block-rounded chain for
     every shape measured, so it cannot over-read anywhere the old rule did not.
     """
-    top = (w * h * blk) // 16 if blk is not None else w * h * bpp
-    return [top >> (2 * i) for i in range(max(1, mips))]
+    # ==========================================================================================
+    # ⛔⛔ THE SHIFT LAW ABOVE IS RETRACTED 2026-08-14. IT UNDER-READS THE STORED CHAIN.
+    # Everything documented above is accurate about what the REFERENCE EXPORTER writes, and that
+    # is exactly why it was wrong about the GAME: all 237 witnesses were the reference exporter's
+    # OWN .dds sidecars, so 237/237 proved only that we match that tool. It cannot see a shortfall
+    # BOTH tools share - the founding lesson of this campaign, now proven a fourth time.
+    #
+    # ⭐ THE STORED CHAIN IS BLOCK-ROUNDED, per level:
+    #       size(i) = ceil(max(1, w>>i)/4) * ceil(max(1, h>>i)/4) * blk        [block formats]
+    #       size(i) = max(1, w>>i) * max(1, h>>i) * bpp                        [linear]
+    # A compressed level never shrinks below one 4x4 block, so the tail is 16,16,16 - not the
+    # shift law's 16,4,1. They diverge even for POWER-OF-TWO shapes: 256x256 DXT5 mips=9 stores
+    # 87,408 B; the shift law computes 87,381. That 27-byte tail is the whole defect.
+    #
+    # ✅ EVIDENCE, round-trip against the GAME's archive bytes (the independent witness):
+    #   * .ytd derivation, 2,969 textures / 684 dictionaries: block-rounded 0 under-reads and
+    #     0 over-runs; the shift law UNDER-READS 291.
+    #   * .ydr head-to-head control, identical 150-file sample, only this rule changed:
+    #         shift law     byte-EXACT 112/150   graphics 80,993,788/80,994,304 = 99.999363%
+    #         block-rounded byte-EXACT 135/150   graphics 80,994,304/80,994,304 = 100.000000%
+    #     ⇒ +23 files byte-exact and the ENTIRE remaining graphics gap closed, 516 B -> 0.
+    #   * .ytd itself measures graphics 100.000000% under this rule - a counted zero-difference
+    #     over 2.34 GB of pixel bytes.
+    #
+    # ⚠ CONSEQUENCE, STATED NOT BURIED - THIS CHANGES .dds SIDECAR OUTPUT. Every sidecar QUARRY
+    # has written is SHORT IN THE TAIL on roughly 10% of textures. So is the reference exporter's,
+    # which is why they matched. Sidecars regenerate on the next textures pass.
+    # ⚠ It will also move the sidecar CW-parity board (block-rounded scored 207/237 against those
+    # sidecars). That is the CORRECT direction under Matt's 2026-08-13 ruling - round-trip is
+    # PRIMARY, parity is a cross-check, and *"if CW is wrong, then Quarry is wrong."* Recorded as
+    # an AGENT call with its evidence; a one-word override reverts it.
+    # ⭐ The old note even anticipated this: it observed the shift chain is "<= the block-rounded
+    # chain for every shape measured". Under round-trip, <= means UNDER-READ.
+    # ==========================================================================================
+    out = []
+    for i in range(max(1, mips)):
+        lw = max(1, w >> i)
+        lh = max(1, h >> i)
+        if blk is not None:
+            out.append(((lw + 3) // 4) * ((lh + 3) // 4) * blk)
+        else:
+            out.append(lw * lh * (bpp or 0))
+    return out
 
 
 def mipchain_bytes(w, h, mips, blk, bpp):
