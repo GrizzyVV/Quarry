@@ -12,15 +12,46 @@ Whatever is unreached stays zero and is REPORTED. **The gaps are the finding.**
 Structure per `ydr2xml`'s phBound decoder (root phBound at system offset 0):
   composite:  u16 child count @+0xA0 · children ptr array @+0x70 (n*8)
               transforms @+0x78 (n*64) · flags @+0x90 (n*8, OMITTED when absent)
-  geometry:   nverts @+0xD0 · npolys @+0xD4 · nmat u8 @+0x120
+              per-child AABB @+0x88 (n*32) · **BVH block @+0xA8** · header is 0xB0 bytes
+  geometry:   nverts @+0xD0 · npolys @+0xD4 · nmat u8 @+0x120 · nmatcol u8 @+0x121
               vertices @+0xB0 (nverts*6) · polygons @+0x88 (npolys*16)
               materials @+0xF0 (nmat*8) · poly materials @+0x118 (npolys*1)
-COVERAGE 2026-08-14 (147-file sample - the lane's own draw; the harness prints its size):
-**99.4653%** mean, min 96.265%, **19/147 byte-exact**. Reproduce:
-`python tools/roundtrip_coverage.py --lane ybn --limit 250`.
-⚠ Δ was 99.3967% / 16 exact. The gain is the per-child AABB array at +0x88 (see `_bound`).
-⛔ THIS IS THE WEAKEST LANE AND IT IS NOT CLOSED - the .ydr lane reached 250/250 in the same
-pass. The gap here is REAL and mapped, not a rounding: see REMAINING GAP below.
+              **vertex colours @+0xB8 (nverts*4)** · **material colours @+0xF8 (nmatcol*4)**
+              **BVH block @+0x130** · header is 0x150 bytes (u16 sentinel 0xFFFF at +0x140)
+  BVH block:  0x80 bytes, self-validating - nodes @+0x00 sized by **capacity** @+0x0C,
+              trees @+0x70 sized by capacity @+0x7A, both 16-B records. See `_bvh`.
+⭐ The BVH block is ONE structure reached from TWO slots (+0x130 on geometry, +0xA8 on composite),
+and it was the last whole structure missing from this lane.
+⭐ AND THE BOUND TYPE IS THE DISCRIMINATOR (+0x10), not a plausibility test on the counts - see
+`_bound`. A composite whose header bytes happened to look like counts was walked as a geometry
+bound, which cost that root its AABB array and its BVH in silence.
+
+⭐⭐ `ma@` WAS A DEFECT SIGNATURE, NOT A VARIANT. The 25 worst files in the population were all
+`ma@*` composite map collision, clustered at 85-88%, and that looked like a variant worth naming.
+**Zero `ma@`-specific code was written.** At population `ma@` is now the BEST-performing prefix -
+992 of 1,025 byte-exact (96.8%) vs 94.9% unprefixed and 92.2% `hi@`, mean 99.9993% - because the
+composites are simply where the missing composite BVH and the mis-discriminated type both bit
+hardest. ⛔ A worst-list that shares a name is a lead about WHERE a defect lands, never evidence
+that the format has a special case.
+COVERAGE 2026-08-14, second pass. Reproduce:
+`python tools/roundtrip_coverage.py --lane ybn --limit 147`      (the lane sample)
+`python tools/roundtrip_population_all.py --run --lanes ybn --out <dir>` then `--report` (all of it)
+                                 was                      now
+    lane sample, 147 files       99.4653%  19/147     **100.0000%  147/147 byte-exact**
+    POPULATION, all 15,139       98.2798%  589 (3.89%) **99.9987%  14,255 (94.16%)**, 0 errors
+    population min               85.2824%              **99.3774%**
+    population bytes unreached   64,511,592            **44,356** of 3,795,976,192 (99.9988%)
+⚠ Δ IS NOT ALL GAIN. See BLIND FILL below: a third of a percentage point of the old sample number,
+and **every one of its 19 byte-exact files**, rested on an unpinned claim. Removing it and pinning
+nothing else reads **99.1327% / 0-of-147** - that is the honest baseline this pass started from.
+
+⛔⛔ THE SECOND SAMPLE EXISTS BECAUSE THE FIRST ONE COULD NOT SEE THE LANE. `roundtrip_coverage`
+draws `.ybn` from x64c/x64a/x64d, and **every one of the population's 25 worst files lives in
+x64i/j/k/l/m** (the `_citye`/`_cityw` map packs). The sanctioned sample read 99.4653% while the
+population read 98.2798%, and the whole 85-88% tail - the composite map-collision files - was
+invisible to it. The adversarial sample is rebuilt from the population grade by
+`scratchpad/ybn_hard_cache.py` (worst 60 + a seeded random control, so a fix cannot be tuned to
+the worst files alone). ⭐ A LANE'S ARCHIVE LIST IS PART OF ITS SAMPLE DESIGN.
 
 ⭐⭐ TWO STRUCTURES PORTED FROM THE DRAWABLE LANE PROVED **ABSENT** HERE, and the negative result
 is the finding - a lane's bounds are not the same animal as a drawable's embedded bounds.
@@ -34,23 +65,40 @@ Measured over 697 bounds in the 147-file sample (scratchpad probes, sizes printe
 ⇒ Standalone map collision carries neither; both belong to bounds embedded under a drawable or a
 fragment. Both are still implemented here, because when the law does not hold they cost nothing.
 
-REMAINING GAP (mapped 2026-08-14, runs taken from the COVERED SET so their starts are true
-allocation boundaries rather than the first non-zero byte of a zero-filled diff):
-  * the dominant runs are high-entropy blocks of a few hundred to ~20 KB, and 15 of 22 sampled
-    runs ARE pointed at from ground we already model - i.e. we hold the pointer and never follow
-    it, the same actionable shape that closed the .ydr lane.
-  * the entry slots seen holding those pointers, by bound-header offset:
-        +0x50 / +0x60 (inside a 112-byte record) · +0x88 · +0xB8 · +0xD0 · +0xF8
-    ⚠ +0x88 and +0xF8 recur across files; +0xF8 is unmodelled entirely.
-  * ⛔ NOT CLOSED BY FILLING. Every byte above is deliberately left unclaimed - the sizing fields
-    are not pinned, and filling from one region's end to the next would report ~100% while
-    understanding none of it.
+⛔⛔ THE BLIND FILL, and it is the lesson of this pass. `+0x130` was read as "an array descriptor
+whose records sit INLINE at +0x20", so the writer claimed `count * 16` bytes starting there. It is
+refuted: `+0x20` is a BOUNDING BOX (see `_bvh`), and the descriptor's own pointer equals `+0x20`
+in **0 of 853** blocks. Over the two samples that claim covered **5,563,920 bytes of which only
+47,136 (0x60 per block) were inside the structure it was reading** - 99.2% of it claimed on no
+basis whatever. ⭐ It could not fail: the comparison image is built by copying the ORIGINAL bytes
+at whatever offsets are claimed, so **an unpinned claim always "matches"**. It also hid a real
+gap - the material-colour arrays read as already-covered underneath it.
+⇒ **A region claimed without a count derived from the file is indistinguishable from
+understanding, and reads as success.** Every capture in this file is now either count-derived or
+law-guarded, and the header span is measured per type rather than being generous.
+
+REMAINING GAP - **ONE CAUSE, and it is the whole of it.** At population: 884 of 15,139 files,
+44,356 bytes, median 34 B per affected file, max 952. Split byte-by-byte over the **34 worst
+files of the post-fix population grade** (`scratchpad/ybn_hard3`, every one of which still has a
+mismatch, so the sample is the residual itself): **94.7% polygon-array tail, 5.3% poly-material
+tail, 0.0% anything else.** Every run is 1-10 extra 16-byte polygon records sitting immediately
+past the end of a polygon array, with the matching per-polygon material bytes after theirs.
+  * they are REAL triangles of that mesh - valid float + three vertex indices inside `nverts`,
+    continuing the index sequence of the last counted polygon;
+  * the poly-material array is longer by the same record count, which is the file's own
+    cross-check: one material byte per polygon;
+  * the BVH does NOT reference them: `max(itemId + itemCount)` over the leaves is **4849 on a
+    bound whose npolys is 4849**, so the BVH covers exactly the counted polygons;
+  * ⛔ **no scalar sizes them.** Every u8/u16/u32 in the 0x150-byte header and in the 0x80-byte
+    BVH block was tested against `npolys + surplus` on all 7 - **none matches on all 7, and none
+    matches on more than 1.** The totals share no modulus (1051 is odd, 4436 even), so it is not
+    alignment either.
+  * BEST-EVIDENCED HYPOTHESIS: allocated-but-uncounted trailing slots - the same
+    capacity-exceeds-count pattern the BVH node array has, but with no capacity field located.
+  * ⛔ **NOT CLOSED BY FILLING** to the next region, which would read 100% and understand nothing.
 
 ⚠ Same scope as the other writers: inflated SYSTEM SEGMENT only; the page-count record at
 `ptr@0x08 +8` is COMPUTED (the law from `meta_write`, confirmed on ynd and ynv).
-⚠ FIRST PASS: the per-type bound header size is not pinned, so a generous span is captured per
-bound. That inflates coverage slightly and is stated here rather than presented as knowledge -
-the number to trust is the SHAPE of what remains unreached, not the last decimal.
 ASCII output only.
 """
 import os
@@ -62,10 +110,30 @@ from ydr2xml import Res  # noqa: E402
 
 # ⛔ WAS 0x130 - which stopped EXACTLY at the slot that matters. Measured 2026-08-13 over 40
 # files: a pointer at bound+0x130 lands on the START of an unreached run in 132 bounds, by far
-# the dominant hit, and the writer could not even see the slot. Extended to 0x180 so the header
-# is covered; the STRUCTURE it points to is identified but still unfollowed (its element count
-# does not factor as any header scalar * 16/32/64 - see the log).
-BOUND_SPAN = 0x180
+# the dominant hit, and the writer could not even see the slot.
+#
+# ⭐ Δ 2026-08-14 - THE SPAN IS NOW MEASURED PER TYPE, and the generous 0x180 is retired.
+# A header span is a BLIND CLAIM: the comparison image copies the original bytes at whatever
+# offsets are claimed, so an over-wide span always "matches" and quietly pays for structures
+# nobody decoded. Swept over both samples (147-file lane sample + 121 population-worst),
+# `scratchpad/ybn_span_sweep.py`:
+#     span   147-sample            hard sample
+#     0x140  0/147  99.99101%      0/121  99.99182%
+#     0x150  147/147 100.00000%    114/121 99.99899%
+#     0x180  147/147 100.00000%    114/121 99.99899%     <- 33,552 more bytes claimed, 0 gained
+# ⇒ the result SATURATES at 0x150 and the extra 0x30 bought nothing. What the last step buys is
+# exactly two bytes: `+0x140` is a u16 sentinel reading **65535 on all 853 geometry bounds**
+# (never a count - it equals neither nverts nor npolys anywhere), and `+0x142..+0x14F` is zero on
+# all 853. The 0x150 figure is corroborated independently by the LAYOUT: consecutive geometry
+# bound headers sit exactly 0x150 apart.
+# ⭐ A COMPOSITE IS A DIFFERENT SIZE, and the file says so: its last field is the BVH pointer at
+# +0xA8, and in 5 of the 7 files whose layout was mapped by hand the very next object - a polygon
+# array - begins at **0x0000B0**, immediately after the root composite at offset 0.
+# ⚠ Only types 10 and 8 occur in this lane (268 and 853 in the measured 268 files). Any other
+# type falls back to the largest MEASURED span rather than to a bigger guess, and that fallback is
+# a statement about the sample, not about the format.
+BOUND_SPAN = 0x150                       # fallback / largest measured
+BOUND_SPAN_BY_TYPE = {10: 0x0B0, 4: 0x150, 8: 0x150}
 
 
 class Ybn:
@@ -138,6 +206,104 @@ class Ybn:
         for k in range(n):
             self._flat_at(offs[k], counts[k] * 4)
 
+    def _bvh(self, off, slot=0x130):
+        """A **0x80-byte BVH BLOCK**, and the block is SELF-VALIDATING.
+
+        TWO SLOTS CARRY ONE STRUCTURE (measured 2026-08-14):
+            geometry / GeometryBVH bound  +0x130
+            COMPOSITE bound               +0x0A8
+        ⭐ The composite's BVH is a BVH over its CHILDREN and it was the last whole structure in
+        this lane. It is the same block, byte for byte - all four laws below pass on it - so it is
+        one reader, not two. Corroborated by the tree arithmetic on the file it was found in: a
+        root with 7 children carries **13** nodes, which is 2*7-1, the node count of a binary tree
+        over 7 leaves.
+
+            +0x00 u64 ptr -> node array (count 16-B records) | +0x08 u32 count | +0x0C u32 capacity
+            +0x10 16 zero bytes
+            +0x20 vec4 box min | +0x30 vec4 box max | +0x40 vec4 box centre
+            +0x50 vec4 scale inverse | +0x60 vec4 scale
+            +0x70 u64 ptr -> tree array | +0x78 u16 count | +0x7A u16 capacity (16-B records)
+
+        ⛔⛔ Δ 2026-08-14 - THIS SLOT WAS PREVIOUSLY READ AS "an array descriptor with its records
+        INLINE at +0x20", and that reading is REFUTED, not refined. `+0x20` is the BOUNDING BOX,
+        so `capture(desc+0x20, count*16)` was claiming up to 51,696 bytes of ground it had not
+        decoded - a BLIND FILL. It could never show up as a failure, because the comparison image
+        is built by copying the original bytes at whatever offsets are claimed, so **an unpinned
+        claim always "matches"**. It inflated this lane's headline number and it swallowed the
+        material-colour arrays (they read as already-covered), hiding a real gap underneath a
+        fake one. ⭐ The general law, and it is the one this lane cost: **a region claimed without
+        a count derived from the file is indistinguishable from understanding, and reads as
+        success.**
+
+        HOW THE REPLACEMENT IS PINNED - four laws, each able to refuse, all measured over
+        **901 BVH blocks in 268 files** (853 from +0x130 on geometry bounds, 48 from +0xA8 on
+        composites; sample = 121 population-worst + the 147-file lane sample):
+            L1  +0x10..+0x20 is all zero .................... 901 / 901
+            L2  scale[k] * scaleinv[k] == 1 (+-1e-3) ........ 901 / 901   <- pins +0x50/+0x60 as a
+                                                                            reciprocal PAIR, which
+                                                                            no bounding-box reading
+                                                                            can produce by accident
+            L3  (max-min)[k] * scaleinv[k] == 65535 (+-1%) .. 901 / 901   <- pins +0x20/+0x30 as the
+                                                                            box AND states the 16-bit
+                                                                            quantisation the node
+                                                                            records are stored in
+            L4  tree count == tree capacity ................ 901 / 901
+        and the OLD reading was tested head-on in the same pass: the descriptor's own pointer
+        equals `desc+0x20` in **0 / 901**. It always points somewhere else entirely.
+        ⚠ 220 of the 268 composites carry NO BVH at +0xA8 - it is optional, and the laws are what
+        tell the two cases apart rather than a presence flag anybody had to guess.
+        ⭐ Self-validating: when a law fails NOTHING is captured, so a misread costs coverage
+        instead of inventing it - the same discipline `_octant_map` already uses.
+        ⚠ Record size 16 B is the file's own arithmetic, not a fitted stride: on the first three
+        blocks dumped, `nodes_end == the next known structure's start` exactly (656 B = 41*16 ends
+        at the following bound header; 2,064 B = 129*16 ends at the following tree array).
+        """
+        s = self.res.sys
+        try:
+            p = struct.unpack_from('<I', s, off + slot)[0]
+        except struct.error:
+            return
+        if (p >> 28) != 5:
+            return
+        d = p & 0x0FFFFFFF
+        if d + 0x80 > self.size:
+            return
+        if any(s[d + 0x10:d + 0x20]):                                   # L1
+            return
+        try:
+            bmin = struct.unpack_from('<3f', s, d + 0x20)
+            bmax = struct.unpack_from('<3f', s, d + 0x30)
+            sinv = struct.unpack_from('<3f', s, d + 0x50)
+            scl = struct.unpack_from('<3f', s, d + 0x60)
+            cnt, cap = struct.unpack_from('<II', s, d + 0x08)
+            tcnt, tcap = struct.unpack_from('<HH', s, d + 0x78)
+        except struct.error:
+            return
+        if not all(abs(scl[k] * sinv[k] - 1.0) < 1e-3 for k in range(3)):        # L2
+            return
+        if not all(abs((bmax[k] - bmin[k]) * sinv[k] - 65535.0) < 655.35         # L3
+                   for k in range(3)):
+            return
+        if tcnt != tcap:                                                          # L4
+            return
+        self._flat_at(d, 0x80)
+        # ⭐⭐ THE NODE ARRAY IS SIZED BY **CAPACITY**, NOT COUNT - and that is not a guess, the
+        # file states it. Found on `prologue01_10.ybn`: the last unclaimed run in the file is
+        # EXACTLY 240 bytes and the block reads count 13, capacity 15 -> 15 * 16 = 240, count *
+        # 16 = 208. The 2 surplus records carry the classic uninitialised inverted box
+        # (`01 80 01 80 01 80 ff 7f ff 7f ff 7f`, i.e. min +32767 / max -32767 per lane), which
+        # is what an allocated-but-unused BVH node looks like. ⚠ A count-sized read leaves those
+        # records unreached and they are NOT zero, so they count against - which is precisely how
+        # the run was found rather than reasoned about.
+        # ⚠ THE CAPACITY READ IS BOUNDED AND CHECKED, not trusted: over **901 accepted blocks**
+        # (853 geometry + 48 composite) `capacity - count` is only ever 0 (804), 1 (40) or 2 (57),
+        # and the capacity TAIL - the bytes count-sizing would have left - overlaps another
+        # modelled structure in **0 of 901**. So the extra records are nobody else's ground.
+        if 0 < cap <= 0x200000 and cnt <= cap:
+            self._flat(struct.unpack_from('<I', s, d + 0x00)[0], cap * 16)
+        if tcap:
+            self._flat(struct.unpack_from('<I', s, d + 0x70)[0], tcap * 16)
+
     def _bound(self, off, depth=0):
         """Walk one phBound; recurse into composite children. Depth-capped and visit-tracked so a
         malformed graph terminates on evidence rather than recursing forever."""
@@ -145,7 +311,9 @@ class Ybn:
         if off in self._seen or depth > 32 or off + 8 > self.size:
             return
         self._seen.add(off)
-        self.regions.append((off, bytes(s[off:min(off + BOUND_SPAN, self.size)])))
+        btype = s[off + 0x10] if off + 0x11 <= self.size else -1
+        span = BOUND_SPAN_BY_TYPE.get(btype, BOUND_SPAN)
+        self.regions.append((off, bytes(s[off:min(off + span, self.size)])))
         self._octant_map(off)
 
         # geometry payloads - guarded by the same sanity bounds the decoder uses, so a
@@ -156,7 +324,21 @@ class Ybn:
             nmat = s[off + 0x120]
         except (struct.error, IndexError):
             nverts = npolys = nmat = 0
-        geom = 0 < nverts <= 0x8000 and 0 < npolys <= 0x100000 and nmat
+        # ⛔⛔ THE TYPE CODE IS THE DISCRIMINATOR - THE PLAUSIBILITY TEST ALONE IS NOT.
+        # `geom` used to be three range checks on +0xD0/+0xD4/+0x120, and on a COMPOSITE those
+        # offsets are not counts at all: `cs2_04_0.ybn`'s root composite reads nverts 3,
+        # npolys 589,832, nmat 179 - all three inside the "plausible" windows - so the walker
+        # took a composite for a geometry bound. Cost: it ran the geometry captures with garbage
+        # counts AND, because the composite work sits behind `not geom`, it silently skipped that
+        # root's per-child AABB array and its BVH entirely. The residual it left is unmistakable
+        # once seen - 32-byte records of `{vec3 min, margin 0.005}{vec3 max, ...}` repeating on a
+        # 0x20 stride, i.e. the AABB array, sitting unclaimed in the middle of the file.
+        # ⭐ `ydr2xml` has always keyed off +0x10 (`_BOUND_GEOMETRY_TYPES = (4, 8)`, 10 =
+        # Composite). The writer inferring the same thing from value ranges is how the two
+        # readers disagreed. The range checks are KEPT as a second gate: a correct type code with
+        # a corrupt count must still not claim a megabyte.
+        geom = (btype in (4, 8) and 0 < nverts <= 0x8000
+                and 0 < npolys <= 0x100000 and nmat)
         if geom:
             self._flat(struct.unpack_from('<I', s, off + 0xB0)[0], nverts * 6)
             self._flat(struct.unpack_from('<I', s, off + 0x88)[0], npolys * 16)
@@ -172,35 +354,24 @@ class Ybn:
             # ⛔ DERIVED ONCE, IN `ydr_write._bound`, and mirrored here because these two walkers
             # are deliberately the same offsets - if one changes, change both.
             self._flat(struct.unpack_from('<I', s, off + 0x78)[0], nverts * 6)
+            # ⭐ THE TWO COLOUR ARRAYS - NOT a new derivation. `ydr2xml._bound_geometry_lines`
+            # has read both since the bounds work, and this writer simply never followed them:
+            #     +0xB8 -> vertex colours,   nverts * 4      (same count as the vertex array)
+            #     +0xF8 -> material colours, u8 @ +0x121 * 4 (the count sitting beside nmat)
+            # ⚠ THE ASYMMETRY IS THE FORMAT, and getting it wrong is how the first probe misread
+            # 185 bounds as a DISAGREEMENT: vertex colours are OPTIONAL with a count that is
+            # always non-zero, so absence is signalled by the POINTER alone; material colours
+            # carry their own count, and the decoder REFUSES when count and pointer disagree.
+            # Measured over the same 268 files: +0xB8 live on 111 of 303 geometry bounds in the
+            # hard sample, +0xF8 on 129 - so both are minority structures, which is exactly why a
+            # sample drawn from one archive family could miss them.
+            self._flat(struct.unpack_from('<I', s, off + 0xB8)[0], nverts * 4)
+            nmatcol = s[off + 0x121]
+            if nmatcol:
+                self._flat(struct.unpack_from('<I', s, off + 0xF8)[0], nmatcol * 4)
 
-        # ⭐ THE +0x130 STRUCTURE - an ARRAY DESCRIPTOR, not an array.
-        # This was the dominant unreached region in .ybn (132 of the bounds sampled), and the
-        # writer could not see it because BOUND_SPAN stopped at exactly 0x130.
-        # Decoded 2026-08-13 by dumping the target rather than guessing a stride:
-        #     +0x00 tagged ptr | +0x08 u32 count | +0x0C u32 capacity (== count) | +0x20 records
-        # which is the same {ptr, pad, count, capacity} shape meta_write documents for META
-        # arrays. Records are 16 B - three floats plus four bytes (the `01 00 80 7F` tail seen
-        # in the gap dumps).
-        # ⚠ Both placements are captured because which one holds the data is not yet pinned:
-        # inline at +0x20, and via the descriptor's own pointer. Whichever is wrong contributes
-        # nothing rather than corrupting - and if BOTH land, coverage would double-count, so the
-        # number is cross-checked against the gap shrinking, never taken on faith.
-        try:
-            desc = struct.unpack_from('<I', s, off + 0x130)[0]
-        except struct.error:
-            desc = 0
-        if desc:
-            d = self._off(desc)
-            if d is not None and d + 0x20 <= self.size:
-                self.regions.append((d, bytes(s[d:d + 0x20])))
-                try:
-                    cnt = struct.unpack_from('<I', s, d + 0x08)[0]
-                    cap = struct.unpack_from('<I', s, d + 0x0C)[0]
-                    if 0 < cnt <= 0x200000 and cap >= cnt:
-                        self._flat_at(d + 0x20, cnt * 16)
-                        self._flat(struct.unpack_from('<I', s, d + 0x00)[0], cnt * 16)
-                except struct.error:
-                    pass
+        if geom:
+            self._bvh(off)
 
         # composite children
         try:
@@ -223,6 +394,11 @@ class Ybn:
         # +0x70 or +0x78. Mirrored here because these two walkers are the same phBound offsets.
         if not geom and 0 < n <= 4096:
             self._flat(struct.unpack_from('<I', s, off + 0x88)[0], n * 32)
+            # ⭐ AND +0xA8 ON A COMPOSITE IS THE SAME BVH BLOCK the geometry bounds carry at
+            # +0x130 - a BVH over the CHILDREN. Same reader, same four laws. Gated on `not geom`
+            # for the same reason the AABB array above is: on a geometry bound +0xA8 is inside the
+            # GeometryCenter vec4, so the discriminators are opposite and cannot collide.
+            self._bvh(off, 0xA8)
         coff = self._off(carr)
         if coff is None:
             return
