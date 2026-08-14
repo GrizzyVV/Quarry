@@ -297,6 +297,12 @@ def _deflate_span(buf):
 # report_lane_counters. Disclosure law: an acceptance class must reach the printed output.
 RESOURCE_STORED_RAW = {'count': 0, 'examples': []}
 
+# Resources whose on-disk header slot is 0x18 bytes rather than 0x10 (the five older-build
+# `des_*` archives in x64f, 2026-08-14) - incremented in Rpf.payload, folded into every run
+# summary by report_lane_counters. Same disclosure law as above: an acceptance class that
+# changes where a body is read from must reach the printed output.
+RESOURCE_HDR24 = {'count': 0, 'examples': []}
+
 
 # ------------------------------------------------------------------ RPF7 container
 class Rpf:
@@ -509,11 +515,67 @@ class Rpf:
                                            | ((gfxf >> 28) & 0xF))
                                 return (struct.pack('<4sIII', b'RSC7', version, sysf, gfxf)
                                         + out)
+                    # ⭐⭐ 2026-08-14: THE ON-DISK RESOURCE HEADER IS 24 BYTES IN SIX ARCHIVES,
+                    # NOT 16. `x64f/des_setpiece.rpf`, `des_hosp_ceil.rpf`, `des_hosp_ceil2.rpf`,
+                    # `des_fib_ceiling2.rpf`, `des_bridge.rpf` and `x64j/id2_17.rpf` carry an
+                    # 0x18-byte header slot ahead of the DEFLATE body instead of the 0x10 every
+                    # other archive in the game uses. Reading from off+0x10 puts 8 bytes of header
+                    # in front of the stream, so it cannot inflate on ANY route - which is why
+                    # these looked like a broken compression, an unknown "version 164", and
+                    # finally a stored-raw class. They are none of those: the body is ordinary
+                    # raw DEFLATE and the drawables inside are ordinary drawables.
+                    #
+                    # MEASURED GAME-WIDE, not on one file (347,980 resource entries, 5,378
+                    # archives): 23 of 23 resources in those six archives sit at 0x18 - `.ydr`
+                    # AND `.ytd` AND `.ycd` AND `.ybd` alike - and every resource probed in every
+                    # other archive sits at 0x10. ZERO archives are mixed, so the property is the
+                    # ARCHIVE's, not the file's.
+                    # ⭐ They are an OLDER BUILD, and the RSC7 version census proves it
+                    # independently: the game holds exactly 13 `.ydr` v164 against 86,677 v165,
+                    # 4 `.ycd` v43 against 24,840 v46, and 1 `.ybd` v40 against 2 v42 - and every
+                    # one of those older-version files is in these six archives, with none
+                    # outside. (`.ytd` stays v13 in both; that format did not move.) The version
+                    # nibble is therefore a BUILD marker, not a different resource kind: the
+                    # v165 drawable reader parses these v164 files whole and writes 10 of 13 of
+                    # them back byte-for-byte.
+                    # ⚠ RELATED, NOT THE SAME: 66 `.yft` are v160 against 61,364 v162, and they
+                    # are NOT in these archives. A separate older class, unexamined here.
+                    #
+                    # ⛔ THE GATE IS WHAT MAKES THIS EVIDENCE. A header length is a CLAIM about
+                    # where the body starts, and a wrong claim here would be self-fulfilling if
+                    # it were merely "try another offset until something inflates". It is not:
+                    # the stream must (a) be valid DEFLATE, (b) terminate cleanly, and (c) inflate
+                    # to EXACTLY the byte count the entry's OWN sysFlags+gfxFlags page plan
+                    # declares - an authority this code cannot influence. A wrong offset fails
+                    # (a) immediately; a right-looking wrong one fails (c). 12 of 12 `.ydr` and
+                    # 22 of 22 resources hit the page plan exactly, and consumed exactly
+                    # size-0x18 bytes with nothing left over.
+                    for cand, tag in ((memoryview(self.data)[off + 0x18: off + size], 'hdr24'),):
+                        sp = _deflate_span(cand)
+                        if sp is not None and sp[1] == want:
+                            RESOURCE_HDR24['count'] += 1
+                            if len(RESOURCE_HDR24['examples']) < 10:
+                                RESOURCE_HDR24['examples'].append(e['name'])
+                            e['_how'] = tag
+                            sysf, gfxf = e['usize'], e['gfx']
+                            version = ((((sysf >> 28) & 0xF) << 4) | ((gfxf >> 28) & 0xF))
+                            return (struct.pack('<4sIII', b'RSC7', version, sysf, gfxf)
+                                    + bytes(cand[:sp[0]]))
                     # ⭐ 2026-08-10: STORED-UNCOMPRESSED resources (the destruction-family
                     # census class). des_setpiece.ybd measured: NO deflate stream exists on
                     # any route, yet the STORED body EQUALS the reference tool's raw export
                     # byte-for-byte (34,712 B against a 57,344 B page plan - the plan is
-                    # page CAPACITY, not data length, for this class). Accept the stored
+                    # page CAPACITY, not data length, for this class).
+                    # ⛔ Δ 2026-08-14 - THAT DIAGNOSIS WAS WRONG, AND des_setpiece.ybd IS THE
+                    # FILE THAT DISPROVES IT: it lives in one of the five 0x18-header archives
+                    # and its body IS a deflate stream, reached by the branch immediately above
+                    # (34,728 - 0x18 = 34,704 B consumed -> exactly 57,344 B, the full page
+                    # plan). "No deflate stream exists on any route" described the routes that
+                    # had been tried, not the file. The branch below is kept because a class it
+                    # is the only answer for may still exist, but it is now believed to have NO
+                    # members game-wide; if it never fires, it should be deleted rather than
+                    # left as a fallback that can only ever produce a plausible-looking wrong
+                    # answer. Accept the stored
                     # bytes as the body - LAST resort, only when every deflate route failed
                     # and the stored length fits the plan - re-wrapped in deflate so the
                     # payload contract (RSC7 header + deflate body) holds unchanged for
@@ -3922,6 +3984,11 @@ def report_lane_counters(stats):
             RESOURCE_STORED_RAW['count']
         RESOURCE_STORED_RAW['count'] = 0
         RESOURCE_STORED_RAW['examples'].clear()
+    if RESOURCE_HDR24['count']:
+        stats['resource read with a 0x18 on-disk header (older-build des_* archives), '
+              'e.g. ' + ', '.join(RESOURCE_HDR24['examples'][:3])] = RESOURCE_HDR24['count']
+        RESOURCE_HDR24['count'] = 0
+        RESOURCE_HDR24['examples'].clear()
     try:
         import ydr2xml
         ydr2xml.report_refusals(stats)   # emitter table (ydr+ydd+yft) -> stats[emitter_*] + print

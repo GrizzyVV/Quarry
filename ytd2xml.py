@@ -347,6 +347,23 @@ TEXTURE_REFUSAL_EXAMPLE = {}
 # (x64a.rpf 555 + x64i.rpf 13,221): ZERO. Exactly one texture in either archive is not a power
 # of two at all (640x640) and 640 is a multiple of 4, so even it is unaffected at mip 0.
 # A rising count here is the signal to go get an oracle for that shape.
+#
+# ⭐ 2026-08-14 - THE SAME COUNTER NOW CARRIES THE SCRIPT-RENDER-TARGET SHORTFALL, and this one is
+# NOT zero: 32 textures game-wide. The archive stores level 0 as `stride * height` (the row pitch
+# at grcTexture+0x56), and for those 32 the stride declares 4 BYTES PER PIXEL over a
+# block-compressed FourCC - so the payload is 8x (DXT1) or 4x (DXT5) what `level_sizes` computes
+# and the .dds sidecar written here is short by exactly that much. Population evidence, refutation
+# tests and the exact figures live in `ytd_write.stored_mipchain_bytes`, which is where the SPAN is
+# now taken from the stored pitch; the ROUND-TRIP lane is closed by it (88,868 -> 88,871 exact).
+# ⛔ THE SIDECAR IS DELIBERATELY NOT WIDENED HERE, AND THE FORMAT IS DELIBERATELY NOT RE-LABELLED.
+# The span is pinned; the CONTENT is not. The three render targets that carry data disagree about
+# what the bytes mean - `iwagen` repeats `b0 b0 b0 ff` (a uniform 32-bit BGRA surface),
+# `sf_prop_sf_handler_01a` reads as float32 quads ending 00 00 80 3f (= 1.0f), and
+# `h4_prop_battle_club_screen`'s 4x4 carries a 56-byte integer descriptor after its 8 pixel bytes.
+# Emitting 2 MB of unknown-format bytes under a header that says DXT1 would produce a .dds every
+# consumer misreads, which is worse than a short one - so this is a COUNTED gap, and the counter is
+# the signal to go get a render-target oracle. `level_sizes` is unchanged, so `ydr_write`,
+# `ydd_write` and `yft_write` (which call `mipchain_bytes` positionally) are untouched by this.
 SIZE_RULE_UNWITNESSED = collections.Counter()
 
 
@@ -409,6 +426,14 @@ def _read_one_texture(res, ptr_arr, i):
         xml_fmt, blk, bpp = describe_format(fmt)
         if blk is not None and (w % 4 or h % 4):
             SIZE_RULE_UNWITNESSED["mip0 dimension is not a multiple of 4"] += 1
+        # The STORED ROW PITCH. Where stride*h disagrees with the level-0 size this rule computes,
+        # the archive stores the STRIDE's number of bytes and this sidecar is short by the
+        # difference - counted, never silently filled. See the note on SIZE_RULE_UNWITNESSED.
+        stride = res.u16(tp + 0x56)
+        if stride and stride * h != level_bytes(w, h, blk, bpp):
+            SIZE_RULE_UNWITNESSED[
+                "stored row pitch disagrees with the FourCC (script render target): "
+                "dds sidecar is short"] += 1
 
         need = mipchain_bytes(w, h, mips, blk, bpp)
         pbuf, po = res.deref(res.u32(tp + 0x70), need)

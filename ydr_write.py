@@ -8,6 +8,22 @@ this lane, so it could not see the work: the files that fail are RARE and a 250-
 them entirely. The subject list was the 572 files the whole-game run graded short
 (`output/roundtrip_population/results.w*.jsonl`, `exact == false`), 563 of which were re-fetched.
 
+MEASURE 0 - **POPULATION, EVERY FILE OF ALL THREE LANES** (171,201 files, 100.00% of the census).
+Re-run: `python tools/roundtrip_population_all.py --run --lanes ydr,ydd,yft --workers 6
+--worker-id <i> --out output/_dq_pop2`, then `--report --out output/_dq_pop2`.
+    lane   census   BEFORE byte-exact      AFTER byte-exact     mean coverage    refusals
+    ydr    86,690   86,368  99.6286%       86,642  99.9585%     99.9983%         12
+    ydd    23,081   23,066  99.9350%       23,080  99.9957%     100.0000%         0
+    yft    61,430   61,195  99.6175%       61,422  99.9870%     99.9997%          0
+    segments after: ydr sys 99.9983 / gfx 99.9967 · ydd sys 100.0000 / gfx 100.0000
+                    yft sys 99.9996 / gfx 100.0000
+⭐⭐ **+515 FILES BYTE-EXACT AND ZERO REGRESSIONS** - every one of the 171,201 keys was compared
+against its record in the 2026-08-14 run and NOT ONE file that was byte-exact then is short now.
+That control is the reason the per-type span tightening and the removed page-count write could be
+shipped: both REMOVE claims, and only a whole-population diff can prove a removal cost nothing.
+⏭ 57 files remain short (ydr 48, yft 8, ydd 1): 12 are extractor refusals, 4 are the `des_*`
+bound-layout class, 41 are the small-residual class - all four itemised below.
+
 MEASURE 1 - the 250-file sample, `python tools/roundtrip_coverage.py --lane <x> --limit 250`:
     lane   before this pass          after
     ydr    250/250  100.0000%        250/250  100.0000%   (sys 100.0000 / gfx 100.0000)
@@ -199,6 +215,44 @@ STUB_RECORD = 0x50
 # type this sample never saw cannot silently lose its whole record, and it fires on 17 of 11,626
 # bounds here (types 6, 16 and 178). Re-measure before widening the table.
 BOUND_SPAN_BY_TYPE = {0: 0x70, 1: 0x80, 3: 0x70, 4: 0x130, 8: 0x150, 10: 0xB0, 13: 0x80}
+
+# ⭐⭐ THE OLDER-BUILD phBoundGeometryBVH: A 0x140 RECORD, NOT 0x150 (2026-08-14).
+# `des_ranchsafe001_start/end.ydr` carry type-8 bounds whose vtable is 0x405b5408, a value that
+# appears in NEITHER of the vtable sets the population census found (type 8: 0x4062dab8/fab8/
+# fac8/fae8, type 10: 0x40629aa8/b5d8/baa8/bac8, disjoint, 0 overlap in 71,912 bounds). Their
+# companion composite carries 0x405b1cd8, likewise outside the known set. It is a DIFFERENT
+# BUILD of the same classes: the record is 0x10 bytes shorter, and every field from the material
+# array onward keeps its relative spacing exactly.
+#     field            standard   this class
+#     nverts / npolys   +0xD0/D4   +0xC8/CC     (8 B earlier)
+#     materials         +0xF0      +0xE0        (0x10 earlier, and so is everything after it)
+#     material colours  +0xF8      +0xE8
+#     poly-materials    +0x118     +0x108
+#     nmat / nmatcol    +0x120/121 +0x110/111
+#     BVH block         +0x130     +0x120
+#     0xffff terminator +0x140     +0x130   -> record span 0x140, and the three records in
+#                                             `_start` are packed at exactly 0x140 stride
+#     polys +0x88 · verts +0xB0 · vertex colours +0xB8 · second vertex array +0x78 - UNCHANGED,
+#     read identically in both and confirmed against a same-archive v165 control.
+# ⭐ PINNED BY A TEST THAT COULD HAVE REJECTED IT, on 7 of 7 records across the 2 files:
+#   * read at the STANDARD offsets the record gives nverts 0 / npolys 0 and a BVH pointer of
+#     0x0000ffff, which does not resolve - i.e. the standard reading is refutable and IS refuted;
+#   * read at these offsets, the BVH block found at +0x120 passes ALL FOUR `_bvh` laws
+#     (zero block · scale*scaleinv == 1 · (max-min)*scaleinv == 65535 · tree count == capacity);
+#   * and `max(first + count)` over that block's leaf nodes equals the npolys read at +0xCC
+#     EXACTLY - 3225, 4823, 43, 4823, 4834, 495, 162 - a seven-way identity between two
+#     independently-read structures that no offset guess produces by accident.
+# ⛔ GATED ON THE VTABLE, never on the file name or the count plausibility. A name cluster is a
+# lead about WHERE a defect lands, never a format variant - that mistake has been made three
+# times in this campaign. A vtable is the class's own identity. And every span below still goes
+# through `_flat`, which REFUSES on overrun, so a wrong match cannot fill - it can only decline.
+BOUND_FIELDS_STD = {'span': 0x150, 'nverts': 0xD0, 'npolys': 0xD4, 'mats': 0xF0,
+                    'matcol': 0xF8, 'polymat': 0x118, 'nmat': 0x120, 'nmatcol': 0x121,
+                    'bvh': 0x130}
+BOUND_FIELDS_OLDBUILD = {'span': 0x140, 'nverts': 0xC8, 'npolys': 0xCC, 'mats': 0xE0,
+                         'matcol': 0xE8, 'polymat': 0x108, 'nmat': 0x110, 'nmatcol': 0x111,
+                         'bvh': 0x120}
+BOUND_VTABLE_OLDBUILD = frozenset((0x405B5408,))      # type 8 only; the composite reads standard
 BOUND_SPAN_DEFAULT = 0x180
 
 
@@ -397,12 +451,17 @@ class Ydr:
             return
         self._seen.add(off)
         btype = s[off + 0x10] if off + 0x11 <= self.nsys else 0xFF
-        self._put(off, BOUND_SPAN_BY_TYPE.get(btype, BOUND_SPAN_DEFAULT))
+        # THE RECORD'S OWN CLASS IDENTITY picks the field map - see BOUND_FIELDS_OLDBUILD.
+        vtable = struct.unpack_from('<I', s, off)[0] if off + 4 <= self.nsys else 0
+        fld = (BOUND_FIELDS_OLDBUILD
+               if btype == 8 and vtable in BOUND_VTABLE_OLDBUILD else BOUND_FIELDS_STD)
+        self._put(off, fld['span'] if btype == 8
+                  else BOUND_SPAN_BY_TYPE.get(btype, BOUND_SPAN_DEFAULT))
         self._octant_map(off)
         try:
-            nverts = struct.unpack_from('<I', s, off + 0xD0)[0]
-            npolys = struct.unpack_from('<I', s, off + 0xD4)[0]
-            nmat = s[off + 0x120]
+            nverts = struct.unpack_from('<I', s, off + fld['nverts'])[0]
+            npolys = struct.unpack_from('<I', s, off + fld['npolys'])[0]
+            nmat = s[off + fld['nmat']]
         except (struct.error, IndexError):
             return
         # ⭐⭐ THE TYPE CODE IS THE DISCRIMINATOR; THE RANGE CHECKS ARE ONLY A SECOND GATE.
@@ -422,8 +481,8 @@ class Ydr:
         if geom:
             self._flat(struct.unpack_from('<I', s, off + 0xB0)[0], nverts * 6)
             self._flat(struct.unpack_from('<I', s, off + 0x88)[0], npolys * 16)
-            self._flat(struct.unpack_from('<I', s, off + 0xF0)[0], nmat * 8)
-            self._flat(struct.unpack_from('<I', s, off + 0x118)[0], npolys)
+            self._flat(struct.unpack_from('<I', s, off + fld['mats'])[0], nmat * 8)
+            self._flat(struct.unpack_from('<I', s, off + fld['polymat'])[0], npolys)
             # ⭐ +0xB8 VERTEX COLOURS (nverts * 4) and +0xF8 MATERIAL COLOURS (u8 @+0x121 * 4).
             # Both were already decoded by `ydr2xml` and never wired into this writer - pointers
             # held and never followed, which is the one signature that has closed every gap in
@@ -432,9 +491,10 @@ class Ydr:
             # array is absent; material colours carry their own count at +0x121, which is 0 when
             # they are absent. `_flat` already refuses a null pointer, so both are safe as written.
             self._flat(struct.unpack_from('<I', s, off + 0xB8)[0], nverts * 4)
-            nmatcol = s[off + 0x121] if off + 0x122 <= self.nsys else 0
+            nmatcol = (s[off + fld['nmatcol']]
+                       if off + fld['nmatcol'] + 1 <= self.nsys else 0)
             if nmatcol:
-                self._flat(struct.unpack_from('<I', s, off + 0xF8)[0], nmatcol * 4)
+                self._flat(struct.unpack_from('<I', s, off + fld['matcol'])[0], nmatcol * 4)
             # ⭐ +0x78 ON A **GEOMETRY** BOUND IS A SECOND VERTEX ARRAY (nverts * 6), not the
             # composite child-transform array the block below reads it as. The two readings never
             # collide because they are gated by opposite discriminators - this one by the geometry
@@ -463,8 +523,8 @@ class Ydr:
         # 0x130 bytes, so `+0x130` is the FIRST BYTE PAST IT - reading a BVH pointer there would be
         # reading the neighbour. Only type 8 carries the slot inside its 0x150 record.
         if btype == 8:
-            self._bvh(struct.unpack_from('<I', s, off + 0x130)[0]
-                      if off + 0x134 <= self.nsys else 0)
+            self._bvh(struct.unpack_from('<I', s, off + fld['bvh'])[0]
+                      if off + fld['bvh'] + 4 <= self.nsys else 0)
         # ⭐ A COMPOSITE CARRIES THE SAME BLOCK AT +0xA8, and it is OPTIONAL - 48 of 268 composites
         # in the `.ybn` sample have one. There is no flag saying which: the FOUR LAWS in `_bvh`
         # tell the cases apart, and a composite without one simply fails law 1 or 2 and is refused.

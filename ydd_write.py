@@ -3,6 +3,11 @@
     inflated system+graphics segments -> value model -> written back -> reproduce original bytes
 
 =========================== SECOND PASS, 2026-08-14 (LATEST) ===============================
+POPULATION, **EVERY ONE OF THE 23,081 FILES** (`tools/roundtrip_population_all.py --run --lanes
+ydr,ydd,yft --out output/_dq_pop2`, then `--report`): **23,080 / 23,081 byte-exact = 99.9957%**,
+mean coverage **100.0000%** (min 99.9997%), sys 100.0000%, gfx 100.0000% (11,857 carry one),
+0 refusals. Was 23,066 / 23,081 = 99.9350%. **ZERO regressions** against the previous run.
+The single remaining file is `po1_07_slod1_2_children.ydd`.
 SAMPLE (`python tools/roundtrip_coverage.py --lane ydd --limit 250`): **250/250 byte-exact,
 100.0000%** - sys 100.0000%, gfx 100.0000% (63 files carry a graphics segment).
 POPULATION WORK QUEUE (the 12 re-fetched `.ydd` the whole-game run graded short):

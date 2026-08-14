@@ -1,6 +1,11 @@
 """yft_write - ROUND-TRIP WRITER for .yft fragments (RSC7 v162 / v160).
 
 =========================== SECOND PASS, 2026-08-14 (LATEST) ===============================
+POPULATION, **EVERY ONE OF THE 61,430 FILES** (`tools/roundtrip_population_all.py --run --lanes
+ydr,ydd,yft --out output/_dq_pop2`, then `--report`): **61,422 / 61,430 byte-exact = 99.9870%**,
+mean coverage **99.9997%** (min 83.2221%), sys 99.9996%, gfx 100.0000% (16,972 carry one),
+0 refusals. Was 61,195 / 61,430 = 99.6175%. **ZERO regressions** against the previous run.
+⚠ The min is one file - `xm_prop_auto_salvage_stromberg.yft`, diagnosed below.
 SAMPLE (`python tools/roundtrip_coverage.py --lane yft --limit 250`): **249/250 byte-exact,
 100.0000%** - sys 100.0000%, gfx 100.0000% (96 files carry a graphics segment). Was 247/250.
 POPULATION WORK QUEUE (the 231 re-fetched `.yft` the whole-game run graded short):
