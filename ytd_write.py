@@ -188,7 +188,36 @@ class Ytd:
     def _pixels(self, tagged, need):
         """The mip chain. If the declared chain runs past the end of its segment the payload is
         TRUNCATED (`ytd2xml` sees the same shape and keeps the levels that fit) - capture what is
-        actually there rather than dropping the texture, and never past the segment end."""
+        actually there rather than dropping the texture, and never past the segment end.
+
+        ⏭ THE WHOLE REMAINING GRAPHICS-SEGMENT GAP OF THE LANE LIVES DIRECTLY AFTER THIS CAPTURE,
+        AND IT IS A `script_rt_*` RENDER TARGET EVERY TIME. Measured 2026-08-14 over the FULL
+        population (88,880 rows, `output/roundtrip_population/results.w*.jsonl`): 6 files are
+        graded and not byte-exact, and exactly 3 of them miss graphics bytes. In all 3 the single
+        data-carrying unreached region begins at `pixel offset + stored_mipchain_bytes(...)` of a
+        texture whose name starts `script_rt_`, i.e. immediately past the end of the chain this
+        rule computes:
+            iwagen.ytd                     script_rt_dials_cavalcade 512x256 m1, need 65,536
+                                           -> gfx+0x310000, 458,752 B, 458,242 NONZERO
+            sf_prop_sf_handler_01a.ytd     script_rt_dials_truck     256x128 m1, need 16,384
+                                           -> gfx+0x05C000, 114,688 B, 100,216 NONZERO
+            h4_prop_battle_club_screen.ytd script_rt_club_tv           4x4   m1, need      8
+                                           -> gfx+0x02C008,  81,912 B,      16 NONZERO
+        The h4 case is the readable one: those 16 bytes are `04 00 00 00 | 04 00 00 00 |
+        08 00 00 00 | 01 00 00 00 | 70 3e 8b 0b` - width 4, height 4, then two small counts and a
+        word - i.e. a DESCRIPTOR stored after the pixels, not more pixels. iwagen's region is
+        `b0 b0 b0 ff` repeating (uncompressed BGRA), so a render target appears to carry a
+        second, differently-formatted copy of its surface plus a header.
+        ⛔ DO NOT CLOSE THIS BY WIDENING THE CAPTURE TO THE NEXT REGION. Every mip-chain rule in
+        this file is a measured law and the reason `stored_mipchain_bytes` is trusted is that it
+        NEVER claims a neighbour's bytes (0 over-runs in 2,969 textures). Filling to the next
+        payload would reproduce these three files while turning that property off for all 88,877
+        others - the exact failure `_cstr`'s note is about. What is needed is an oracle for the
+        `script_rt_` shape: the descriptor's field map, then a size law derived from it.
+        ⚠ SAMPLE SIZE 3. It is 3 of the 3 graphics-segment misses in the whole population, but the
+        law behind it is UNWITNESSED - `script_rt_*` textures that round-trip exactly are not
+        evidence against it either, since a 0-length trailer is indistinguishable from none.
+        """
         buf, off, seg = self._res(tagged, 1)
         if buf is None:
             return
@@ -289,6 +318,21 @@ class Ytd:
 def read_ytd(src):
     """bytes | path -> Ytd. REFUSES a container whose inflated payload is shorter than its own
     declared segment plan.
+
+    ⭐ AT POPULATION IT IS 6 FILES, NOT 1, AND THEY ARE **TWO** SHAPES (measured 2026-08-14 over
+    all 88,880 `.ytd`; every one inflates CLEANLY - `d.eof`, no unused input - and is simply SHORT
+    of its own declared page plan, so none of them is a truncated-stream bug):
+      SHORT-BODY GARBAGE (4): parachute_decals.ytd (gfx 8.3% present, 9,368 textures declared),
+        des_hosp_ceil_txd.ytd (58.3%, 18,061), v_des_truck_txd.ytd (63.8%, 35,383),
+        v_des_ceil2_txd.ytd (48.7%, 46,340). Entropy 7.94-7.98 bits/byte and a texture count that
+        cannot fit an 8 KB system segment. `ytd2xml.read_textures` refuses all four identically
+        ("texture pointer array is out of bounds"), so the refusal is the lane agreeing with
+        itself, not an exemption.
+      51-BYTE STUB (2): des_hosp_ceil.ytd and des_hosp_ceil2_txd.ytd are **67 bytes stored** and
+        inflate to **51 bytes** against a declared plan of sys 8,192 / gfx 0. Their bodies are
+        byte-identical after the first 8 bytes. There is no dictionary here to read at all.
+    ⇒ The other five are NOT all the parachute_decals class; three are, two are this stub class.
+    Neither shape is readable, so neither is fixable without inventing content.
 
     ⛔ WHY A REFUSAL AND NOT A BEST EFFORT: measured 1 of 300 archive `.ytd` (2026-08-14,
     `x64a.rpf::parachute_decals.ytd`): flags declare sys 8,192 + gfx 786,432, the raw-deflate

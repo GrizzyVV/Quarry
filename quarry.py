@@ -148,6 +148,112 @@ def _mrf_refusal_sidecar(name, unpinned, visible):
         sys.stderr.write('WARN: mrf refusal sidecar not written for %s: %s\n' % (name, ex))
 
 
+# ---------------------------------------------------------------- kept-binary disclosure ledger
+# ⛔⛔ 252 FILES LANDED AS RAW BYTES AND 251 OF THEM RECORDED NOTHING (measured 2026-08-14,
+# OPEN_ITEMS Z). The counters were all present and honest - `kept binary: .yft`, `meta kept binary
+# (no emitter for root ...)`, `xml_failed` - and every one of them is CAUSE-LEVEL: a number with
+# no filename attached. Matt's law is that a file which fails silently is a BUG, not a problem
+# file, and a count that names nobody cannot be acted on.
+#
+# THREE SEPARATE SILENCES PRODUCED THAT ONE 149-BYTE FAILURE FILE:
+#   1. `_EXTRACT_FAILURES_<tag>.txt` was opened 'w'. `cmd_extract` runs ONCE PER ARCHIVE SHARD
+#      (the funnel makes ~600 calls across N parallel workers, all with the same --out and the
+#      same empty --types, hence the same `_all` filename), so every task TRUNCATED the previous
+#      task's list and the workers raced each other for the last word. 243 per-file exception
+#      records were written and then destroyed; ONE survived because its archive happened to be
+#      the last one that failed anything.
+#   2. The per-file line carried a BARE BASENAME. The corpus is a game mirror where the same
+#      basename legitimately exists in many archives, so even a surviving line is not locatable.
+#   3. A decline that does NOT raise (`to_interchange_xml` returning None) reached the caller as
+#      a cause-neutral counter only - by design, per the 2026-08-08 note on that branch - so
+#      nothing anywhere recorded WHICH file was declined or WHY.
+#
+# ⭐ THE SHAPE OF THE FIX IS THE `mrf` PRECEDENT ABOVE, and for the same reason: disclosure lives
+# OUTSIDE the document. A marker inside the emitted XML would break byte-parity with the
+# reference exporter; a raw kept-binary file has no place to put a marker at all without
+# corrupting it. So it is a SIDECAR beside the corpus, APPENDED (like `_PROVENANCE.jsonl` and
+# `_MRF_REFUSALS.jsonl`), one JSON row per kept-binary file, carrying the FULL archive chain.
+KEPT_BINARY_LEDGER = '_KEPT_BINARY.jsonl'
+
+# WHY the decline reason travels in a module global rather than the return value: every caller of
+# `to_interchange_xml` treats `None` as "keep the bytes", and widening the contract to a tuple
+# would touch every call site in a file the whole project imports. This mirrors the RESIDUALS /
+# CONST_EMITS pattern the ycd/cache/ypt branches already use. It is set on EVERY None return and
+# cleared on entry, so a stale value cannot be attributed to the next file.
+# ⚠ SINGLE-THREADED PER PROCESS - which is what the pipeline is: the funnel scales with separate
+# PROCESSES (subprocess.Popen), never threads, so there is no shared-global race here.
+DECLINE_REASON = None
+
+
+def _corpus_path(slot, chain, subdir, name):
+    """The corpus-relative path of one emitted file - `<slot>/<archive chain>/<folder>/<name>`.
+
+    ⛔ This is the ONLY identity that locates a file in a pure game mirror. A basename does not:
+    `_manifest.ymf` exists 1,795 times and `mp_creaturemetadata.ymt` exists in every DLC pack.
+    """
+    # ⚠ the SLOT itself carries a separator on Windows (`20_dlc\002_mppatchesng`), so it must be
+    # normalised like the rest - a mixed-separator path does not join to the corpus index that
+    # `tools/problem_files.py` builds, and a locator that needs cleaning before it locates is
+    # half a locator.
+    parts = [str(slot or '').replace('\\', '/').strip('/')]
+    if chain:
+        parts.append(str(chain).replace('\\', '/').strip('/'))
+    if subdir:
+        parts.append(str(subdir).replace('\\', '/').strip('/'))
+    parts.append(name)
+    return '/'.join(p for p in parts if p)
+
+
+def record_decline(stats, slot, chain, subdir, name, klass, reason):
+    """Record ONE file that was kept as raw bytes, with its archive chain, type and reason.
+
+    Buffered into `stats` and flushed once per run by `write_decline_ledger` - the same shape as
+    the provenance ledger, so a whole-game run does not pay a file open per declined asset.
+
+    `klass` is the actionable split, and it must stay a split rather than one bucket:
+      no-converter  no branch exists for this extension. BY DESIGN and already proven
+                    byte-identical passthrough by the lane census - 35,906 files whole-game.
+                    Logged anyway so that "every kept-binary file is locatable" has no exception.
+      refused       a converter EXISTS and declined this file for a file-specific reason
+                    (unwitnessed structure, names table absent, no emitter for the root).
+      error         a converter EXISTS and raised. The exception text is the reason, verbatim.
+    """
+    if stats is None:
+        return
+    stats.setdefault('declines', []).append({
+        'file': _corpus_path(slot, chain, subdir, name),
+        'name': name,
+        'type': type_of(name) or '',
+        'archive': (chain or ''),
+        'class': klass,
+        'reason': reason,
+    })
+    k = 'kept binary [%s]' % klass
+    stats[k] = stats.get(k, 0) + 1
+
+
+def write_decline_ledger(out_root, rows):
+    """APPEND the run's kept-binary rows beside the corpus. Returns the path, or None.
+
+    ⛔ APPEND, never 'w'. The truncating failure file is the defect this ledger exists to replace:
+    one run of the funnel calls the extract path hundreds of times, and a per-call rewrite means
+    the record of a whole game export is whatever the last call happened to hold.
+    """
+    if not out_root or not rows:
+        return None
+    p = os.path.join(out_root, KEPT_BINARY_LEDGER)
+    try:
+        os.makedirs(out_root, exist_ok=True)
+        with open(p, 'a', encoding='utf-8') as fh:
+            for r in rows:
+                fh.write(json.dumps(r, separators=(',', ':')) + '\n')
+        return p
+    except Exception as ex:
+        # a failed ledger must never take the run down, but it must not be silent either
+        sys.stderr.write('WARN: kept-binary ledger not written to %s: %s\n' % (p, ex))
+        return None
+
+
 def _deflate_span(buf):
     """(input bytes consumed, output bytes produced) for the raw-DEFLATE stream that starts at
     buf[0], or None when buf does not hold one COMPLETE stream.
@@ -686,7 +792,15 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
     `stats` (optional dict) receives counters for anything this function declines to emit -
     a downgrade with no counter is indistinguishable from full success, and that is how the
     extras lane stayed invisible.
+
+    ⭐ AND A COUNTER IS NOT ENOUGH ON ITS OWN (2026-08-14, OPEN_ITEMS Z). Every `return None`
+    below ALSO sets `DECLINE_REASON`, so the caller - which is the only thing that knows the
+    archive chain this blob came from - can name the FILE next to the reason in the
+    `_KEPT_BINARY.jsonl` ledger. The counters stay exactly as they were; this adds the identity
+    they were always missing.
     """
+    global DECLINE_REASON
+    DECLINE_REASON = None
     t = type_of(name)
     stem = os.path.splitext(name)[0]
     if t == 'ydr':
@@ -889,6 +1003,8 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
             if stats is not None:
                 stats['rel refused - unmeasured family/type'] = \
                     stats.get('rel refused - unmeasured family/type', 0) + 1
+            DECLINE_REASON = ('refused', 'rel unmeasured family/type: %s: %s'
+                              % (type(ex).__name__, ex))
             return None
     if t == 'ybd':
         # A .ybd is a pgDictionary of phBound - and the reference exporter has NO XML export for it,
@@ -939,6 +1055,8 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
                 k = ('meta kept binary (no names table - run `meta` after, or pass '
                      '--view): .' + t)
                 stats[k] = stats.get(k, 0) + 1
+            DECLINE_REASON = ('refused', 'meta names-gated (no names table - run `meta` after, '
+                                         'or pass --view): .' + t)
             return None
         import meta2xml
         try:
@@ -949,6 +1067,7 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
             if stats is not None:
                 k = 'meta kept binary (no emitter for root %s)' % ex.root_name
                 stats[k] = stats.get(k, 0) + 1
+            DECLINE_REASON = ('refused', 'meta: no emitter for root %s' % ex.root_name)
             return None
         for k, n in (getattr(w, 'warn', None) or {}).items():
             if stats is not None:
@@ -1035,6 +1154,7 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
     if stats is not None:
         k = 'no converter for this type yet: .' + (t or '?')
         stats[k] = stats.get(k, 0) + 1
+    DECLINE_REASON = ('no-converter', 'no converter for this type yet: .' + (t or '?'))
     return None
 
 
@@ -3706,6 +3826,13 @@ def cmd_export(a):
                     with open(os.path.join(out_dir, name), 'wb') as fh:
                         fh.write(blob)
                     kept_binary += 1
+                    # ⛔ THIS BRANCH WAS TOTALLY SILENT (2026-08-14). A PSIN/RBF0-container META
+                    # file that the converter declined was written as raw bytes with no print, no
+                    # per-file record, and only the `kept_binary` tally - so `export` could not
+                    # say WHICH entry it declined even when the operator named exactly one file.
+                    _k, _w = (DECLINE_REASON or ('refused', 'DECLINED WITH NO REASON RECORDED'))
+                    print(f'  {name}: KEPT BINARY [{_k}] - {_w}')
+                    record_decline(stats, '', None, None, name, _k, _w)
                     continue
                 stem = name[:-(len(kind) + 1)]
                 xml, got_kind, w = meta2xml.convert_bytes(blob, stem, names)
@@ -3723,8 +3850,15 @@ def cmd_export(a):
                     with open(os.path.join(out_dir, name), 'wb') as fh:
                         fh.write(blob)
                     kept_binary += 1
-                    print(f'  {name}: no converter for .{kind} yet - kept binary, '
-                          'never dropped')
+                    # ⛔ was: `no converter for .{kind} yet` UNCONDITIONALLY - the same false
+                    # label `extract` had removed on 2026-08-08 and this path kept. A `.rel` the
+                    # converter REFUSED as an unmeasured family, and a `.ymt` with no emitter for
+                    # its root, both reported "no converter yet" - a statement about the TOOL
+                    # made where the truth was about the FILE. The reason now comes from the
+                    # decline itself.
+                    _k, _w = (DECLINE_REASON or ('refused', 'DECLINED WITH NO REASON RECORDED'))
+                    print(f'  {name}: KEPT BINARY [{_k}] - {_w} (never dropped)')
+                    record_decline(stats, '', None, None, name, _k, _w)
                     continue
                 xml_name, xml_bytes, extras = conv
                 with open(os.path.join(out_dir, xml_name), 'wb') as fh:
@@ -3744,9 +3878,19 @@ def cmd_export(a):
         except Exception as ex:
             failed += 1
             print(f'  FAIL {entry}: {type(ex).__name__}: {ex}')
+            record_decline(stats, '', None, None, os.path.basename(str(entry)),
+                           'not-written', f'{type(ex).__name__}: {ex}')
 
     print(f'\nexport: {ok} converted, {kept_binary} kept binary (counted), '
           f'{failed} failed, of {len(entries)} requested')
+    # ⭐ the same append-only ledger `extract` writes, so a targeted export's declines are
+    # recorded the same way and by the same code - a targeted-vs-at-scale divergence in the
+    # DISCLOSURE would be the same defect class as one in the conversion (THE_PLAN 2.5.3/5.5).
+    _decl = stats.get('declines') or []
+    if _decl:
+        _lp = write_decline_ledger(a.out, _decl)
+        if _lp:
+            print(f'kept-binary ledger: +{len(_decl):,} rows -> {_lp}')
     # ⛔ THE_PLAN 5.0 (2026-08-06): the old block here sorted raw stats - TypeError the moment a
     # list-valued key appeared (verified) - and truncated to the top 10 with no overflow marker,
     # so refusal classes could silently vanish. And export NEVER called report_refusals, so all
@@ -4079,9 +4223,28 @@ def cmd_extract(a):
                             # types gained a names-gated branch.
                             k = 'kept binary: .' + (type_of(name) or '?')
                             stats[k] = stats.get(k, 0) + 1
+                            # ⛔ AND THE COUNT IS NOT THE DISCLOSURE (2026-08-14, OPEN_ITEMS Z).
+                            # The counter above says HOW MANY and the converter's own counter says
+                            # WHY, and NEITHER says WHICH - so 9 declined .ymt sat in the finished
+                            # corpus as raw bytes with no record naming them at all. The reason
+                            # now travels back from to_interchange_xml in DECLINE_REASON and is
+                            # joined HERE to the archive chain, which only this loop knows.
+                            _klass, _why = (DECLINE_REASON
+                                            or ('refused', 'DECLINED WITH NO REASON RECORDED - '
+                                                           'this is a BUG in to_interchange_xml, '
+                                                           'not a property of the file'))
+                            record_decline(stats, slot, chain, pedsub or None, name,
+                                           _klass, _why)
                     except Exception as ex:
                         stats['xml_failed'] = stats.get('xml_failed', 0) + 1
-                        stats.setdefault('xml_errors', []).append(f'{name}: {type(ex).__name__}: {ex}')
+                        # ⛔ THE ERROR LINE USED TO CARRY A BARE BASENAME. In a pure game mirror
+                        # that does not locate anything: `mp_creaturemetadata.ymt` exists in every
+                        # DLC pack. The corpus-relative path is the identity.
+                        stats.setdefault('xml_errors', []).append(
+                            f'{_corpus_path(slot, chain, pedsub or None, name)}: '
+                            f'{type(ex).__name__}: {ex}')
+                        record_decline(stats, slot, chain, pedsub or None, name, 'error',
+                                       f'{type(ex).__name__}: {ex}')
                         # ⛔ UNWIND THE HALF-WRITTEN XML (2026-08-03). If the failure happened
                         # AFTER file_into wrote the XML - i.e. anywhere in the sidecar loop - the
                         # fallback below wrote the raw binary too, leaving BOTH artifacts on disk
@@ -4106,7 +4269,15 @@ def cmd_extract(a):
                 n += 1
             except Exception as ex:
                 stats['failed'] = stats.get('failed', 0) + 1
-                stats.setdefault('failures', []).append(f'{name}: {type(ex).__name__}')
+                # ⛔ was: the bare basename AND the exception CLASS ONLY - no message, so the
+                # only record of an outright extraction failure could not say what went wrong
+                # or which of the same-named files it was. Both now, and it also reaches the
+                # append-only ledger so a later task cannot truncate it away.
+                stats.setdefault('failures', []).append(
+                    f'{_corpus_path(slot, chain, pedsub or None, name)}: '
+                    f'{type(ex).__name__}: {ex}')
+                record_decline(stats, slot, chain, pedsub or None, name, 'not-written',
+                               f'{type(ex).__name__}: {ex}')
         total += n
         # ⛔ REPORT CONVERSION FAILURES PER ARCHIVE, not only in the final summary. They WERE
         # counted and printed - but only after the whole run, which on a whole-game extract is
@@ -4155,6 +4326,14 @@ def cmd_extract(a):
                 print(f'    {line}')
     if stats.get('resumed'):
         print(f'resumed (already present, skipped): {stats["resumed"]}')
+    # ⛔ THIS COUNTER WAS SET AND PRINTED BY NOTHING (found 2026-08-14 by the resume control).
+    # `file_into` has recorded 'overwritten (superseded generation)' since the overwrite path was
+    # added, and no code path ever displayed it - so a deliberate regeneration could not report how
+    # much it actually replaced. Same shape as `ytd2xml.TEXTURE_REFUSALS`, which was written but
+    # read by nothing until the disclosure pass caught it. A counter nobody prints is a silence.
+    for _k in ('overwritten (superseded generation)', 'written (new this generation)'):
+        if stats.get(_k):
+            print(f'{_k}: {stats[_k]:,}')
     print(f'name collisions (kept first, suffixed the rest): {stats.get("collisions", 0)}')
     print(f'files that failed to extract: {stats.get("failed", 0)}')
     for line in stats.get('failures', [])[:15]:
@@ -4175,14 +4354,46 @@ def cmd_extract(a):
             for rec in prov:
                 fh.write(json.dumps(rec, separators=(',', ':')) + '\n')
         print(f'provenance: +{len(prov):,} records -> {pfile}')
+    # ⭐ KEPT-BINARY LEDGER: every file this run left as raw bytes, with its archive chain, its
+    # type, its class and its reason. APPENDED beside the corpus, the same as _PROVENANCE.jsonl.
+    # This is the record that survives a whole-game run; the per-run .txt below is a convenience
+    # view of the same events for a single scoped invocation.
+    _decl = stats.get('declines') or []
+    if _decl:
+        _lp = write_decline_ledger(a.out, _decl)
+        _cls = {}
+        for _r in _decl:
+            _cls[_r['class']] = _cls.get(_r['class'], 0) + 1
+        print('kept binary (raw bytes emitted): %s'
+              % ('   '.join('%s=%s' % (k, format(v, ',')) for k, v in sorted(_cls.items()))))
+        if _lp:
+            print(f'kept-binary ledger: +{len(_decl):,} rows -> {_lp}')
+        else:
+            print('STOP: KEPT-BINARY LEDGER NOT WRITTEN - the reasons above exist only in '
+                  'this summary')
     if stats.get('failures') or stats.get('xml_errors'):
         # ⚠ Name it per TYPE FILTER, not one fixed file: two extracts into the same project
         # (e.g. --types ymap,ytyp then --types ybn,ydd) would otherwise have the second run
         # CLOBBER the first run's failure list - losing disclosure is the one thing this file
         # exists to prevent.
+        # ⛔⛔ AND IT CLOBBERED ITSELF ANYWAY (measured 2026-08-14, OPEN_ITEMS Z). The per-TYPE
+        # naming was the right instinct aimed at the wrong axis: the collision is not between two
+        # operators running different --types, it is between the HUNDREDS of calls ONE run makes.
+        # `cmd_extract` is invoked once per archive shard by the funnel, across N parallel
+        # workers, all with the same --out and the same empty --types => the same `_all` filename,
+        # opened 'w'. 243 per-file exception records were written and truncated away; the file
+        # that graded the finished corpus was 149 BYTES HOLDING ONE ENTRY, and it was simply the
+        # last shard that happened to fail anything. The comment two lines up even names this
+        # trap - for the provenance ledger, which was made append-only for exactly this reason.
+        # ⇒ APPEND, with a run header so the boundaries stay readable.
         tag = (getattr(a, 'types', None) or 'all').replace(',', '-').replace(os.sep, '-')[:40]
         rep = os.path.join(a.out, f'_EXTRACT_FAILURES_{tag}.txt')
-        with open(rep, 'w', encoding='utf-8') as fh:
+        _scope = getattr(a, 'only_path', None) or getattr(a, 'only', None) or 'all archives'
+        _shardtag = getattr(a, 'shard', None)
+        with open(rep, 'a', encoding='utf-8') as fh:
+            fh.write('# RUN %s  scope=%s%s\n'
+                     % (datetime.now().strftime('%Y-%m-%dT%H:%M:%S'), _scope,
+                        ('  shard=%s' % _shardtag) if _shardtag else ''))
             for section, key in (('failed to extract', 'failures'),
                                  ('xml conversion failed (kept binary)', 'xml_errors')):
                 for line in stats.get(key, []):
