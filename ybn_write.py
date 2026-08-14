@@ -33,7 +33,7 @@ bound, which cost that root its AABB array and its BVH in silence.
 composites are simply where the missing composite BVH and the mis-discriminated type both bit
 hardest. ⛔ A worst-list that shares a name is a lead about WHERE a defect lands, never evidence
 that the format has a special case.
-=========================== THIRD PASS, 2026-08-14 (LATEST) ================================
+=============== THIRD PASS, 2026-08-14 (superseded by the FOURTH PASS below) ================
 ⭐ ITS RESULT IS ZERO BYTES, AND THAT IS THE REPORT. Three claim-REMOVING changes were applied,
 each measured on its own at POPULATION (all 15,139 files, not a draw). The lane's numbers did not
 move by one byte, and the per-file diff is identical in all 15,139:
@@ -71,6 +71,7 @@ type 10 == 0x4062bac8" (5 subjects) does NOT generalise: at population each type
 distinct vtables. The two SETS are disjoint (overlap 0 of 71,912), so the vtable corroborates the
 type byte - but it is not a constant, and THE TYPE BYTE IS THE DISCRIMINATOR.
 ⚠ THE REMAINDER IS UNCHANGED at 884 files / 44,356 bytes - see REMAINING GAP below.
+  ⛔ Δ SUPERSEDED by the fourth pass: 884 files / **42,412 bytes**. Do not quote 44,356 as current.
 ============================================================================================
 
 COVERAGE 2026-08-14, second pass. Reproduce:
@@ -116,6 +117,28 @@ gap - the material-colour arrays read as already-covered underneath it.
 ⇒ **A region claimed without a count derived from the file is indistinguishable from
 understanding, and reads as success.** Every capture in this file is now either count-derived or
 law-guarded, and the header span is measured per type rather than being generous.
+
+=========================== FOURTH PASS, 2026-08-14 (LATEST) ===============================
+⭐ THE GAP IS NOW ATTRIBUTED TO THE BYTE WITH **NOTHING LEFT OVER**, and one of its two causes is
+closed by a law. Reproduce: `scratchpad/ybn4_map.py` (attribution, all 884 short files),
+`scratchpad/ybn4_polymat.py` (the law, all 15,139).
+    population   BEFORE 14,255 / 15,139 (94.1608%), mean 99.9987%, min 99.3774%, 44,356 B unread
+                 AFTER  14,255 / 15,139 (94.1608%), mean 99.9988%, min 99.4141%, 42,412 B unread
+    per-file diff over all 15,139: **0 regressions**, 781 better, 14,358 unchanged, net -1,944 B.
+⛔ THE BYTE-EXACT COUNT DID NOT MOVE, AND THAT IS THE HONEST RESULT: no file's residual was
+poly-material alone, so closing that cause improves every affected file without finishing one.
+⭐ Δ THE ATTRIBUTION ITSELF WAS WRONG BEFORE, and the correction matters. The previous split
+(90.2 / 5.5 / **4.3% "other"**) measured each gap as a run starting at the first NON-ZERO uncovered
+byte, so any tail whose first byte happened to be zero fell out of its own structure and into
+"other". Measuring the gap EXACTLY - the uncovered run from the structure's end, zeros included -
+leaves **no "other" at all**, over all 884 files and reconciling to the byte with the independently
+measured residual (44,356 = 44,356):
+    POLYGON array tail ....... 41,912 B (94.49%) in 1,054 runs
+    POLY-MATERIAL array tail .. 2,444 B ( 5.51%) in   974 runs
+    anything else .................. 0 B ( 0.00%) in     0 runs
+⇒ **TWO STRUCTURES ACCOUNT FOR EVERY UNREAD NON-ZERO BYTE IN THIS LANE.** One is now modelled
+(`_polymat_pad`, -1,944 B). The other has no field, and the paragraphs below are the evidence.
+============================================================================================
 
 REMAINING GAP - **ONE CAUSE, and it is the whole of it.** At population: 884 of 15,139 files,
 44,356 bytes, median 34 B per affected file, max 952. Split byte-by-byte over the **34 worst
@@ -164,6 +187,71 @@ property the measure does not use, and it manufactured a finding. (The `wellform
 probe had the twin of that flaw - an all-zero record passed every clause - and now rejects zero.)
 ⇒ The reservation is real and much larger than "1-10 slots" - up to 1,811 records - which
 STRENGTHENS the allocated-but-uncounted reading while still locating no field that states it.
+
+⛔⛔ Δ 2026-08-14 (fourth pass) - **THE SEARCH IS NOW CLOSED BY EVIDENCE RATHER THAN BY
+EXHAUSTION, AND THE ANSWER IS THAT THE NUMBER IS NOT IN THE FILE.** Every measurement below uses
+the EXACT surplus (the uncovered run from the array's end, which is a whole number of 16-byte
+records on 1,054 of 1,054 and ends where the next modelled structure begins on 1,051 of 1,054),
+not the approximate one the earlier hypotheses were scored against. Denominator throughout:
+**1,054 under-read polygon arrays in all 884 short files.**
+ A. **THE VALUE IS ABSENT** (`scratchpad/ybn4_exists.py`). Not "we swept these offsets" - the
+    whole system segment was searched for the number itself, at every byte-aligned position:
+        POSITIVE CONTROL, `npolys` found somewhere in the file .......... 1,054 / 1,054 (100.0%)
+        `npolys + surplus` present as a u32 ANYWHERE .................... **150 / 1,054 (14.2%)**
+        `(npolys + surplus) * 16` present as a u32 anywhere .............. 42 / 1,054 ( 4.0%)
+    and the u32 hits land at unaligned scatter (+0x00F, +0x15F, +0x1DA...), never twice at one
+    offset. The u16 figure (88.2%) is chance: a specific 16-bit value appears somewhere in a
+    200 KB file with about that probability. ⭐ The positive control is what makes this a result
+    - the same search finds `npolys` in every single file, so it is not failing to look.
+ B. **PER-OFFSET, NOT "DID ANY WORD MATCH"** (`scratchpad/ybn4_hunt2.py`). The earlier sweep asked
+    whether ANY word matched, and a small number matches somewhere in 0x220 bytes ~92% of the
+    time by chance. Keyed by (space, offset, form) instead, over the bound record 0x000-0x220,
+    the 0x80-byte BVH block, the PARENT COMPOSITE's header and THIS child's transform / AABB /
+    flags records, and the 64 bytes before the array: the best offset in any space scores
+    **472 / 1,054 (44.8%) - and 472 is exactly the number of arrays whose surplus is 1**. Every
+    "candidate" is a constant that happens to equal 1. No field.
+ C. **THE SURPLUS IS NOT A SEPARATE OBJECT.** Of every tagged system pointer in every file:
+    points AT the first surplus record **0 / 1,054** · points INTO the surplus **0 / 1,054** ·
+    points at the allocation END 1,051 / 1,054. ⇒ the gap is a TAIL, not an unmodelled structure
+    the walk is missing - which is the other reading it could have had.
+ D. **FIVE DERIVED PREDICTORS REFUTED** (`scratchpad/ybn4_predict.py`), each scored on BOTH sets -
+    it must equal the surplus on the 1,054 subjects AND equal ZERO on 5,147 exactly-sized control
+    arrays, so a predictor that merely correlates is visible:
+                                     predicts surplus     fires on an exact array
+        quad/box count (a merged pair frees a slot)   1.0%              43.5%
+        non-triangle count                            0.8%              56.4%
+        degenerate triangles                          0.0%               0.0%
+        orphan vertices (left by a removed polygon)   9.5%              33.3%
+        adjacency reaching past npolys                0.0%              25.7%
+    ⚠ The mesh's own adjacency DOES reach past `npolys` on 266 of 1,054 arrays, which is further
+    evidence the uncounted records are real geometry - but it never states how many.
+ E. **ALLOCATION ROUNDING REFUTED PROPERLY**, with the exact surplus and the `_pagemap` scoring
+    (fits the room / equals it), K = 32..4096: K=32 fits 100% but EQUALS the extent on only 19.8%,
+    and every larger K overruns the next allocation on 27-89% of arrays. Nothing both fits
+    everywhere and accounts for the extent - which is precisely what 16 DOES do one array over,
+    on the poly-material side (see `_polymat_pad`). The contrast is the point: the test is capable
+    of finding a granularity when there is one.
+⇒ **CONCLUSION, and it is a finding rather than a failure: the polygon array's allocated size is
+not recorded in the .ybn.** It is the resource builder's allocation, and the game never needs it -
+it iterates `npolys`, and the BVH covers exactly `npolys` (`max(itemId+itemCount) == npolys`,
+793/793, 2699/2699, 1305/1305, 3539/3539). The 41,912 bytes are real polygons of the same mesh
+left in slots the count no longer reaches.
+⛔⛔ AND THE ROUTE THAT LOOKS LIKE A FIX IS THE FORBIDDEN ONE - MEASURED, NOT ASSUMED
+(`scratchpad/ybn4_control.py`). "Claim the leading records that look like well-formed polygons"
+was tested before writing any of it:
+    NEGATIVE CONTROL - polygon arrays whose end is ALREADY another structure (so the 16 bytes
+    there are KNOWN not to be a surplus record), **4,390 of them across 1,200 files**:
+    `wellformed()` ACCEPTS them **570 / 4,390 (12.98%)** - and 75.5% when the next object is
+    another polygon array, 39.0% a material array, 24.6% a poly-material array.
+    AND WORSE: of the 1,054 subjects, the rule stops at the GAP END on **934** - i.e. on 88.6% of
+    them "claim what looks well-formed" is INDISTINGUISHABLE from "fill to the next allocation".
+    It would have read 794 of 884 files byte-exact (40,518 B) and proved nothing.
+⇒ Left unclaimed on purpose. **A CLAIMED REGION IS EVIDENCE ONLY IF A WRONG CLAIM COULD HAVE BEEN
+REJECTED**, and the comparison image copies the ORIGINAL bytes at whatever offsets are claimed, so
+this one would have "worked" exactly as the +0x130 blind fill did.
+⚠ WHAT WOULD ACTUALLY SETTLE IT (for a later pass): the same surplus in the DRAWABLE lanes'
+embedded bounds, where the same phBound record sits inside a different container - if a container
+field states the polygon capacity there, it names the field here too.
 
 ⚠ Same scope as the other writers: inflated SYSTEM SEGMENT only. ⛔ Δ THE PAGE-COUNT RECORD AT
 `ptr@0x08 +8` IS NO LONGER COMPUTED - it is READ, as part of the block map `_pagemap` models.
@@ -235,6 +323,7 @@ class Ybn:
         self._seen = set()
         self._pagemap()
         self._bound(0)
+        self._polymat_pad()          # post-pass: needs the whole walk's coverage to refuse on it
 
     def _off(self, ptr):
         buf, off = self.res.deref(ptr, 1)
@@ -305,6 +394,68 @@ class Ybn:
             return
         if 0 < n <= 512:
             self._flat_at(o + 16, n * 8)
+
+    def _polymat_pad(self):
+        """THE POLY-MATERIAL ARRAY IS ALLOCATED IN 16-BYTE UNITS, not in `npolys` bytes.
+
+        It is the one array in this record whose length is a BYTE COUNT rather than a record
+        count, so it is the only one that is not naturally 16-aligned - and that is exactly what
+        makes a granularity claim REFUTABLE here: a wrong granularity overruns the next allocation
+        15 times out of 16, where on `npolys * 16` it never could.
+
+        ⭐ MEASURED AT POPULATION - all 15,139 files, **53,952 poly-material arrays** that have any
+        room after them (`scratchpad/ybn4_polymat.py`; the probe prints its sample size). Scoring
+        `ceil(npolys / K) * K` against the room to the next modelled structure:
+            K     FITS the room        EQUALS it        non-zero tail bytes it accounts for
+             1    53,952 (100.00%)          0 ( 0.00%)          0 of 2,444
+             2    53,952 (100.00%)      2,521 ( 4.67%)        493
+             4    53,952 (100.00%)      7,569 (14.03%)      1,145
+             8    53,952 (100.00%)     18,823 (34.89%)      1,594
+          **16**  **53,952 (100.00%)**  **49,569 (91.88%)**  **1,944**
+            32    28,884 ( 53.54%)     24,666 (45.72%)      2,154
+            64    18,195 ( 33.72%)     14,077 (26.09%)      2,266
+        ⇒ 32 and 64 are REJECTED outright: they run past the next allocation on 46% and 66% of
+        arrays. 1, 2, 4 and 8 fit everywhere but leave most of the tail unaccounted for. Only 16
+        both fits EVERYWHERE and accounts for the extent, which is the same shape of argument -
+        and the same table - that pinned the block map's 8-byte page record in `_pagemap`.
+        ⚠ HONEST ABOUT WHAT THIS IS NOT. It claims the array's ALLOCATED SIZE. It does NOT explain
+        the material bytes that sit in that tail: those belong to the polygon records past
+        `npolys`, and NOTHING IN THE FILE STATES HOW MANY OF THOSE THERE ARE (see REMAINING GAP).
+        On 148 of 53,952 arrays a non-zero material byte lies BEYOND `ceil(npolys/16)*16` - the
+        allocation there was plainly made for the larger polygon count - and this deliberately
+        does NOT reach them. Those 500 bytes stay in the residual rather than being covered by a
+        claim that is not pinned.
+        ⛔ IT REFUSES ON OVERLAP rather than clamping: if any padding byte is already claimed by
+        another modelled structure, nothing is captured for that array. That guard is what a wrong
+        granularity would have tripped, so it stays even though it fires on 0 of 53,952 today.
+        """
+        s = self.res.sys
+        cov = bytearray(self.size)
+        for off, data in self.regions:
+            if off is not None and data:
+                cov[off:off + len(data)] = b'\x01' * len(data)
+        for off in sorted(self._seen):
+            if off + 0x150 > self.size or s[off + 0x10] != 8:
+                continue
+            try:
+                nverts, npolys = (struct.unpack_from('<I', s, off + 0xD0)[0],
+                                  struct.unpack_from('<I', s, off + 0xD4)[0])
+                nmat = s[off + 0x120]
+                mp = struct.unpack_from('<I', s, off + 0x118)[0]
+            except (struct.error, IndexError):
+                continue
+            if not (0 < nverts <= 0x8000 and 0 < npolys <= 0x100000 and nmat):
+                continue
+            pad = (-npolys) % 16
+            if not pad:
+                continue
+            mo = self._off(mp)
+            if mo is None:
+                continue
+            a, b = mo + npolys, mo + npolys + pad
+            if b > self.size or any(cov[a:b]):
+                continue
+            self._flat_at(a, pad)
 
     def _octant_map(self, off, n=8):
         """phBound +0xC0 / +0xC8 - THE OCTANT MAP, SELF-DESCRIBING.
