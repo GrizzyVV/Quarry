@@ -236,9 +236,10 @@ def level_sizes(w, h, mips, blk, bpp):
     # ⚠ CONSEQUENCE, STATED NOT BURIED - THIS CHANGES .dds SIDECAR OUTPUT. Every sidecar QUARRY
     # has written is SHORT IN THE TAIL on roughly 10% of textures. So is the reference exporter's,
     # which is why they matched. Sidecars regenerate on the next textures pass.
-    # ⚠ It will also move the sidecar CW-parity board (block-rounded scored 207/237 against those
-    # sidecars). That is the CORRECT direction under Matt's 2026-08-13 ruling - round-trip is
-    # PRIMARY, parity is a cross-check, and *"if CW is wrong, then Quarry is wrong."* Recorded as
+    # ⚠ It will also move the sidecar reference-parity board (block-rounded scored 207/237 against
+    # those sidecars). That is the CORRECT direction under the 2026-08-13 ruling - round-trip is
+    # PRIMARY, parity is a cross-check: if the reference is wrong, matching it makes us wrong too.
+    # Recorded as
     # an AGENT call with its evidence; a one-word override reverts it.
     # ⭐ The old note even anticipated this: it observed the shift chain is "<= the block-rounded
     # chain for every shape measured". Under round-trip, <= means UNDER-READ.
