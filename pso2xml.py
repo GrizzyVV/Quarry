@@ -616,14 +616,33 @@ class Emitter:
             return ["%s<%s>%s</%s>" % (ind, name, esc(txt), name)]
         if t == 0x0f:                              # FLAGS
             v = struct.unpack_from(">I", buf, o)[0]
-            ehash = sdef["entries"][extra & 0xFFFF]["extra"]
-            info = self.p.enum_def(ehash)
+            # `extra` = (bit width << 16) | ENTRY INDEX of the sibling member whose own `extra`
+            # is the enum's schema hash. MEASURED over every PSIN .ymt the game archives yield
+            # (727 files, 8,307 T_FLAGS members): 8,289 resolve exactly that way.
+            # ⛔ THE OTHER 18 CRASHED THIS EMITTER WITH AN UNCHECKED IndexError - no message,
+            # no counter, 7 corpus files lost to it. They are NOT malformed: all 18 carry the
+            # SAME `extra` word 0x00200FFF, i.e. index 0x0FFF, the all-ones 12-bit UNBOUND
+            # sentinel - the member simply has no enum definition attached (slod_human,
+            # slod_large_quadped, slod_small_quadped; members `inclusions` / `exclusions`).
+            # In 18 of 18 the stored value is ZERO, so the honest emission is the same empty
+            # element a zero-valued bound member already produces - nothing is lost and nothing
+            # is invented. A NON-zero unbound value has never been witnessed; it spells its set
+            # bits as hash_%08X (the same fallback a bound enum uses for a bit with no member)
+            # and is COUNTED, never guessed at.
+            ents = sdef["entries"]
+            idx = extra & 0xFFFF
+            info = None
+            if idx < len(ents):
+                info = self.p.enum_def(ents[idx]["extra"])
+            else:
+                self._warn("flags member with no enum definition (extra %#010x -> entry index "
+                           "%d of %d; unbound sentinel)" % (extra, idx, len(ents)))
             if v == 0:
                 return ["%s<%s />" % (ind, name)]
             parts = []
             for bit in range(32):
                 if v & (1 << bit):
-                    mh = info["members"].get(bit)
+                    mh = info["members"].get(bit) if info is not None else None
                     if mh is None:
                         self._warn("flags bit without member")
                         parts.append("hash_%08X" % (1 << bit))

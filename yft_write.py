@@ -1,5 +1,45 @@
 """yft_write - ROUND-TRIP WRITER for .yft fragments (RSC7 v162 / v160).
 
+=========================== SECOND PASS, 2026-08-14 (LATEST) ===============================
+SAMPLE (`python tools/roundtrip_coverage.py --lane yft --limit 250`): **249/250 byte-exact,
+100.0000%** - sys 100.0000%, gfx 100.0000% (96 files carry a graphics segment). Was 247/250.
+POPULATION WORK QUEUE (the 231 re-fetched `.yft` the whole-game run graded short):
+**223 of 231 byte-exact**, up from 0 of 231; residual 650,060 -> 618,524 bytes.
+⚠ THE RESIDUAL BARELY MOVES BECAUSE ONE FILE IS ALL OF IT: `xm_prop_auto_salvage_stromberg.yft`
+holds 615,750 of the 618,524 bytes left. Byte-exact COUNT is the honest headline for this lane.
+EVERY GAIN CAME FROM THE SHARED BASE CLASS, not from this module:
+  * `ydr_write._shaders` - the typed shader-group read this lane never had. `_texdict` mistook
+    the shader POINTER ARRAY at `sg+0x10` for an array descriptor, so the parameter table, its
+    float4 value blocks and its joaat name-hash array were left to the blind walk. Worth
+    **0 -> 189** byte-exact on the queue, in one step.
+  * `ydr_write.write()` no longer overwrites the resource page-count word: **28** `.yft` had NO
+    other difference at all.
+  * `ydr_write._bvh` replaced the refuted `+0x130` fill, plus composite `+0xA8`, vertex colours
+    `+0xB8`, material colours `+0xF8` and the bound TYPE CODE as the geometry discriminator:
+    **217 -> 223**.
+⏭ WHAT REMAINS IN THIS LANE, 8 files:
+  * `xm_prop_auto_salvage_stromberg.yft` 615,750 B - ⭐ CAUSE FOUND AND NOT FIXED, ON PURPOSE.
+    `_drawable_array` computes `n = total - 1` from the u8 at `deref(fragroot+0xA8)+0x10`. This
+    file reads `total = 1`, so `n = 0` and the table is skipped whole - yet ENTRY 0 of that table
+    (0x25f2a0) holds a real extra drawable at 0x25c310, whose LOD group (0x25a140) -> model ->
+    geometry -> vertex buffer (0x25d280: stride 52 @+0x08, count 5,038 @+0x18, data -> 0x080000)
+    is 261,976 bytes of vertex data. `5038 x 52` accounts for the largest run to the byte, and
+    the blind walk captured only its first 0x1000. The four biggest runs all start on a 0x1000
+    page boundary for exactly that reason - `CHASE_CAPTURE` ran out.
+    ⛔ WHY IT IS LEFT ALONE: only SIX files in the whole 231-file work queue carry a drawable
+    table at all, and on those six the CURRENT `total - 1` reading puts a real drawable at the
+    last index in 3 (n/a in 1, false in 2) while reading it as `total` would add a bogus entry in
+    5 of 6. **A six-file sample cannot carry a change to a shared count reading, and this is a
+    neat fit on ONE file** - the exact shape of the mis-factorisation this codebase retracted
+    earlier the same day. It needs a draw big enough to contain many tables, which this pass did
+    not have. Recorded here so the next pass starts at the answer instead of the symptom.
+  * `barracks_hi.yft` - the SAME 3,024-byte float run this module already documented as gap
+    shape (2), at 0x44f360, plus a second 2,160-byte run at 0x44f6c0. Still unattributed.
+  * 6 vehicles short by 13 bytes (`kamacho`, `scarab3_hi`, `airbus_hi`, `bus_hi`, `eurosx32_hi`)
+    - ONE polygon record of trailing slack, the class ruled out under `ydr_write._bound`.
+⛔ `_skeleton_SUPERSEDED` stays superseded; nothing in this pass revived it.
+============================================================================================
+
 COVERAGE 2026-08-14 (LATEST, 250-file stratified draw from the game via the shared harness):
 **100.0000%** overall - system 100.0000%, graphics 100.0000%, **247 / 250 byte-exact**.
 Reproduce: `python tools/roundtrip_coverage.py --lane yft --limit 250`.
@@ -161,6 +201,7 @@ class Yft(ydr_write.Ydr):
         self.sysr, self.gfxr = [], []
         self._seen = set()
         self._defer = []            # see _chase - the blind walk runs LAST, never first
+        self._pagemap()             # the resource BLOCK MAP - see ydr_write._pagemap
         self._frag()
 
     # ⛔⛔ THE ORDERING DEFECT THIS FIXES, measured 2026-08-14 on prop_gold_vault_gate_01:

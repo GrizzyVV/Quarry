@@ -816,33 +816,72 @@ def _emit_physics(r):
 
 
 def _emit_drawable_array(r):
-    """<DrawableArray> — EXTRA drawables (damage states etc.), witnessed 2026-08-08 on
-    ch_prop_ch_monitor_01a: table @ fragroot+0x38 pairs a u64 drawable ptr with the item's
-    NAME inline at entry+0x10 (the drawable's own +0xA8 name ptr is NULL — the table name is
-    authoritative); TOTAL drawable count (main + extras) = u8 @ descriptor(+0xA8 struct)+0x10
-    (zent=1 → no array ✓, monitor=2 → one extra ✓). Emitted right after </Drawable>.
-    ⚠ 🧠 entry stride 0x20 is a single-witness hypothesis (one extra observed); a
-    multi-extra file diffs loudly if wrong."""
+    """<DrawableArray> — the fragment's EXTRA drawables (damage states). Emitted right after
+    </Drawable>.
+
+    ⛔⛔ THE PREVIOUS DERIVATION WAS A SINGLE-WITNESS FABRICATION AND IT WAS WRONG (corrected
+    2026-08-14). It read a TOTAL drawable count from a u8 at descriptor(+0xA8)+0x10, walked
+    `total - 1` entries at stride 0x20 out of fragroot+0x38, and took each item's NAME from bytes
+    lying INLINE at entry+0x10. That reproduced ch_prop_ch_monitor_01a — the one file it was
+    derived from — by coincidence, and invented drawables everywhere else: on a stratified
+    3,000-file .yft draw from the game, 116 files carry an extras array and the old walk
+    DISAGREED with the file's own data on 106 of them, fabricating up to 25 phantom <Item>s per
+    fragment out of adjacent heap. The 127 fragments that refused with `root bound pointer
+    0xffffffff does not resolve` were the visible tenth of that: the phantom entry happened to
+    dereference into a region whose +0xC8 was 0xFFFFFFFF. ⚠ 0xFFFFFFFF WAS NEVER A "NO BOUND"
+    SENTINEL — reading it as one would have silenced the symptom and kept the fabrication.
+
+    THE MEASURED LAW (3,000-file stratified draw, 2026-08-14 — TWO PARALLEL ARRAYS, not a table
+    of pairs; every field below verified on all 116 files that carry extras plus all 127 that
+    used to refuse):
+        fragroot+0x38  u64  -> array of `count` u64 DRAWABLE pointers
+        fragroot+0x40  u64  -> array of `count` u64 NAME pointers (cstr), index-parallel
+        fragroot+0x48  u32       count
+        fragroot+0x4C  u32       0xFFFFFFFF when the arrays are absent, 0 when present
+    Absent case, 2,884 of 3,000: +0x38 and +0x40 both NULL, +0x48 zero, +0x4C 0xFFFFFFFF.
+    Present case, 116 of 3,000 (+ the 127 formerly-refusing): count == 1 in 243 of 243, name
+    "damaged" in 243 of 243 — which is also what the reference export of the one oracle we hold
+    (ch_prop_ch_monitor_01a) contains.
+    ⚠ count > 1 is UNWITNESSED. The parallel-array shape generalises to it with no new guess, so
+    it is emitted and COUNTED rather than refused — a rising counter is the signal to go looking
+    for the file."""
     p = _yU(r, 0x38)
-    if (p >> 28) != 5:
+    namep = _yU(r, 0x40)
+    count = _yU(r, 0x48)
+    if (p >> 28) != 5 or count == 0:
+        # ⛔ GATE ON THE POINTER AND THE COUNT, never on a "total" read somewhere else. The old
+        # gate consulted a byte that is not a drawable count at all.
+        if (p >> 28) == 5 or count:
+            _refuse("fragment_extras_pointer_count_disagree",
+                    "ptr 0x%08x count %d" % (p, count))
         return []
-    dsc = _yU(r, 0xA8)
-    if (dsc >> 28) != 5:
+    if (namep >> 28) != 5:
+        _refuse("fragment_extras_name_array_absent", "%d extras" % count)
         return []
-    _, d = r.deref(dsc, 0x14)
-    total = r.sys[d + 0x10]
-    if total <= 1:
+    if count > 64:
+        _refuse("fragment_extras_count_implausible", "count %d" % count)
         return []
-    _, tab = r.deref(p, (total - 1) * 0x20)
+    if count != 1:
+        _refuse("fragment_extras_count_not_1_unwitnessed", "count %d" % count)
+    _, tab = r.deref(p, count * 8)
+    _, ntab = r.deref(namep, count * 8)
+    if tab is None or ntab is None:
+        _refuse("fragment_extras_arrays_unresolved", "count %d" % count)
+        return []
     L = [" <DrawableArray>"]
-    for i in range(total - 1):
-        ent = tab + i * 0x20
-        dp = _yU(r, ent)
+    for i in range(count):
+        dp = _yU(r, tab + i * 8)
+        np_ = _yU(r, ntab + i * 8)
         _, db = r.deref(dp, 0xD0)
-        end = r.sys.find(b"\x00", ent + 0x10)
-        nm = r.sys[ent + 0x10:end].decode("latin-1")
+        if db is None:
+            _refuse("fragment_extra_drawable_unresolved", "item %d ptr 0x%08x" % (i, dp))
+            continue
+        nm = r.cstr(np_) or ""
+        if not nm:
+            _refuse("fragment_extra_name_empty", "item %d ptr 0x%08x" % (i, np_))
         body, _lights = _drawable_body(r, db, " ")
-        # the table name REPLACES the body's fallback Name line (drawable name ptr is NULL)
+        # the parallel NAME array is authoritative and REPLACES the body's fallback Name line
+        # (an extra drawable's own +0xA8 name pointer is NULL in 243/243)
         if body and body[0].strip().startswith("<Name>"):
             body[0] = "  <Name>%s</Name>" % esc(nm)
         # absent != empty: an array drawable with a NULL ShaderGroup ptr (+0x10) reuses the
@@ -850,14 +889,16 @@ def _emit_drawable_array(r):
         # default block (gated on the BINARY's pointer, not on string contents)
         if not r.ptr(db + 0x10):
             try:
-                s = next(i for i, ln in enumerate(body) if ln.strip() == "<ShaderGroup>")
-                e = next(i for i, ln in enumerate(body) if ln.strip() == "</ShaderGroup>")
+                s = next(k for k, ln in enumerate(body) if ln.strip() == "<ShaderGroup>")
+                e = next(k for k, ln in enumerate(body) if ln.strip() == "</ShaderGroup>")
                 del body[s:e + 1]
             except StopIteration:
                 pass
         L.append("  <Item>")
         L.extend(" " + ln for ln in body)
         L.append("  </Item>")
+    if len(L) == 1:                     # every item was declined - emit nothing, not an empty tag
+        return []
     L.append(" </DrawableArray>")
     return L
 
@@ -891,8 +932,28 @@ def _emit_vehicle_glass(r):
     @+0x58 · UnkFloat18 @+0x5C · UnkUshort4 @+0x60 · UnkUshort5 @+0x62 · CracksTextureTiling
     @+0x64. ShatterMap raster: u16 cumulative row-offset table @+0x72 with (h-1) entries,
     then rows stored CONSECUTIVELY: each = u8 firstCol, u8 lastCol, data[last-first+1],
-    0xFF terminator (blob sizes reproduce the cumulative table with zero residue). Rendering:
-    cells outside [first..last] = '##', byte 0xFF = '--', else uppercase hex."""
+    0xFF terminator. Rendering: cells outside [first..last] = '##', byte 0xFF = '--',
+    else uppercase hex.
+
+    ⭐ THE ROW-OFFSET TABLE IS THE ROW BOUNDARY, AND IT WAS BEING READ PAST, NEVER USED
+    (corrected 2026-08-14). The walk inferred every boundary from the span stream - an explicit
+    0xFF sentinel, or a following span that backtracks - and stepped over the table without
+    consulting it. That works until the LAST row of a record, which has neither terminator:
+    nothing follows it inside the record, so the walk read on into the NEXT record's floats and
+    refused with `shatter span a..b outside width w`. All 3 refusing vehicles (gp1 win 7,
+    turismo2 win 5, revolter win 0) failed on their LAST ROW and nowhere else - the files are
+    NOT malformed.
+    MEASURED over a 3,000-file stratified .yft draw plus the 3 refusers - 54 files carry a glass
+    manager, 319 windows carry a shatter map: THE INFERRED ROW STARTS AGREE WITH THE RECORD'S
+    OWN CUMULATIVE TABLE ON 319 OF 319. So the table says exactly what the span stream said,
+    everywhere it could be checked, and it ALSO bounds the row where the span stream cannot.
+    The last row is bounded by the NEXT record's offset in the manager table (or, for the final
+    record, by the manager's own totalSize @+0x08); records are 16-byte aligned, so 0..15 bytes
+    of padding sit after the last row (measured slack distribution 0..15 over the 319).
+    ⛔ THE OUT-OF-RANGE GUARD IS KEPT AND STILL RAISES for rows 0..h-2, whose extents the table
+    pins EXACTLY - a failure there really would mean the law is wrong. Only in the LAST row,
+    whose tail is alignment padding, is an unreadable span taken as the end of the data, and
+    that case is COUNTED."""
     p = _yU(r, 0x120)
     if (p >> 28) != 5:
         return []
@@ -900,10 +961,14 @@ def _emit_vehicle_glass(r):
     n = struct.unpack_from("<H", r.sys, man + 0x6)[0]
     if n == 0:
         return []
+    man_total = _yU(r, man + 0x8)
+    rec_off = [_yU(r, man + 0x10 + i * 8) for i in range(n)]
     L = [" <VehicleGlassWindows>"]
     for wi in range(n):
         item_id = _yU(r, man + 0x0C + wi * 8)
-        rec = man + _yU(r, man + 0x10 + wi * 8)
+        rec = man + rec_off[wi]
+        # the record's own extent, from the manager's table - file-carried, not assumed
+        rec_end = man + (rec_off[wi + 1] if wi + 1 < n else man_total)
         rec_id = struct.unpack_from("<H", r.sys, rec + 0x44)[0]
         if rec_id != item_id:
             raise ValueError("vehicle glass window %d: table ItemID %d != record ItemID %d"
@@ -930,8 +995,15 @@ def _emit_vehicle_glass(r):
         # reference omits the raster for every one (12/12), while every >1x1 record has one.
         if w and h and (w, h) != (1, 1):
             L.append("   <ShatterMap>")
-            pos = rec + 0x72 + (h - 1) * 2
-            for _row in range(h):
+            base = rec + 0x72 + (h - 1) * 2
+            # row starts straight out of the record's cumulative table (319/319 agree with the
+            # span-stream walk), plus the record extent as the last row's upper bound
+            starts = [base] + [base + struct.unpack_from("<H", r.sys, rec + 0x72 + i * 2)[0]
+                               for i in range(h - 1)]
+            pos = base
+            for _row_i in range(h):
+                last_row = (_row_i == h - 1)
+                stop = rec_end if last_row else starts[_row_i + 1]
                 # A row = strictly-rightward SPANS: (first u8, last u8, data[last-first+1]).
                 # Row boundary is EITHER an explicit 0xFF sentinel where the next `first`
                 # would sit, OR IMPLICIT: a following span whose `first` does not continue
@@ -943,7 +1015,7 @@ def _emit_vehicle_glass(r):
                 # row4: "...EBF7FF----" — the FF is data, the run is the gap).
                 spans = []
                 prev_last = -1
-                while True:
+                while pos + 1 < stop:                         # never read past the row's extent
                     if r.sys[pos] == 0xFF:
                         pos += 1                              # explicit row-end sentinel
                         break
@@ -951,14 +1023,24 @@ def _emit_vehicle_glass(r):
                     last = r.sys[pos + 1]
                     if first <= prev_last:
                         break             # implicit boundary: span belongs to the next row
-                    if not (first <= last < w):
-                        raise ValueError(
-                            "vehicle glass window %d: shatter span %d..%d outside width %d"
-                            % (wi, first, last, w))
+                    if not (first <= last < w) or pos + 2 + (last - first + 1) > stop:
+                        # rows 0..h-2 have an EXACT extent from the record's table, so a span
+                        # that does not fit means the law is wrong -> refuse, loudly, as before.
+                        # The LAST row's extent ends in up to 15 bytes of record alignment
+                        # padding, and unreadable bytes there are that padding, not data.
+                        if not last_row:
+                            raise ValueError(
+                                "vehicle glass window %d: shatter span %d..%d outside width %d"
+                                % (wi, first, last, w))
+                        _refuse("vehicle_glass_last_row_ended_at_record_padding",
+                                "window %d span %d..%d w=%d" % (wi, first, last, w))
+                        break
                     spans.append((first, last,
                                   r.sys[pos + 2:pos + 2 + (last - first + 1)]))
                     prev_last = last
                     pos += 2 + (last - first + 1)
+                if not last_row:
+                    pos = starts[_row_i + 1]                  # the table is authoritative
                 cells = ["##"] * w
                 if spans:
                     for c in range(spans[0][0], spans[-1][1] + 1):

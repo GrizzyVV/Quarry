@@ -1,5 +1,81 @@
-"""ydr_write - ROUND-TRIP WRITER for .ydr drawables.
+"""ydr_write - ROUND-TRIP WRITER for .ydr drawables. THE SHARED DRAWABLE-FAMILY WALKER
+(`ydd_write` and `yft_write` subclass this class, so every change here pays or breaks THREE
+lanes - always re-measure all three).
 
+=========================== SECOND PASS, 2026-08-14 (LATEST) ===============================
+⭐ WORKED FROM THE POPULATION RECORDS, NOT A SAMPLE. The 250-file draw already read 250/250 for
+this lane, so it could not see the work: the files that fail are RARE and a 250-file draw misses
+them entirely. The subject list was the 572 files the whole-game run graded short
+(`output/roundtrip_population/results.w*.jsonl`, `exact == false`), 563 of which were re-fetched.
+
+MEASURE 1 - the 250-file sample, `python tools/roundtrip_coverage.py --lane <x> --limit 250`:
+    lane   before this pass          after
+    ydr    250/250  100.0000%        250/250  100.0000%   (sys 100.0000 / gfx 100.0000)
+    ydd    250/250  100.0000%        250/250  100.0000%   <- see the WARNING below
+    yft    247/250  100.0000%        249/250  100.0000%
+⚠ THE `.ydd` 250/250 WAS NOT REAL AND THIS PASS PROVED IT. Removing the page-count write (see
+`write`) dropped it to **243/250** - because on 7 of those files that write was reproducing a
+block-map allocation NOTHING HAD READ. `_pagemap` now models the structure and earns the 250 back.
+A number that only survives because a computed value is pasted over an unread region is a number
+that measures the paste.
+
+MEASURE 2 - the POPULATION WORK QUEUE (563 known-short files; `scratchpad/_dq_regrade.py`).
+⚠ NOT a population figure: it grades ONLY the files that were failing, so "N exact" means N files
+LEFT the queue.
+    lane   byte-exact  residual bytes        ->   byte-exact  residual bytes
+    ydr      0 / 320     2,195,612                272 / 320       882,716
+    ydd      1 /  12            14                 11 /  12             4
+    yft      0 / 231       650,060                223 / 231       618,524
+    TOTAL    1 / 563                              506 / 563
+`.yft`'s residual barely moves because ONE file, `xm_prop_auto_salvage_stromberg.yft`, is 615,750
+of the 618,524 that remain.
+
+WHAT WAS CLOSED, in the order applied, each measured on the queue:
+ 1. THE SHADER GROUP WAS NEVER READ AS A SHADER GROUP ....... yft 0 -> 189 exact
+    `_texdict` treated `sg+0x10` as an array DESCRIPTOR; it is the shader POINTER ARRAY, whose
+    count is a separate field at `sg+0x18`. The parameter table, its value blocks and its name
+    hashes were left to the blind walk. `ydd_write` had a correct typed reader and its own
+    docstring said it belonged here; it is now here, as `_shaders`, and `ydd_write`'s is
+    SUPERSEDED. See `_shaders`.
+ 2. `write()` OVERWROTE A BYTE IT HAD ALREADY REPRODUCED .... 60 files (10 ydd/22 ydr/28 yft)
+    The page-count law is not universal on this family. See `write` and `_pagemap`.
+ 3. THE `+0x130` "ARRAY DESCRIPTOR" WAS REFUTED, AND IT WAS A FILL ...... ydr 20 -> 78 exact
+    ⭐ CONTROL RUN, the fill removed and NOTHING put back: ydr **20/320 exact, 22,703,202
+    residual bytes** - i.e. the old reading was concealing 20.5 MB of unread data behind a claim
+    that could not fail, and buying 2 byte-exact files for it. The real structure scores better
+    than the fill ever did. See `_bvh`.
+ 4. COMPOSITE `+0xA8` BVH · VERTEX COLOURS `+0xB8` · MATERIAL COLOURS `+0xF8` ·
+    THE TYPE CODE AS THE GEOMETRY DISCRIMINATOR ............. ydr 78 -> 254, yft 217 -> 223
+ 5. THE ROW PITCH OVERRULES THE FourCC ..................... ydr 254 -> 272 (all in GRAPHICS)
+    18 embedded textures declare DXT1/DXT5 and store 4 bytes per pixel. See `_texdict`.
+ 6. PER-TYPE phBOUND RECORD SPANS (0x180 -> 0x70/0x80/0xB0/0x130/0x150) ..... 0 files, and that
+    is the point: it removed an over-claim of up to 0x110 bytes per bound that ran past the next
+    allocation on 10,322 of 10,322 boxes. See BOUND_SPAN_BY_TYPE.
+⚠ (3), (4) and the `+0x130` refutation are the `.ybn` agent's derivation, RE-CONFIRMED here on
+this lane's own subjects before adoption - see `_bvh` for the re-confirmation.
+
+WHAT REMAINS, 60 of 563 - all characterised, none guessed:
+  * 16 `.ydr` the EXTRACTOR cannot decode (12 refuse outright). Every one is RSC7 version 164
+    (gfxFlags high nibble 4, not 5); their bodies come out of `quarry.payload`'s `stored-raw`
+    last resort as HIGH-ENTROPY NOISE - `des_bridge_root.ydr` inflates to 396,498 B of noise
+    against a 630,784 B page plan. NOT a writer defect; reported to the extractor's owner.
+  * ~45 files short by 1-5 POLYGON RECORDS (13/16/32/48/64/80 bytes, `.ydr` and `.yft` alike).
+    The polygon array runs past `npolys * 16` and stops exactly where the next allocation
+    begins. RULED OUT as underivable for now - see the note under `_bound`.
+  * `des_ranchsafe001_start/end.ydr`, 206,922 / 278,730 B in 9 and 15 runs. DIAGNOSED, NOT
+    FIXED: the bound at 0x0cf5b0 in `_start` reads type 8 (geometry-BVH) with **nverts 0 and
+    npolys 0**, so the geometry branch is skipped - yet its `+0x88` holds a live pointer to
+    0x060000 and 73,072 bytes of well-formed polygon records sit there, reached only by the blind
+    walk's first 0x1000. Its vtable is **0x405b5408**, not the 0x4062fae8 every correctly-read
+    BVH bound in this pass carries. Reading the record 8 bytes lower gives plausible counts
+    (2,844 verts / 4,823 polys = 77,168 B) but an implausible type byte, so the base or the field
+    offsets differ for this class and it is NOT resolved here. ⛔ Do not shift the offsets on this
+    evidence - it is two files.
+  * `xm_prop_auto_salvage_stromberg.yft` 615,750 B (cause found - see `yft_write`) ·
+    `barracks_hi.yft` 3,024 + 2,160 B, still unattributed.
+============================================================================================
+
+⚠ THE PASS BELOW IS THE EARLIER RECORD OF THE SAME DAY, kept because its findings still hold.
 COVERAGE 2026-08-14 (250-file stratified sample): **100.0000%** overall - system 100.0000%,
 graphics 100.0000%, and **250/250 files byte-EXACT**. Reproduce:
 `python tools/roundtrip_coverage.py --lane ydr --limit 250`.
@@ -101,6 +177,29 @@ CHASE_SCAN = 0x400
 # crBoneData stride - 80, measured by adjacent-offset stride over 150 files (`ydd_write` records
 # the same 80 in 60/60 skeletons). Named here because `_skeleton` now lives in this module.
 BONE_STRIDE = 0x50
+# grcTexture reference stub - 80 bytes, measured by adjacent-offset stride over 150 .ydd files
+# (675/675 minimal adjacent pairs). Named here because `_shaders` now lives in this module.
+STUB_RECORD = 0x50
+
+# ⭐⭐ A phBOUND RECORD'S SIZE IS ITS TYPE'S, NOT ONE FLAT 0x180.
+# ⛔ `was:` `_put(off, 0x180)` for every bound. MEASURED 2026-08-14 over 150 files of the
+# population work queue, taking each walked bound's room to the NEXT allocation in the segment
+# (n = bounds of that type; the figure is the room, i.e. an upper bound on the record):
+#     type  0 sphere ..... 0x70   7/7        type  8 geometry-BVH  0x150  259/270 (7 at 0x140)
+#     type  1 capsule .... 0x80   406/406    type 10 composite .... 0x0B0  124/125
+#     type  3 box ........ 0x70   10297/10322 (21 at 0x80)
+#     type  4 geometry ... 0x130  13/13      type 13 cylinder ..... 0x080  465/465
+# and the 0x180 span RAN PAST THE NEXT ALLOCATION on 10,322 of 10,322 boxes, 465 of 465
+# cylinders, 406 of 406 capsules and 267 of 270 BVH bounds - i.e. on a box it claimed 0x180 for a
+# 0x70 record and swallowed the next TWO bound records whole. It looked harmless only because
+# those neighbours are usually bounds the walk visits anyway; where they are not, the over-claim
+# is a fill that cannot fail. `.ybn` measured the same 0xB0 / 0x150 independently and found 0x180
+# claimed 33,552 extra bytes for ZERO gain - two lanes, two samples, one table.
+# ⚠ AN UNKNOWN TYPE FALLS BACK TO 0x180, which is the old over-claim: it is kept ONLY so a bound
+# type this sample never saw cannot silently lose its whole record, and it fires on 17 of 11,626
+# bounds here (types 6, 16 and 178). Re-measure before widening the table.
+BOUND_SPAN_BY_TYPE = {0: 0x70, 1: 0x80, 3: 0x70, 4: 0x130, 8: 0x150, 10: 0xB0, 13: 0x80}
+BOUND_SPAN_DEFAULT = 0x180
 
 
 class Ydr:
@@ -119,6 +218,7 @@ class Ydr:
         self.sysr, self.gfxr = [], []
         self._seen = set()
         self._defer = []                 # see `_chase` - the blind walk runs LAST, never first
+        self._pagemap()
         self._drawable(0)
         self._flush_chase()
 
@@ -211,6 +311,7 @@ class Ydr:
                 break
         self._flat(struct.unpack_from('<I', s, base + 0x18)[0], 0x80)     # skeleton hdr
         self._skeleton(base)                                              # ...and its ARRAYS
+        self._shaders(base)                                               # grmShaderGroup, TYPED
         n = struct.unpack_from('<H', s, base + 0xB8)[0]                   # lights
         if 0 < n < 4096:
             self._flat(struct.unpack_from('<I', s, base + 0xB0)[0], n * 0xA8)
@@ -220,13 +321,73 @@ class Ydr:
             except struct.error:
                 pass
 
+    def _pagemap(self):
+        """`resource+0x08` -> THE BLOCK MAP: a 16-byte header plus one 8-byte record per page.
+
+            +0x00 u32 / +0x04 u32 ..... zero in 360/360
+            +0x08 u8 SYSTEM page count | +0x09 u8 GRAPHICS page count
+            +0x10 .. one 8-byte record per page, `sysPages + gfxPages` of them
+
+        ⛔⛔ WHY THIS EXISTS: `write()` used to OVERWRITE the +0x08 word with a value recomputed
+        from the RSC7 flags, and on the files where the two agreed that write was reproducing an
+        allocation NOTHING HAD READ. Removing the write exposed them: 7 of a 250-file `.ydd` draw
+        went from "byte-exact" to one byte short, and in 7 of 7 the ENTIRE block-map allocation
+        (48-224 bytes) was uncovered - only its single non-zero byte ever showed as a difference,
+        because the comparison image is zero-filled. A computed value was standing in for a
+        structure the model had never visited.
+        ⭐ THE SIZE LAW IS PINNED BY THE ALLOCATION ITSELF, measured 2026-08-14 over 120 files of
+        EACH lane drawn from the game (360 total, sample size printed by the probe):
+            `16 + 8 * (sysPages + gfxPages)` fits inside the room to the next allocation  360/360
+            ... and equals that room EXACTLY                                              266/360
+            every byte between the computed end and the next allocation is ZERO           360/360
+        The 94 that are not exact are padding to the next 16-byte boundary, and it is zero - so
+        the arithmetic is confirmed by the extent in 266 cases and contradicted in none.
+        ⚠ HONEST ABOUT WHAT IS AND IS NOT KNOWN: the per-page records are ZERO throughout this
+        sample, so their 8-byte stride is pinned by the ALLOCATION EXTENT and not by content -
+        this claims the block map's size, not a reading of its records. The padding beyond the
+        computed end is deliberately NOT claimed.
+        ⛔ The array span is COUNT-DERIVED, so it goes through `_putn` (refuses on overrun) while
+        the fixed 16-byte header goes through `_put` - the split this module draws on evidence.
+        """
+        try:
+            buf, o = self.res.deref(self.res.ptr(0x08), 16)
+        except (struct.error, IndexError):
+            return
+        if buf is not self.res.sys:
+            return
+        self._put(o, 16)
+        try:
+            n = self.res.sys[o + 8] + self.res.sys[o + 9]
+        except IndexError:
+            return
+        if 0 < n <= 512:
+            self._putn(o + 16, n * 8)
+
     def _bound(self, tagged, depth=0):
         """The drawable's EMBEDDED collision graph at +0xC8 - the same phBound structure
         `ybn_write` walks, so the offsets are shared rather than re-derived:
+          type u8  @+0x10 : 0 sphere · 1 capsule · 3 box · 4 geometry · 8 geometry-BVH ·
+                            10 composite · 13 cylinder     (record size per type: BOUND_SPAN_*)
           composite: u16 child count @+0xA0 · children @+0x70 · transforms @+0x78 · flags @+0x90
-          geometry : nverts @+0xD0 · npolys @+0xD4 · nmat u8 @+0x120 · verts @+0xB0 ·
-                     polys @+0x88 · materials @+0xF0 · poly-materials @+0x118
-          +0x130   : an ARRAY DESCRIPTOR {ptr | count | capacity | records@+0x20}, 16-B records
+                     BVH block @+0xA8 (optional)
+          geometry : nverts @+0xD0 · npolys @+0xD4 · nmat u8 @+0x120 · nmatcol u8 @+0x121 ·
+                     verts @+0xB0 · polys @+0x88 · materials @+0xF0 · poly-materials @+0x118 ·
+                     vertex colours @+0xB8 · material colours @+0xF8 · BVH block @+0x130 (type 8)
+
+        ⏭ CHARACTERISED, NOT CLOSED - THE POLYGON ARRAY'S TRAILING SLACK. On 39 of 834 geometry
+        bounds (300 files) the polygon allocation runs 1-5 records past `npolys * 16` and stops
+        exactly where the next allocation starts; the extra records are well-formed polygons
+        (`float area, u16 v0, v1, v2, 0xffff, 0xffffffff`). This is the whole of the 13/16/32/48/
+        64-byte residual class in BOTH `.ydr` and `.yft`.
+        ⭐ THE BVH SAYS THE EXTRAS ARE UNUSED: over the subjects, `max(first + count)` across all
+        BVH leaf nodes equals `npolys` EXACTLY (793/793, 2699/2699, 1305/1305, 3539/3539) while
+        the allocation holds 795 / 2703 / 1306 / 3544 records. So they are reserved-but-unreferenced
+        slots, the same shape as the BVH node capacity slack.
+        ⛔ RULED OUT, with the search that failed: no field states the real count. Searched every
+        u16 (step 2) and u32 (step 4) in the bound record 0x000..0x220, and a 4/8/12/16/20/24/32
+        -byte allocation prefix in front of the array, over all 39 cases - **ZERO hits**. Claiming
+        the slack would be filling from one region's end to the next region's start, which is the
+        one move this measure exists to catch. Left unclaimed on purpose.
         """
         if not tagged or depth > 16:
             return
@@ -235,7 +396,8 @@ class Ydr:
         if off is None or seg != 'sys' or off in self._seen:
             return
         self._seen.add(off)
-        self._put(off, 0x180)
+        btype = s[off + 0x10] if off + 0x11 <= self.nsys else 0xFF
+        self._put(off, BOUND_SPAN_BY_TYPE.get(btype, BOUND_SPAN_DEFAULT))
         self._octant_map(off)
         try:
             nverts = struct.unpack_from('<I', s, off + 0xD0)[0]
@@ -243,12 +405,36 @@ class Ydr:
             nmat = s[off + 0x120]
         except (struct.error, IndexError):
             return
-        geom = 0 < nverts <= 0x8000 and 0 < npolys <= 0x100000 and nmat
+        # ⭐⭐ THE TYPE CODE IS THE DISCRIMINATOR; THE RANGE CHECKS ARE ONLY A SECOND GATE.
+        # `was:` geometry decided purely by "do the counts look plausible". A plausibility test is
+        # not a discriminator: the `.ybn` agent measured `cs2_04_0.ybn`, whose ROOT COMPOSITE reads
+        # nverts 3 / npolys 589,832 / nmat 179 - every one inside the plausible window - so the
+        # walker took a composite for a geometry bound and, because every composite read sits
+        # behind `not geom`, SILENTLY SKIPPED that root's per-child AABB array and its BVH block.
+        # ⚠ This matters MORE here than in `.ybn`: a drawable's embedded graph also carries Box,
+        # Sphere, Capsule, Disc, Cylinder and Cloth bounds, so `not geom` covers many more types.
+        # TYPE u8 @ +0x10: 4 = geometry, 8 = geometry-BVH, 10 = composite. VERIFIED on this lane
+        # against the vtable, which is an independent witness: every bound whose `+0x130` held a
+        # law-passing BVH block read type 8 and vtable 0x4062fae8, and every bound whose `+0xA8`
+        # did read type 10 and vtable 0x4062bac8 (5 subjects, 7 blocks, no exceptions).
+        geom = (btype in (4, 8)
+                and 0 < nverts <= 0x8000 and 0 < npolys <= 0x100000 and nmat)
         if geom:
             self._flat(struct.unpack_from('<I', s, off + 0xB0)[0], nverts * 6)
             self._flat(struct.unpack_from('<I', s, off + 0x88)[0], npolys * 16)
             self._flat(struct.unpack_from('<I', s, off + 0xF0)[0], nmat * 8)
             self._flat(struct.unpack_from('<I', s, off + 0x118)[0], npolys)
+            # ⭐ +0xB8 VERTEX COLOURS (nverts * 4) and +0xF8 MATERIAL COLOURS (u8 @+0x121 * 4).
+            # Both were already decoded by `ydr2xml` and never wired into this writer - pointers
+            # held and never followed, which is the one signature that has closed every gap in
+            # this campaign. ⚠ THE TWO SIGNAL ABSENCE DIFFERENTLY: vertex colours have no count of
+            # their own (the vertex count is always non-zero), so a NULL POINTER is what says the
+            # array is absent; material colours carry their own count at +0x121, which is 0 when
+            # they are absent. `_flat` already refuses a null pointer, so both are safe as written.
+            self._flat(struct.unpack_from('<I', s, off + 0xB8)[0], nverts * 4)
+            nmatcol = s[off + 0x121] if off + 0x122 <= self.nsys else 0
+            if nmatcol:
+                self._flat(struct.unpack_from('<I', s, off + 0xF8)[0], nmatcol * 4)
             # ⭐ +0x78 ON A **GEOMETRY** BOUND IS A SECOND VERTEX ARRAY (nverts * 6), not the
             # composite child-transform array the block below reads it as. The two readings never
             # collide because they are gated by opposite discriminators - this one by the geometry
@@ -263,24 +449,30 @@ class Ydr:
             # `ybn_write` mirrors, so all four lanes get it from one derivation - .ybn is 15,139
             # collision-only files where this slot costs far more than it does under a drawable.
             self._flat(struct.unpack_from('<I', s, off + 0x78)[0], nverts * 6)
-        try:
-            desc = struct.unpack_from('<I', s, off + 0x130)[0]
-        except struct.error:
-            desc = 0
-        if desc:
-            _b2, d, dseg = self._res(desc, 0x20)
-            if d is not None and dseg == 'sys':
-                self._put(d, 0x20)
-                try:
-                    cnt = struct.unpack_from('<I', s, d + 0x08)[0]
-                    if 0 < cnt <= 0x200000:
-                        # COUNT-DERIVED -> `_putn`, which refuses on overrun. The probe caught a
-                        # live example here: cnt read 327,684, asking 5,242,944 B in a segment
-                        # with 40,848 B left. Clamping that would have claimed 40 KB on a misread.
-                        self._putn(d + 0x20, cnt * 16)
-                        self._flat(struct.unpack_from('<I', s, d + 0x00)[0], cnt * 16)
-                except struct.error:
-                    pass
+        # ⛔⛔ REMOVED 2026-08-14 - THE `+0x130` "ARRAY DESCRIPTOR WITH RECORDS INLINE AT +0x20"
+        # WAS REFUTED, NOT MERELY INCOMPLETE. `was:` `_put(d, 0x20)` then `_putn(d + 0x20,
+        # cnt * 16)` plus `_flat(ptr@d, cnt * 16)`. The `.ybn` agent measured the descriptor's own
+        # pointer against `d + 0x20` over 901 blocks in 268 files and it matched in **0 of 901** -
+        # `+0x20` is a bounding BOX, not a record array. The claim it licensed took
+        # **5,563,920 bytes across two samples of which only 47,136 lay inside the structure**,
+        # i.e. 99.2% claimed on no basis, and it could not fail: the image copies the ORIGINAL
+        # bytes at whatever offset is claimed, so an unpinned claim is self-fulfilling.
+        # ⇒ It is replaced by `_bvh` below, which reads the real 0x80-byte block and refuses
+        # unless four independent laws hold. See `_bvh` for the laws and the evidence.
+        # ⛔ THE SLOT IS READ ONLY WHERE THE RECORD HAS ONE. A plain geometry bound (type 4) is
+        # 0x130 bytes, so `+0x130` is the FIRST BYTE PAST IT - reading a BVH pointer there would be
+        # reading the neighbour. Only type 8 carries the slot inside its 0x150 record.
+        if btype == 8:
+            self._bvh(struct.unpack_from('<I', s, off + 0x130)[0]
+                      if off + 0x134 <= self.nsys else 0)
+        # ⭐ A COMPOSITE CARRIES THE SAME BLOCK AT +0xA8, and it is OPTIONAL - 48 of 268 composites
+        # in the `.ybn` sample have one. There is no flag saying which: the FOUR LAWS in `_bvh`
+        # tell the cases apart, and a composite without one simply fails law 1 or 2 and is refused.
+        # ⛔ That is the whole reason `_bvh` validates instead of trusting the slot - the same call
+        # is made on every bound and only the real blocks are ever claimed.
+        if btype == 10:
+            self._bvh(struct.unpack_from('<I', s, off + 0xA8)[0]
+                      if off + 0xAC <= self.nsys else 0)
         try:
             n = struct.unpack_from('<H', s, off + 0xA0)[0]
             carr = struct.unpack_from('<I', s, off + 0x70)[0]
@@ -317,6 +509,79 @@ class Ydr:
                 break
             if cp:
                 self._bound(cp, depth + 1)
+
+    def _bvh(self, tagged):
+        """phBound `+0x130` (geometry) / `+0xA8` (composite) -> THE BVH BLOCK, 0x80 bytes.
+
+            +0x00 u64 ptr -> nodes | +0x08 u32 count | +0x0C u32 CAPACITY | +0x10 16 zero bytes
+            +0x20 vec4 box min | +0x30 vec4 box max | +0x40 vec4 box centre
+            +0x50 vec4 scale-INVERSE | +0x60 vec4 scale
+            +0x70 u64 ptr -> trees | +0x78 u16 count | +0x7A u16 capacity
+        Both arrays hold 16-byte records: a node is `{i16 min[3], i16 max[3], u32}` - the
+        quantised AABB the +0x50/+0x60 scale pair decodes.
+
+        ⭐⭐ FOUR LAWS, EACH ABLE TO REFUSE - derived by the `.ybn` agent over 901 blocks in 268
+        files and RE-CONFIRMED HERE before use (see below):
+          1. `+0x10 .. +0x20` is all zero ......................................... 901/901
+          2. `scale[k] * scaleinv[k] == 1` (+/-1e-3) for k in 0..2 ................ 901/901
+             - a reciprocal pair no box reading produces by accident
+          3. `(max-min)[k] * scaleinv[k] == 65535` (+/-1%) ....................... 901/901
+             - pins the BOX and the 16-bit quantisation together
+          4. tree count == tree capacity ......................................... 901/901
+        ⭐ RE-CONFIRMED ON THIS LANE before adopting the structure: a blind scan of five `.ydr`
+        subjects for any 16-byte-aligned offset satisfying all four laws found 1, 1, 3, 1 and 1
+        blocks respectively, EVERY ONE of them the target of exactly ONE tagged pointer, and every
+        one of those pointer sites at either bound `+0x130` or bound `+0xA8`:
+            ba_rig_dj_01_lights_03_b  blk 0x2c38c0  site 0x27fd80 = bound 0x27fc50 + 0x130
+                                                    (bound vtable 0x4062fae8, type u8 @+0x10 = 8)
+            tr_prop_tr_mod_lframe_01a blk 0x0bff80  site 0x07ffd8 = bound 0x07ff30 + 0x0A8
+                                                    (bound vtable 0x4062bac8, type = 10)
+        i.e. the two slots are the BVH-geometry one and the COMPOSITE one, and the vtable and the
+        type byte agree with the slot in every case. That is why this is adopted rather than
+        trusted.
+        ⭐ THE NODE ARRAY IS SIZED BY **CAPACITY**, NOT COUNT (`+0x0C`, not `+0x08`). Worked
+        example, gr_prop_bunker_bed_01: count 51, capacity 53; the unreached run measured 845
+        bytes inside a 848 = 53 x 16 allocation, and 51 x 16 = 816 cannot reach it. The surplus
+        records hold the uninitialised inverted box `01 80 01 80 01 80 ff 7f ff 7f ff 7f` -
+        min = +32767, max = -32767 - which is what a reserved-but-unused node looks like.
+        `capacity - count` is only ever 0, 1 or 2 over the 901 blocks.
+        ⛔ Both arrays are COUNT-DERIVED spans, so they go through `_flat`, which REFUSES on
+        overrun rather than clamping - a span that cannot fit proves the count is misread.
+        """
+        if not tagged:
+            return
+        s = self.res.sys
+        _b, d, seg = self._res(tagged, 0x80)
+        if d is None or seg != 'sys':
+            return
+        try:
+            if any(s[d + 0x10:d + 0x20]):                       # LAW 1
+                return
+            mn = struct.unpack_from('<4f', s, d + 0x20)
+            mx = struct.unpack_from('<4f', s, d + 0x30)
+            si = struct.unpack_from('<4f', s, d + 0x50)
+            sc = struct.unpack_from('<4f', s, d + 0x60)
+            nptr = struct.unpack_from('<I', s, d + 0x00)[0]
+            ncap = struct.unpack_from('<I', s, d + 0x0C)[0]
+            ncnt = struct.unpack_from('<I', s, d + 0x08)[0]
+            tptr = struct.unpack_from('<I', s, d + 0x70)[0]
+            tcnt = struct.unpack_from('<H', s, d + 0x78)[0]
+            tcap = struct.unpack_from('<H', s, d + 0x7A)[0]
+        except (struct.error, IndexError):
+            return
+        if tcnt != tcap:                                        # LAW 4
+            return
+        for k in range(3):
+            if not (0.999 <= sc[k] * si[k] <= 1.001):           # LAW 2
+                return
+            if not (64879.65 <= (mx[k] - mn[k]) * si[k] <= 66190.35):   # LAW 3 - 65535 +/-1%
+                return
+        if not (0 < ncap <= 0x200000) or ncap < ncnt:
+            return
+        self._put(d, 0x80)
+        self._flat(nptr, ncap * 16)
+        if 0 < tcnt <= 0x200000:
+            self._flat(tptr, tcnt * 16)
 
     def _cstr(self, tagged, limit=256):
         """Capture EXACTLY one NUL-terminated string, terminator included.
@@ -510,6 +775,105 @@ class Ydr:
                         except struct.error:
                             break
 
+    def _shaders(self, base):
+        """`gtaDrawable+0x10` -> grmShaderGroup -> shader blocks -> PARAMETER TABLE -> texture
+        stubs -> their NAME strings. The typed read of the structure `_texdict` only ever probed.
+
+        ⛔⛔ THIS MODULE HELD THE POINTER AND NEVER FOLLOWED IT. `_texdict` reads `sg+0x10` /
+        `sg+0x20` as if each were an array DESCRIPTOR `{ptr @+0x00, u16 count @+0x08}`. `sg+0x10`
+        is not a descriptor - it is the shader POINTER ARRAY itself, and its count is a separate
+        field at `sg+0x18`. Worked example, `fur_hood_h.yft`: `sg` at 0x007e40 carries
+        `ptr 0x007e80 | count 5` at +0x10/+0x18, and 0x007e80 is five 8-byte shader pointers.
+        `_texdict` dereferenced 0x007e80 as the descriptor, so it read the SECOND pointer
+        (0x50007ee0) as the count word, got 32,480, failed its `cnt > 4096` guard and captured
+        nothing - the whole parameter subtree was left to the blind walk.
+
+        LAYOUT - NOT re-derived. These are the offsets `ydr2xml.read_shaders` derived and
+        validated (866 full-parameter reference exports; texture names 99.960%) and that
+        `ydd_write` re-confirmed against raw bytes over 150 files / 341 shader groups:
+            shader group +0x10 ptr -> shader array, +0x18 u16 count   (341/341 resolve)
+            shader block  = 0x30 bytes (adjacent-offset stride 48 in 652/652 pairs)
+                +0x00 ptr -> parameter table | +0x10 u32 low byte = param count
+                +0x14 u16 = data size        | table + dsize = npar u32 name hashes
+            param entry   = 16 bytes: byte 0 is the CLASS - 0 = texture, N>0 = N float4s at +0x08
+            texture stub  = 0x50 bytes (adjacent stride 80 in 675 pairs)
+                +0x28 ptr -> name cstr (printable in 1,828/1,828) | +0x30 u16 type word
+        ⭐ THE THREE FIELDS CHECK EACH OTHER, which is why nothing here is a fitted span.
+        `fur_hood_h.yft` shader 0 at 0x007eb0: `npar 27`, `dsize 800`, table 0x0169e0.
+            27 entries x 16 B = 432 B of entry records ....... 0x0169e0 .. 0x016b8f
+            the float4 blocks the entries point at = 368 B ... 0x016b90 .. 0x016cff
+                (432 + 368 = 800 = dsize EXACTLY, so dsize is confirmed by the entries it sizes)
+            npar x 4 = 108 B of joaat name hashes at table+dsize  0x016d00 .. 0x016d6b
+        and the file's three unreached runs were 0x0169e8 (492 B), 0x016be7 (189 B) and 0x016d00
+        (108 B) - i.e. exactly that span, to the byte. ⭐ One entry carries CLASS 2 and its
+        pointer target is 32 bytes long: the next entry's target is 0x016cd0, not 0x016cc0. The
+        class byte therefore SIZES the value block, which is what makes `cls * 16` a read rather
+        than a guess.
+        ⛔ `dsize` is the field that sizes the table, so it is bounded by an INDEPENDENT quantity
+        (`npar * 16`) before it is trusted - never sized from itself.
+        """
+        s = self.res.sys
+        try:
+            sgp = struct.unpack_from('<I', s, base + 0x10)[0]
+        except struct.error:
+            return
+        buf, sg = self.res.deref(sgp, 0x40)
+        if buf is not s:
+            return                      # ordinary: a child drawable carries no shader group
+        self._put(sg, 0x40)
+        try:
+            arr = struct.unpack_from('<I', s, sg + 0x10)[0]
+            nsh = struct.unpack_from('<H', s, sg + 0x18)[0]
+        except struct.error:
+            return
+        if not (0 < nsh <= 4096):
+            return
+        self._flat(arr, nsh * 8)
+        ab, ao = self.res.deref(arr, nsh * 8)
+        if ab is not s:
+            return
+        for si in range(nsh):
+            try:
+                bp = struct.unpack_from('<I', s, ao + si * 8)[0]
+            except struct.error:
+                break
+            bb, bo = self.res.deref(bp, 0x30)
+            if bb is not s:
+                continue
+            self._put(bo, 0x30)
+            try:
+                npar = struct.unpack_from('<I', s, bo + 0x10)[0] & 0xFF
+                dsize = struct.unpack_from('<H', s, bo + 0x14)[0]
+                tp = struct.unpack_from('<I', s, bo + 0x00)[0]
+            except struct.error:
+                continue
+            if not (0 < npar <= 96 and dsize >= npar * 16):
+                continue
+            self._flat(tp, dsize + npar * 4)     # entries + the trailing name-hash array
+            tb, to = self.res.deref(tp, dsize + npar * 4)
+            if tb is not s:
+                continue
+            for pi in range(npar):
+                try:
+                    cls = s[to + pi * 16]
+                    ptr = struct.unpack_from('<I', s, to + pi * 16 + 8)[0]
+                except (IndexError, struct.error):
+                    break
+                if cls:
+                    if cls <= 64:
+                        self._flat(ptr, cls * 16)        # cls float4s of value data
+                    continue
+                if not ptr:
+                    continue                             # unbound sampler slot: nothing to read
+                sb, so = self.res.deref(ptr, STUB_RECORD)
+                if sb is not s:
+                    continue
+                self._put(so, STUB_RECORD)
+                try:
+                    self._cstr(struct.unpack_from('<I', s, so + 0x28)[0])
+                except struct.error:
+                    continue
+
     def _chase(self, tagged, depth=0):
         """Follow the REACHABLE POINTER GRAPH inside the shader/texture subtree.
 
@@ -677,10 +1041,37 @@ class Ydr:
                 self._flat(struct.unpack_from('<I', s, tp + 0x28)[0], 64)     # name string
                 w = struct.unpack_from('<H', s, tp + 0x50)[0]
                 h = struct.unpack_from('<H', s, tp + 0x52)[0]
+                pitch = struct.unpack_from('<H', s, tp + 0x56)[0]
                 mips = max(1, s[tp + 0x5D])
                 fmt = struct.unpack_from('<I', s, tp + 0x58)[0]
                 _x, blk, bpp = ytd2xml.describe_format(fmt)
-                need = ytd2xml.mipchain_bytes(w, h, mips, blk, bpp)
+                # ⭐⭐ THE ROW PITCH IS STORED (`u16 @ +0x56`) AND IT OVERRULES THE FourCC.
+                # `was:` the pixel span computed from w/h/format alone - right until a texture's
+                # storage disagrees with the format word it declares, and 18 in this lane do.
+                # MEASURED 2026-08-14, `pitch * h` against the format's own level-0 byte count:
+                #     fresh 250-file .ydr draw from the game ............ 623 / 623 agree
+                #     the 320 .ydr of the population work queue ....... 1,775 / 1,793 agree
+                # and the 18 that disagree are EXACTLY the files whose pixels this writer could
+                # not reach - SCRIPT RENDER TARGETS (`script_rt_*`, club computers, monitors,
+                # TV/laptop props). Every one declares DXT1/DXT5 while storing 4 BYTES PER PIXEL:
+                # h4_prop_h4_photo_fire_01a is 256x256 "DXT5" with pitch 1024, i.e. 262,144 B,
+                # which is the file's ENTIRE graphics segment, against the 65,536 the FourCC
+                # implies. The 4x4 "DXT1" case settles it: the same dimensions and the same FourCC
+                # appear on an ORDINARY texture in this lane with pitch 2 and on a render target
+                # with pitch 16, so the FIELD, not the format, is what separates them.
+                # ⭐ THE OVERRIDE IS ONLY TAKEN WHEN IT FACTORS: `pitch % w == 0` and the implied
+                # bytes-per-pixel is a real one, which is what makes this a READ of the row length
+                # rather than a widening. All 18 factor as exactly 4 bytes per pixel.
+                # ⛔ THE CHAIN RULE IS NOT RE-DERIVED HERE. `ytd2xml.level_sizes` is BLOCK-ROUNDED
+                # per level, and substituting a shift-based chain cost 11 files in a 250-file draw
+                # (measured: graphics 100.0000% -> 99.9996%). Only the FORMAT is overridden; the
+                # per-level rule stays the one that module measured.
+                lvl0_fmt = ytd2xml.level_sizes(w, h, mips, blk, bpp)[0]
+                if pitch and w and pitch * h != lvl0_fmt and pitch % w == 0 \
+                        and (pitch // w) in (1, 2, 4, 8, 16):
+                    need = sum(ytd2xml.level_sizes(w, h, mips, None, pitch // w))
+                else:
+                    need = ytd2xml.mipchain_bytes(w, h, mips, blk, bpp)
                 self._flat(struct.unpack_from('<I', s, tp + 0x70)[0], need)
             except Exception:
                 # an unmapped format must cost THIS texture's pixels, never the dictionary
@@ -820,20 +1211,39 @@ class Ydr:
                 self._flat(struct.unpack_from('<I', s, ib + 0x10)[0], idx_count * 2)
 
     def write(self):
+        """Lay every captured region into a zero-filled image. NOTHING IS SYNTHESISED HERE.
+
+        ⛔⛔ THIS METHOD USED TO OVERWRITE 4 BYTES IT HAD ALREADY REPRODUCED. The page-count law
+        (`ptr@0x08 +8` = `pageCount(sys) | pageCount(gfx) << 8`, derived on META 250/250 and
+        confirmed on `ynd` 259/259) was applied here as a WRITE, and on the drawable family it is
+        not always true - so the writer corrupted a byte the walk had already captured verbatim,
+        and the file scored short for a defect that has nothing to do with reachability.
+        MEASURED 2026-08-14 over the 563-file population work queue (every file the whole-game run
+        graded short): **60 files - 10 `.ydd`, 22 `.ydr`, 28 `.yft` - had NO other difference at
+        all**; their entire residual was this write. Worked examples, stored vs computed:
+            cs1_roads_wallret003slod_children.ydd    2 vs  1
+            cs3_08e_props_veg21_slod_children.ydd   40 vs 22
+            cs1_rdprops_pb_p139_slod_children.ydd   47 vs 26
+        ⭐ WHY THE LAW CANNOT HOLD IN GENERAL, and this is arithmetic rather than opinion:
+        `seg_size` is invariant under RE-TILING but `page_count` is not. 16,384 bytes is one
+        16 KB page (count 1) or two 8 KB pages (count 2) - identical size, different count. The
+        RSC7 flags in the RPF entry describe the packer's page plan; the word at `blockmap+8` is
+        the plan the resource's OWN block map records. When a file has been repacked the two
+        agree on size and disagree on count, and no function of the flags can recover the count.
+        ⇒ IT IS DATA, NOT A DERIVATION. It is read like every other byte, by the walk that
+        captures the block-map allocation - measured covered in 60/60 files of a random draw from
+        the queue, 0 uncovered bytes in the whole allocation.
+        ⚠ The derivation is still correct where a file has not been re-tiled and is still what a
+        real EXPORT must compute when it lays out fresh pages - `meta_write` keeps it. What it
+        must not do is overwrite a byte a round-trip has already reproduced.
+        ⛔ The same write is present in `ybn_write`, `ynd_write`, `ynv_write` and `ytd_write`;
+        those are other agents' files this run - REPORTED, not edited.
+        """
         si, gi = bytearray(self.nsys), bytearray(self.ngfx)
         for off, data in self.sysr:
             si[off:off + len(data)] = data
         for off, data in self.gfxr:
             gi[off:off + len(data)] = data
-        try:
-            import meta_write
-            buf, o = self.res.deref(self.res.ptr(0x08), 16)
-            if buf is not None and o + 12 <= len(si):
-                val = ((meta_write.page_count(self.sys_flags) & 0xFF)
-                       | ((meta_write.page_count(self.gfx_flags) & 0xFF) << 8))
-                si[o + 8:o + 12] = struct.pack('<I', val)
-        except Exception:
-            pass
         return bytes(si), bytes(gi)
 
     def coverage(self):

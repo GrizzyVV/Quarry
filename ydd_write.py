@@ -2,6 +2,26 @@
 
     inflated system+graphics segments -> value model -> written back -> reproduce original bytes
 
+=========================== SECOND PASS, 2026-08-14 (LATEST) ===============================
+SAMPLE (`python tools/roundtrip_coverage.py --lane ydd --limit 250`): **250/250 byte-exact,
+100.0000%** - sys 100.0000%, gfx 100.0000% (63 files carry a graphics segment).
+POPULATION WORK QUEUE (the 12 re-fetched `.ydd` the whole-game run graded short):
+**11 of 12 byte-exact, 4 residual bytes**, up from 1 of 12 / 14 bytes.
+⚠⚠ THE PREVIOUS 250/250 WAS NOT EARNED, AND THIS PASS PROVED IT RATHER THAN INHERITING IT.
+`ydr_write.write()` used to overwrite the resource page-count word with a value recomputed from
+the RSC7 flags. Removing that write dropped this lane to **243/250** - because on 7 of those 250
+files the write was reproducing a BLOCK-MAP ALLOCATION (48-224 bytes) that nothing had ever read;
+its single non-zero byte was the only thing that could ever have shown as a difference, since the
+comparison image is zero-filled. `ydr_write._pagemap` now models the block map (`16 + 8 * pages`,
+pinned by the allocation extent 266/360 and never overrun 360/360) and the 250 is earned.
+⇒ 10 of this lane's 12 queue files were failing for that same write; it is gone, not fixed.
+⛔ `_shaders` HAS MOVED to `ydr_write` - see the SUPERSEDED marker below. That is where this
+module's own docstring said it belonged, and putting it there took `.yft` from 0 to 189 byte-exact
+on the work queue in one step: the `.ydr` and `.yft` lanes had never read a shader group typed.
+The remaining 1 file is `po1_07_slod1_2_children.ydd`, 4 bytes at 0x08fff0 (`7e 86 04 3f`, one
+float) at the end of a page, not attributed.
+============================================================================================
+
 COVERAGE 2026-08-14 (LATEST, 250-file stratified draw from the game):
 **100.0000%** overall - system 100.0000%, graphics 100.0000%, **250/250 byte-EXACT**.
 Reproduce: `python tools/roundtrip_coverage.py --lane ydd --limit 250`.
@@ -137,6 +157,7 @@ class Ydd(ydr_write.Ydr):
         self._seen = set()
         self._defer = []                # `ydr_write._chase` now DEFERS - see there for why
         self.entries = []               # [(joaat, sys offset)] - the dictionary's own index
+        self._pagemap()                 # the resource BLOCK MAP - see ydr_write._pagemap
         self._dictionary()
         # ⭐ the blind walk runs once, AFTER every entry's typed walk. This is the general form of
         # the `_seen.discard` below: deferral protects EVERY typed walk, not just the entry roots.
@@ -240,7 +261,15 @@ class Ydd(ydr_write.Ydr):
         self._put(off, end - off + 1, seg)
 
     # ---------------------------------------------------------------- shader group
-    def _shaders(self, base):
+    # ⛔⛔ SUPERSEDED 2026-08-14 - THIS IS NOW `ydr_write.Ydr._shaders`, WHICH ALL THREE LANES
+    # INHERIT. PRESERVED, NOT DELETED (renamed, so `self._shaders(off)` in `_dictionary` falls
+    # through to the base class); revert by renaming back. The derivation below is unchanged and
+    # is what the base class implements - this module's own note ("⛔ THIS BELONGS IN `ydr_write`
+    # so both lanes share one implementation") was right, and moving it was worth **0 -> 189
+    # byte-exact `.yft`** on the population work queue, because `.ydr` and `.yft` had never read a
+    # shader group with a typed reader at all: `_texdict` mistook the shader POINTER ARRAY for an
+    # array descriptor and captured nothing. Nothing here changed except where it lives.
+    def _shaders_SUPERSEDED(self, base):
         """`gtaDrawable+0x10` -> grmShaderGroup -> shader blocks -> parameter table -> texture
         stubs -> their NAME strings.
 
