@@ -752,6 +752,46 @@ def read_meta(blob):
     return _Reader(blob).parse()
 
 
+class _RoundTrip(object):
+    """Adapter so META lanes are graded by the SAME command as every other lane.
+
+    `tools/roundtrip_coverage.py` expects `.coverage() -> (overall, sys, gfx_or_None)`. META is a
+    whole-file writer rather than a region model, so coverage here is a straight byte-for-byte
+    agreement ratio over the rendered file - which is exactly the measure, just computed without
+    an intermediate region map.
+
+    WHY THIS EXISTS: the ytyp/ymap figure used to be produced only by `meta_write --selftest
+    --root <corpus>`, which globbed the RETIRED type-first layout, found nothing, and printed
+    "SELFTEST PASSED". Sourcing from the GAME removes both the empty-sample trap and the
+    dependency on a corpus layout that no longer exists.
+    """
+
+    __slots__ = ('orig', 'img', 'size')
+
+    def __init__(self, blob):
+        self.orig = bytes(blob)
+        self.size = len(self.orig)
+        self.img = read_meta(self.orig)
+
+    def coverage(self):
+        out = self.img.write()
+        n = min(len(out), self.size)
+        same = sum(1 for i in range(n) if out[i] == self.orig[i])
+        return (100.0 * same / self.size if self.size else 0.0,
+                100.0 * same / self.size if self.size else 0.0,
+                None)
+
+
+def read_ytyp(src):
+    """.ytyp round-trip entry point - see _RoundTrip."""
+    return _RoundTrip(src if isinstance(src, (bytes, bytearray)) else open(src, 'rb').read())
+
+
+def read_ymap(src):
+    """.ymap round-trip entry point - see _RoundTrip."""
+    return _RoundTrip(src if isinstance(src, (bytes, bytearray)) else open(src, 'rb').read())
+
+
 def write_meta(img, **kw):
     return img.write(**kw)
 
@@ -782,11 +822,23 @@ if __name__ == "__main__":
     _random.seed(a.seed)
     rc = 0
     for kind in ("ytyp", "ymap"):
-        files = [f for f in (_glob.glob(f"{a.root}/*/{kind}/*.{kind}")
-                             + _glob.glob(f"{a.root}/*/*/{kind}/*.{kind}"))
+        # RECURSIVE, and NOT type-first. The old globs were `<root>/*/<kind>/*.<kind>`, i.e. the
+        # RETIRED type-first corpus layout. Under the pure game mirror no such path exists, so
+        # this selftest silently matched NOTHING - see the refusal below.
+        files = [f for f in _glob.glob(f"{a.root}/**/*.{kind}", recursive=True)
                  if not f.endswith(".xml")]
         if not files:
-            print(f"{kind}: no binaries under {a.root} - skipped")
+            # <<< THIS USED TO `continue`, LEAVING rc == 0, SO THE RUN PRINTED "SELFTEST PASSED"
+            # ON A SAMPLE OF ZERO. It was the cited evidence for "ytyp/ymap 250/250 exact" - a
+            # number covering 22,152 files, produced by a command that examined none of them and
+            # declared success. This vault's own law is that a probe must PRINT ITS SAMPLE SIZE
+            # and REFUSE on an empty sample; `roundtrip_coverage.py` obeys it and this did not.
+            # An empty result from an empty sample proves nothing, and must never exit 0.
+            print(f"{kind}: REFUSING - 0 binaries found under {a.root}")
+            print(f"{kind}: an empty sample cannot pass. Point --root at a tree holding .{kind}")
+            print(f"{kind}: binaries, or measure this lane from the GAME via")
+            print(f"{kind}:   python tools/roundtrip_coverage.py --lane {kind}")
+            rc = 2
             continue
         sample = _random.sample(files, min(a.selftest, len(files)))
         exact = diff = err = 0
@@ -803,6 +855,7 @@ if __name__ == "__main__":
                 err += 1
                 if err <= 3:
                     print(f"  ERROR  : {p}: {type(e).__name__}: {e}")
+        print(f"{kind}: SAMPLE SIZE {len(sample)} (of {len(files)} found)")
         print(f"{kind}: {exact}/{len(sample)} byte-identical, {diff} differ, {err} error")
         if diff or err:
             rc = 1
