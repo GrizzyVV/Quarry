@@ -252,6 +252,127 @@ this one would have "worked" exactly as the +0x130 blind fill did.
 ⚠ WHAT WOULD ACTUALLY SETTLE IT (for a later pass): the same surplus in the DRAWABLE lanes'
 embedded bounds, where the same phBound record sits inside a different container - if a container
 field states the polygon capacity there, it names the field here too.
+  ⛔ Δ THE FIFTH PASS WENT AND LOOKED. The drawable container does NOT state it, and it could not
+  have settled this anyway - the phenomenon is 84 arrays in 14,780 drawables. See below.
+
+=========================== FIFTH PASS, 2026-08-14 (LATEST) ================================
+⭐ NO BYTES CHANGED AND NO CODE CHANGED. Population identical before and after - 14,255 / 15,139
+(94.1608%), mean 99.9988%, min 99.4141%, 42,412 B unread - and a whole-population per-file diff
+over all 15,139 keys reads 0 regressions / 0 gains / 0 bytes moved. This pass is FOUR SEARCH
+SPACES CLOSED WITH THEIR DENOMINATORS, and one candidate law that its own control destroyed.
+
+⭐⭐ THE METHODOLOGICAL UPGRADE THAT MATTERS MOST - A MAGNITUDE-MATCHED DECOY.
+The fourth pass reported "`npolys + surplus` present as a u32 ANYWHERE = 150/1,054 (14.2%)" and
+called the u16 figure chance. It never MEASURED chance. `scratchpad/gap_class.py` now scores a
+DECOY - `capacity + 1`, an equally plausible allocation of identical magnitude that is definitely
+WRONG - beside the real value on the same subjects:
+        capacity as u32 anywhere .. 13.6%   DECOY capacity+1 as u32 anywhere .. 10.9%
+        capacity as u16 anywhere .. 87.4%   DECOY capacity+1 as u16 anywhere .. 87.8%
+⇒ the value search is not weakly positive, it is EXACTLY chance, and now that is a measurement
+rather than an assertion. (Denominator: 949 POLYLIKE arrays; positive control `npolys` 100%.)
+⚠ An earlier decoy in this pass, `npolys + 977`, scored 0% and looked like a triumph. It is a
+bigger, rarer number than the capacity - it scored 0 for reasons of MAGNITUDE alone. A decoy that
+is not matched in magnitude measures nothing.
+
+1. WHAT IS ACTUALLY IN THE GAP - CLASSIFIED, not described (`scratchpad/gap_class.py`, all 884
+   short files, 1,053 of the 1,054 arrays re-found by an independent walk):
+        POLYLIKE (every non-zero record's three u16 at +4 are < nverts) . 949 (90.1%)  38,039 nz B
+        OTHER (records whose vertex indices are NOT valid) .............. 96 ( 9.1%)    3,732 nz B
+        TRAILER (only the first 16 B non-zero, the rest of a huge gap zero)  8 ( 0.8%)     125 nz B
+   ⭐ "the extra records are well-formed polygons" is true of 90%, NOT of all - and the 8 TRAILER
+   arrays are the 67..1,672-record reservations: 66,944 bytes of gap carrying 125 non-zero bytes.
+   Those are allocated-and-never-written, and they are not the same phenomenon as a 1-record tail.
+
+2. SPACE: THE DRAWABLE LANES (`scratchpad/drw_cache.py` + `drw_polycap.py` + `gap_class.py`).
+   A uniform, archive-blind draw - keep iff `crc32(key) % 10 == 0` - of **14,780 drawables (8,607
+   `.ydr` + 6,173 `.yft`), 0 reader refusals**, walked with the blind chase DISABLED so every
+   boundary is a typed structure or a tagged pointer target.
+   ⛔⛔ THE FIRST RUN OF THAT PROBE FOUND 2 SUBJECTS AND WAS WORTHLESS: `ydr_write._chase`
+   captures a 0x1000-byte window at every node, so the surplus read as already covered. A probe
+   that inherits a blind walk cannot measure what the blind walk hides.
+   ⭐ THE METHOD IS CONTROLLED: the same subject rule run on `.ybn` re-finds 1,053 of the
+   independently measured 1,054 arrays before it is believed on another lane.
+        exactly-sized polygon arrays (control) ....... 6,983
+        subjects (allocation past npolys*16) ............ 84   - TRAILER 61 · POLYLIKE 13 ·
+                                                                 PTRARRAY 9 · OTHER 1
+        POLYLIKE, per-offset sweep of the bound record 0x000-0x220 for the capacity: best 1 / 13
+        POLYLIKE, capacity as u32 anywhere 30.8% vs DECOY 15.4% (n = 13)
+   ⇒ **NO CONTAINER FIELD**, and - the more useful half - THE DRAWABLE LANES COULD NEVER HAVE
+   SETTLED IT: 13 polygon-surplus arrays in 14,780 files against 949 in 884 `.ybn`. The lead was
+   sound and the data is not there.
+   ⭐ TWO STRUCTURES FOUND WHILE LOOKING, and they belong to `ydr_write`/`yft_write`, not here:
+     * 61 of 61 gaps after a TYPE-4 phBoundGeometry polygon array are a 48-byte trailer
+       `{float, u32 = 1, 40 zero bytes}` - k = 3 records, CONSTANT on all 61;
+     * 9 are arrays of TAGGED SYSTEM POINTERS immediately after the polygon array.
+     Both are currently reached only by the blind walk. REPORTED, not edited - other agents' files.
+
+3. SPACE: THE RPF ENTRY HEADER + THE RSC7 HEADER (`scratchpad/ybn5_entry_sibling.py`, 881 files /
+   1,050 arrays). A RPF7 resource entry is SIXTEEN BYTES: name offset, on-disk size u24, sector
+   offset u23 + is-resource bit, sysFlags u32, gfxFlags u32 - and the two flag words are already
+   inside the blob, because `payload()` rebuilds the RSC7 header from them.
+        capacity in an entry field ............. 0 / 1,050      CONTROL npolys ..... 0 / 1,050
+        capacity in the RSC7 header's 16 bytes .. 0 / 1,050      CONTROL npolys ..... 0 / 1,050
+   ⭐ THE CONTROL IS THE RESULT: the entry states no polygon-level count OF ANY KIND, not even the
+   one we know is real. A 16-byte per-FILE record cannot size arrays a file has 4.9 of on average.
+
+4. SPACE: THE PAGE PLAN (`scratchpad/ybn5_pageplan.py`, 884 files, 1,054 subjects, 3,187 controls).
+   THE DECODE IS CONTROLLED FIRST: the page count `sysFlags` describes equals the block map's own
+   `+0x08` byte in **884 / 884**. Then the reading "the array gets the rest of its page":
+        predicts the surplus ................ 31 / 1,054 ( 2.9%)
+        FALSE-FIRES on an exactly-sized array 3,047 / 3,187 (95.6%)
+        no array spans more than one page ... 4,337 / 4,337
+   ⇒ REFUTED by both halves at once.
+
+5. SPACE: A SIBLING FILE (same probe; 1,128 siblings read - 1,021 `.ybn` LOD variants, 103 `.ytyp`,
+   2 `.ydr`, 2 `.ycd`; 1,357 array x sibling pairs).
+        capacity present ... 62.0%    DECOY capacity+1 ... 62.8%    CONTROL npolys ... 62.0%
+        as a u32 ONLY:  capacity 0 / 1,357 · DECOY 0 / 1,357 · CONTROL npolys 0 / 1,357
+   ⇒ chance, exactly, and the u32 line says it plainly: siblings carry NO polygon count at all.
+
+6. NEW PER-OFFSET SPACES (`scratchpad/ybn5_hunt3.py`, 1,054 arrays) - the ones `ybn4_hunt2` never
+   opened: the 64 bytes AT THE ALLOCATION END (a trailer, not a prefix), the ROOT bound record
+   (hunt2 reached only the immediate parent), and the 64 bytes around the VERTEX, MATERIAL and
+   POLY-MATERIAL arrays and after the BVH NODE array - the one array already known to be sized by
+   a capacity - plus the BVH tree records.
+        POSITIVE CONTROL  bound +0x0D4 == npolys .......... 1,054 / 1,054 (100.0%)
+        MATCHED DECOY     best offset for capacity+1 ......     4 / 1,054 (  0.4%)  <- noise floor
+        capacity          best offset (bound +0x00F) ......    13 / 1,054 (  1.2%)
+        surplus k         best offset (+0x004 / +0x03C) ....   472 / 1,054 ( 44.8%)  = the known
+                          constant-1 artefact, 472 is exactly the count of surplus-1 arrays
+   ⇒ nothing anywhere clears the noise floor.
+
+⛔⛔ AND THE ONE CANDIDATE THAT LOOKED LIKE THE ANSWER, KILLED BY ITS OWN CONTROL. Worth the space
+because it is the most persuasive wrong answer this gap has produced:
+    THE LAW: the polygon array holds `pm_last + 1` records, where `pm_last` is the last non-zero
+    byte of the POLY-MATERIAL array - a different array, at a different pointer (+0x118), one
+    material byte per polygon. Not a content test on the claimed bytes; not a fill to the next
+    allocation. It first measured **956 / 1,054 (90.7%) exact agreement with the gap.**
+  ⛔ THAT 90.7% WAS CIRCULAR: the probe scanned the poly-material array only as far as `capacity`,
+    a number derived from the polygon gap, so "the last non-zero byte lands on capacity" meant no
+    more than "the byte before capacity is non-zero". Re-run with the array's own allocation end:
+        NEGATIVE CONTROL - polygon arrays whose end is ALREADY another structure, so their record
+        count is KNOWN to be npolys: the law predicts MORE on **2,924 / 3,187 (91.7%)**
+        on the subjects it OVERRUNS the next structure on 822 / 1,054 (78.0%)
+        and equals the gap-measured capacity on 196 / 1,054 (18.6%)
+    ⇒ REFUTED. It is not an independent witness; it is a scan that runs off the end of its array.
+  ⭐ THE TRANSFERABLE LESSON, and it is the same one three times now: **a probe whose measurement
+    window is derived from the thing it is measuring proves nothing.** The fix is always a control
+    on the set where the answer is already known.
+  ⚠ AND A BOUNDARY TRAP FOR ANY FUTURE GAP TOOL: `_polymat_pad` claims the poly-material array's
+    16-byte padding as a region STARTING AT `pmo + npolys`, so "the next modelled region start
+    after `pmo`" is a boundary INSIDE that very array. The first version of the control was capped
+    at `npolys` by it and reported a flawless 0% false-fire rate for a law that false-fires on 92%.
+
+⇒ THE FOURTH PASS'S CONCLUSION SURVIVES, now with the four named spaces closed and chance measured
+rather than assumed: **the polygon array's allocated size is not recorded in the `.ybn`, nor in the
+archive entry, nor in the page plan, nor in a sibling, nor in the drawable container.**
+⛔ NOT SEARCHED, so that the next agent does not have to guess what "exhausted" covered: the
+GRAPHICS segment of a drawable (searched only as "is the value anywhere", n = 84, never per-offset)
+· `.ycd`/`.ypt`/`.yld` and the other lanes with no writer · the game EXECUTABLE's own tables · any
+value that is not `capacity`, `capacity*16`, `surplus` or `surplus*16` in u8/u16/u32 · and the
+OTHER class (96 arrays, 3,732 non-zero bytes) whose gap records are NOT valid polygons and which
+nobody has yet identified.
+============================================================================================
 
 ⚠ Same scope as the other writers: inflated SYSTEM SEGMENT only. ⛔ Δ THE PAGE-COUNT RECORD AT
 `ptr@0x08 +8` IS NO LONGER COMPUTED - it is READ, as part of the block map `_pagemap` models.
