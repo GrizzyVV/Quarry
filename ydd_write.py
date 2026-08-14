@@ -2,7 +2,19 @@
 
     inflated system+graphics segments -> value model -> written back -> reproduce original bytes
 
-COVERAGE 2026-08-14, two INDEPENDENT samples (both printed their sample size; neither was empty):
+COVERAGE 2026-08-14 (LATEST, 250-file stratified draw from the game):
+**100.0000%** overall - system 100.0000%, graphics 100.0000%, **250/250 byte-EXACT**.
+Reproduce: `python tools/roundtrip_coverage.py --lane ydd --limit 250`.
+⚠ Δ was **85/250 byte-exact** at 99.99992% on that same draw. NOTHING IN THIS MODULE CAUSED THE
+GAIN and nothing in it was re-derived: the shared base class `ydr_write.Ydr` grew a `_skeleton`
+that reads the bone count from the RIGHT field (+0x5E, not +0x1A - see the SUPERSEDED marker
+below) and an `_alloc_prefix` implementing, exactly as specified and exactly as guarded, the
+prefix law this module's REMAINING GAP section said it could not implement because it "may not
+edit the shared `_flat`". This module's `_skeleton`/`_bonemap` are now marked SUPERSEDED.
+⇒ THE REMAINING GAP RECORDED BELOW IS CLOSED ON THIS SAMPLE - both bullets. It is kept as the
+record of how it was found, not as an open item.
+
+EARLIER COVERAGE, two INDEPENDENT samples (both printed their sample size; neither was empty):
   sample 1  400 files, x64g/v/q/p/e/i/l   byte-weighted sys 99.9997308%  gfx 100.0000000%
             (285 unreached bytes of 105,857,024 sys; 0 of 57,876,480 gfx)  EXACT 371/400
   sample 2  500 files, x64r/n/o/s/t/u/j/k/m + mpheist/mppatchesng/mpgunrunning
@@ -44,8 +56,11 @@ of 1,809 adjacent pairs. `ydr_write.DRAWABLE_SPAN` is 0x100, which is right for 
 (the drawable is the resource root and nothing follows at +0xD0) but over-reaches by 0x30 per
 entry here. Handled in `_dictionary` - see DRAWABLE_RECORD.
 
-REMAINING GAP (304 bytes over 900 files; 33 files short of byte-exact) - STOPPED HERE ON THE
-THREE-STRIKES RULE, and this is the record of what is left rather than a claim that it is closed:
+REMAINING GAP - ⭐ CLOSED 2026-08-14 by `ydr_write._alloc_prefix`; see the Δ note at the top.
+Preserved verbatim below because the DIAGNOSIS was right and is what made the fix possible: it
+named the structure, the guard the fix had to use, and the reason it could not be done here.
+(304 bytes over 900 files; 33 files short of byte-exact) - STOPPED THEN ON THE THREE-STRIKES
+RULE, and this was the record of what was left rather than a claim that it was closed:
   * 229 runs of ONE byte, every one at a 16-byte-aligned offset holding a small u32 followed by 12
     zero bytes (`e2 00 00 00 00..`, `46 00 00 00 00..`, `0d 00 00 00 00..`). MEASURED SHAPE: an
     array at base B is preceded by a 16-byte ALLOCATION PREFIX whose first u32 is the array's
@@ -120,8 +135,12 @@ class Ydd(ydr_write.Ydr):
         self.nsys, self.ngfx = len(res.sys), len(res.gfx)
         self.sysr, self.gfxr = [], []
         self._seen = set()
+        self._defer = []                # `ydr_write._chase` now DEFERS - see there for why
         self.entries = []               # [(joaat, sys offset)] - the dictionary's own index
         self._dictionary()
+        # ⭐ the blind walk runs once, AFTER every entry's typed walk. This is the general form of
+        # the `_seen.discard` below: deferral protects EVERY typed walk, not just the entry roots.
+        self._flush_chase()
 
     # ---------------------------------------------------------------- the container
     def _count(self, off):
@@ -304,7 +323,30 @@ class Ydd(ydr_write.Ydr):
                 self._cstr(struct.unpack_from('<I', s, so + 0x28)[0])
 
     # ---------------------------------------------------------------- crSkeletonData
-    def _skeleton(self, base):
+    # ⛔⛔ SUPERSEDED 2026-08-14 - `ydr_write.Ydr._skeleton` NOW DOES THIS, AND DOES IT BETTER.
+    # PRESERVED, NOT DELETED (renamed `_skeleton_SUPERSEDED` / `_bonemap_SUPERSEDED` so the walk
+    # falls through to the base class), because the derivation below is real evidence and the
+    # change is reversible by renaming them back.
+    # ⭐ WHY THE BASE WINS - MEASURED ON THIS LANE'S OWN 250-FILE SAMPLE, the only variable being
+    # which `_skeleton` runs:
+    #     this module's :  EXACT  85/250   mean 99.999920%   sys 99.999913%   min 99.9997%
+    #     ydr_write's   :  EXACT 250/250   mean 100.000000%  sys 100.000000%  min 100.0000%
+    # Two reasons, both structural rather than incidental:
+    #   1. THE BONE COUNT FIELD. This module reads u16 @+0x1A and cross-checks +0x5E. That is safe
+    #      on the ped lane it was measured against - every ped skeleton carries a bone-tag map, so
+    #      +0x1A is populated and the two agree (60/60 here). It is NOT the bone count: +0x1A is
+    #      the MAP's entry count, which is 0 whenever the map is absent. Measured over the 109
+    #      skeletons in the .ydr sample, +0x1A is ZERO in 84 and equal to +0x5E in 25, and never
+    #      larger. `ydr_write` reads +0x5E, which sizes all three arrays into the segment 109/109.
+    #   2. THE 16-BYTE ALLOCATION PREFIX. The gap this module documented as "229 runs of ONE byte
+    #      ... any fix must be GUARDED on `u32 @ B-16 == the count we already derived` ...
+    #      Generalising it needs a prefix-aware array helper in the SHARED `_flat`, which this
+    #      module may not edit - hence not done" is now DONE, in the shared class, exactly as
+    #      specified and exactly as guarded: `ydr_write._alloc_prefix`. That closes those runs,
+    #      which is why the byte-exact count moves 85 -> 250 while the byte figure barely moves -
+    #      those files were ONE BYTE short.
+    # ⇒ The REMAINING GAP section in this module's header docstring is now closed on this sample.
+    def _skeleton_SUPERSEDED(self, base):
         """The drawable's SKELETON at `gtaDrawable+0x18`, whose big per-bone arrays nothing
         modelled. `ydr_write._drawable` captures 0x80 of the skeleton HEADER only; the arrays it
         points at are reached by the generic `_chase`, which captures its swept 0x1000 window and
@@ -377,9 +419,9 @@ class Ydd(ydr_write.Ydr):
             self._flat(struct.unpack_from('<I', s, so + 0x38)[0], n * 2)
         if 0 < nchild <= 0x10000:
             self._flat(struct.unpack_from('<I', s, so + 0x40)[0], nchild * 2)
-        self._bonemap(so)
+        self._bonemap_SUPERSEDED(so)   # kept consistent so the preserved pair still reverses cleanly
 
-    def _bonemap(self, so):
+    def _bonemap_SUPERSEDED(self, so):
         """The skeleton's BONE-TAG MAP - an `atMap` whose nodes are the last residual in the lane.
 
         LAYOUT, READ OFF THE BYTES (teef_000_u.ydd, skeleton at sys+0x011ca0):

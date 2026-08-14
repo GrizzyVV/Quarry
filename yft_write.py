@@ -1,9 +1,19 @@
 """yft_write - ROUND-TRIP WRITER for .yft fragments (RSC7 v162 / v160).
 
-COVERAGE 2026-08-14: **99.9990%** overall - system 99.9990%, graphics 100.00% -
-**235 / 330 files byte-exact** over a STRATIFIED sample (120 vehicles / 155 props / 55 peds
-from x64e, x64c, x64f, x64g, x64a, x64d). Remaining defect: the gap map at the end of this
-docstring.
+COVERAGE 2026-08-14 (LATEST, 250-file stratified draw from the game via the shared harness):
+**100.0000%** overall - system 100.0000%, graphics 100.0000%, **247 / 250 byte-exact**.
+Reproduce: `python tools/roundtrip_coverage.py --lane yft --limit 250`.
+⚠ Δ was 234/250 byte-exact on the same draw. Both gains came from the SHARED base class, not
+from this module:
+  * `ydr_write._octant_map` - phBound +0xC0 counts[8] / +0xC8 pointer table[8]. That is gap
+    shape (1) below, which this docstring records as the OCTANT MAP hypothesis and marks NOT
+    CLOSED "because the count field that sizes them is not pinned". IT IS NOW PINNED, and the
+    structure validates its own extent: `ptr[k+1] - ptr[k] == counts[k] * 4` for all k.
+  * `ydr_write._skeleton` + `_alloc_prefix` - supersedes this module's `_skeleton` (see the
+    SUPERSEDED marker below; measured 236 -> 247 byte-exact, and running BOTH scores the same as
+    the base alone, so this module's version reached nothing extra).
+EARLIER: 99.9990% / 235 of 330 byte-exact over a stratified sample (120 vehicles / 155 props /
+55 peds from x64e, x64c, x64f, x64g, x64a, x64d).
 
     inflated system+graphics segments -> value model -> written back -> reproduce the bytes
 
@@ -60,7 +70,11 @@ exporter's oracle set; none is invented here. See that module for the per-offset
       SELF-DESCRIBING, so its shatter-map rasters are captured by their own stored length and
       never by filling to the next region.
 
-THE REMAINING GAP (0.0010% of system bytes, VEHICLES ONLY - props read 99.9999%, peds 100%).
+THE REMAINING GAP AS IT STOOD BEFORE 2026-08-14 - ⭐ SHAPE (1) IS NOW CLOSED (the octant map;
+see the Δ note at the top). Preserved because the diagnosis is what made the fix findable: it
+named the structure and said precisely what was missing (the sizing field), and the fix supplied
+exactly that. Shape (2) is not yet attributed.
+(0.0010% of system bytes, VEHICLES ONLY - props read 99.9999%, peds 100%).
 Worst file `barracks_hi` 99.939% (4,358 B unreached of 5,251,072). Two shapes:
   1. u32 ARRAYS OF SMALL INTEGERS (values 1..13), runs of ~170-380 B, many ending just short
      of a 0x1000 page boundary. e.g. benson 0x001AFE30 len 377
@@ -321,7 +335,21 @@ class Yft(ydr_write.Ydr):
             self._chase(self._p(base, q))
         self._drawable(base)
 
-    def _skeleton(self, base):
+    # ⛔⛔ SUPERSEDED 2026-08-14 - `ydr_write.Ydr._skeleton` now covers this, and covers more.
+    # PRESERVED, NOT DELETED (renamed, so the walk falls through to the base class); revert by
+    # renaming back. The derivation in the module docstring above still stands - the base class
+    # implements the SAME layout, including this module's own correction that the bone count is
+    # +0x5E and not +0x1A. What it adds is `_alloc_prefix`: the 16-byte allocation prefix in front
+    # of the bone array, claimed ONLY when `u32 @ B-16` equals the count already derived from the
+    # header (measured 109/109 on the .ydr sample, and FALSE 109/109 for +0x28/+0x30/+0x38, so it
+    # is applied to the one slot that earned it).
+    # ⭐ MEASURED ON THIS LANE'S 250-FILE SAMPLE, the only variable being which `_skeleton` runs:
+    #     this module's :  EXACT 236/250   mean 99.999983%   sys 99.999961%
+    #     ydr_write's   :  EXACT 247/250   mean 99.999992%   sys 99.999978%
+    #     BOTH together :  EXACT 247/250   - identical to the base alone, i.e. this version
+    #                      contributes NOTHING the base does not already reach. That control is
+    #                      why this is a removal and not a preference.
+    def _skeleton_SUPERSEDED(self, base):
         """crSkeletonData @ drawable+0x18 - see the module docstring for the derivation. Every
         count comes from the HEADER, never from the array being sized."""
         s = self.res.sys
