@@ -2,7 +2,31 @@
 (`ydd_write` and `yft_write` subclass this class, so every change here pays or breaks THREE
 lanes - always re-measure all three).
 
-=========================== THIRD PASS, 2026-08-14 (LATEST) ================================
+=========================== FOURTH PASS, 2026-08-15 (LATEST) ===============================
+⭐⭐⭐ ONE CHANGE HERE, AND IT IS A REACHABILITY FIX, NOT AN EXTENT CLAIM: `_texdict` now reads
+`pgDictionary+0x20`, the KEY ARRAY - `count` joaat name hashes, the layout `ytd_write` has
+documented since the texture lane was built. This walker read the count at +0x28 and the value
+array at +0x30 and never followed +0x20.
+  * WHAT NAMED IT: `po1_07_slod1_2_children.ydd` was short by FOUR BYTES and exactly ONE tagged
+    pointer in the whole segment targeted them - at +0x20 of a record this method already claims.
+    ⭐ *Before sizing a gap, ask who points at it.* That rail turned four unexplained bytes into a
+    named structure in one step, after the same bytes had been carried as "slack" for a session.
+  * HOW IT IS PINNED - a CONTENT clause, not an extent: over the 14,780-file uniform whole-game
+    draw, 4,724 embedded dictionaries carry a tagged +0x20, and the u32s there EQUAL
+    `joaat(name)` of the textures the +0x30 array points at, in order - **4,711 matched, 0
+    disagreed**, 4,724/4,724 strictly ascending, and `count * 4` fits the room 4,724/4,724.
+  * ⚠ IT MOSTLY BUYS EVIDENCE, NOT COUNTS, AND THAT IS THE POINT: with `_chase` disabled, 3,634
+    of the 4,724 (76.9%) were UNCOVERED and every one holds non-zero bytes - the blind walk's
+    unpinned 0x1000 window was paying for them.
+POPULATION AFTER (`--out output/_z10_yddpop` / `_z6_yftpop`; whole-population per-file diff
+against `output/_dq6_pop` via `scratchpad/dq6_diff.py`):
+    ydd  23,080 -> **23,081 / 23,081 = 100.0000%**  0 REGRESSIONS, 1 gain, -4 B
+    yft  61,428 -> **61,429 / 61,430**              0 REGRESSIONS, 1 gain, -615,750 B
+    ydr  8,607-file uniform whole-game slice: 8,607/8,607 exact both sides, **0 REGRESSIONS**
+    (`scratchpad/z9_drwgrade.py`, BEFORE run against the writers extracted from HEAD)
+============================================================================================
+
+=========================== THIRD PASS, 2026-08-14 =========================================
 ⭐⭐ THE SURPLUS POLYGON RECORDS ARE THE MESH'S OWN DE-DUPLICATED TRIANGLES - the `.ybn` rule,
 PORTED. The second pass (below) left "~45 files short by 1-5 POLYGON RECORDS" and ruled the class
 underivable, because it was asking for a LENGTH. It is not a length question: each surplus record
@@ -1369,6 +1393,35 @@ class Ydr:
             return
         if not count or count > 4096:
             return
+        # ⭐⭐⭐ `pgDictionary+0x20` - THE KEY ARRAY, `count` joaat NAME HASHES (2026-08-15).
+        # This walk read +0x28 (the count) and +0x30 (the value array) and never read +0x20, so
+        # every embedded dictionary's key array was left to the blind walk's 0x1000 window.
+        # ⛔ IT WAS NOT A NEW STRUCTURE - `ytd_write` has documented this exact layout since the
+        # texture lane was built, because a `.ytd` ROOT *is* a pgDictionary: "+0x20 hash array
+        # ptr -> count * 4 (u32 joaat(name) per texture, ASCENDING)". The sibling module had the
+        # answer; this one had the pointer and never followed it.
+        # ⭐ HOW `po1_07_slod1_2_children.ydd` NAMED IT: the file was short by FOUR BYTES and
+        # exactly ONE tagged pointer in the segment targeted them - at +0x20 of a 0x40-byte
+        # record this method already claims. Ask who points at a gap before sizing it.
+        #
+        # ⭐⭐ THE CLAUSE THAT CAN REFUSE, and the reason this is not an extent guess. Measured
+        # over the 14,780-file uniform whole-game draw (`scratchpad/z7_dicthash.py`), 4,724
+        # embedded dictionaries with a tagged +0x20:
+        #     `count * 4` fits the room to the next modelled byte ....... 4,724 / 4,724 (100%)
+        #     the u32s EQUAL joaat(name) of the textures the +0x30 array
+        #     points at, in order, name for name ....................... **4,711 matched**
+        #     ... DISAGREED .............................................. **0**
+        #     strictly ascending (the weaker ordering law) .............. 4,724 / 4,724
+        # A wrong offset or a wrong count yields numbers that are not those hashes, so the span
+        # is pinned by CONTENT and not by the distance to the next thing.
+        # ⚠ AND IT WAS HIDING BEHIND THE BLIND WALK: with `_chase` disabled, 3,634 of the 4,724
+        # (76.9%) were UNCOVERED and every one of them holds non-zero bytes. They were being paid
+        # for by an unpinned 0x1000 capture - which is exactly the claim-that-cannot-fail this
+        # measure exists to catch, and why the byte-exact count barely moves while the evidence
+        # does. `_putn` refuses on overrun rather than clamping, since the span is count-derived.
+        _bk, khs, kseg = self._res(struct.unpack_from('<I', s, d + 0x20)[0], count * 4)
+        if khs is not None and kseg == 'sys':
+            self._putn(khs, count * 4)
         self._flat(arr_ptr, count * 8)
         _b3, arr, aseg = self._res(arr_ptr, count * 8)
         if arr is None or aseg != 'sys':

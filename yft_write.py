@@ -1,6 +1,27 @@
 """yft_write - ROUND-TRIP WRITER for .yft fragments (RSC7 v162 / v160).
 
-=========================== THIRD PASS, 2026-08-14 (LATEST) ================================
+=========================== FOURTH PASS, 2026-08-15 (LATEST) ===============================
+POPULATION, EVERY ONE OF THE 61,430 FILES (`tools/roundtrip_population_all.py --run --lanes yft
+--out output/_z6_yftpop`): **61,429 / 61,430 byte-exact = 99.9984%**, was 61,428. Whole-population
+per-file diff against `output/_dq6_pop` (`scratchpad/dq6_diff.py`): **0 REGRESSIONS**, 1 gain,
+net **-615,750 bytes** - the single largest residual in the lane's history, gone.
+⭐ THE GAIN IS `xm_prop_auto_salvage_stromberg.yft`, and the change is `_drawable_array`'s GUARDED
+EXTRA ENTRY - see that method for the complete 61,430-file census that pinned it (the predicate
+fires on 1 of the game's 352 drawable tables, and on 0 of 352 at the decoy index).
+⏭ ONE FILE LEFT: `barracks_hi.yft`, 2,696 B. Characterised under `_drawable_array`'s neighbour
+note and in the session report - a 3,024-byte float run at 0x44f360 that NOTHING in the file
+points at (0 tagged pointers in 5,251,072 bytes of system segment), whose bytes also occur in
+`barracks.yft`, its own LOD twin in the same archive, running 7,120 bytes and landing inside a
+region `_bound` claims there. Same asset, two detail builds; not slack we can size, and not an
+arena - a structure this file gives no route to.
+⚠ THAT POPULATION RUN PREDATES `ydr_write._texdict`'s key-array claim, which landed the same
+session and which this lane also inherits. That claim is purely ADDITIVE (it copies original bytes
+at an offset the file's own count and hashes pin), so the byte-exact count cannot fall; measured
+per-file on the 6,173-`yft` slice of the 14,780-file uniform whole-game draw
+(`scratchpad/z9_drwgrade.py`, before = the writers at HEAD): **0 regressions**.
+============================================================================================
+
+=========================== THIRD PASS, 2026-08-14 =========================================
 POPULATION, EVERY ONE OF THE 61,430 FILES (`--out output/_dq6_pop`): **61,428 / 61,430 byte-exact
 = 99.9967%**, was 61,422. SAMPLE: **250 / 250**, was 249/250. Whole-population per-file diff over
 all 171,201 `ydr`+`ydd`+`yft` keys: **0 REGRESSIONS** (`scratchpad/dq6_diff.py`).
@@ -482,10 +503,88 @@ class Yft(ydr_write.Ydr):
         if 0 < tn <= 4096:
             self._flat(self._p(jo, 0x18), tn * 0x40)
 
+    def _entry_resolves(self, tab, i):
+        """Does table entry `i` resolve to a drawable whose OWN stored fields describe a mesh?
+
+        Every clause is a field the file states about itself, chained: entry pointer -> drawable
+        -> LOD group -> model array -> geometry array -> vertex buffer, and the buffer's stride
+        and count must fit inside the segment its data pointer lands in. A wrong pointer fails at
+        one of those links; this cannot be talked into passing by an offset guess.
+        """
+        s = self.res.sys
+        base = self._deref(self._p(tab, i * 0x20), 0x40)
+        if base is None or base + ydr_write.DRAWABLE_SPAN > self.nsys:
+            return 0
+        best = 0
+        for slot in ydr_write.LOD_SLOTS:
+            _b, mh, seg = self._res(self._p(base, slot), 0x10)
+            if mh is None or seg != 'sys':
+                continue
+            marr, nmod = _u32(s, mh), _u16(s, mh + 0x08)
+            if not (0 < nmod <= 4096):
+                continue
+            _b, ma, seg = self._res(marr, nmod * 8)
+            if ma is None or seg != 'sys':
+                continue
+            for mi in range(nmod):
+                _b, mo, seg = self._res(_u32(s, ma + mi * 8), 0x30)
+                if mo is None or seg != 'sys':
+                    continue
+                garr, ngeo = _u32(s, mo + 0x08), _u16(s, mo + 0x10)
+                if not (0 < ngeo <= 4096):
+                    continue
+                _b, ga, seg = self._res(garr, ngeo * 8)
+                if ga is None or seg != 'sys':
+                    continue
+                for gi in range(ngeo):
+                    _b, g, seg = self._res(_u32(s, ga + gi * 8), 0x80)
+                    if g is None or seg != 'sys':
+                        continue
+                    bv, vb, sgv = self._res(_u32(s, g + 0x18), 0x40)
+                    if vb is None:
+                        continue
+                    stride = struct.unpack_from('<I', bv, vb + 0x08)[0]
+                    cnt = struct.unpack_from('<I', bv, vb + 0x18)[0]
+                    bd, vo, _sd = self._res(struct.unpack_from('<I', bv, vb + 0x10)[0], 1)
+                    if bd is None or not (0 < stride <= 256 and 0 < cnt <= 1 << 22):
+                        continue
+                    if cnt * stride <= len(bd) - vo:
+                        best = max(best, cnt * stride)
+        return best
+
     def _drawable_array(self):
         """fragroot+0x38 -> a table of EXTRA drawables (damage states). Entry stride 0x20:
         u64 drawable ptr, name INLINE at entry+0x10. The TOTAL drawable count is a u8 at
-        deref(fragroot+0xA8)+0x10, so the extras count is total-1."""
+        deref(fragroot+0xA8)+0x10, so the extras count is total-1.
+
+        ⭐⭐⭐ THE GUARDED EXTRA ENTRY (2026-08-15), AND WHY IT IS NOT A COUNT REINTERPRETATION.
+        `xm_prop_auto_salvage_stromberg.yft` reads `total = 1`, so `n = 0` and this walk models
+        NOTHING - yet entry 0 holds a real drawable whose vertex buffer (stride 52 x count 5,038
+        = 261,976 B) is the largest of that file's 615,750 unreproduced bytes, TO THE BYTE.
+        ⛔ THE PREVIOUS PASS DECLINED TO ACT, AND ITS REASON WAS RIGHT AT THE TIME: it had six
+        table-carrying files in a 231-file work queue, and *"a six-file sample cannot carry a
+        change to a shared count reading"*. So the count reading is NOT changed. Entry `n` is
+        modelled only when it RESOLVES - `_entry_resolves` above - and that predicate was scored
+        on the whole game before it shipped.
+
+        ⭐⭐ THE COMPLETE CENSUS, not a draw (`scratchpad/z2_pop2.py`, all 61,430 `.yft` read,
+        0 refusals). 352 fragments carry a drawable table. Classifying the 0x20 bytes at index
+        `n = total-1`, the first entry the count reading does not model:
+              class                at index n     at index n+1 (the decoy)
+              ZERO ...............     47              75
+              NOPTR ..............    242             218
+              GARBAGE ............     62              59
+              DRAWABLE ...........  **1**           **0**
+              TOTAL ..............    352             352
+        **The predicate fires on 1 table in the game, and that one is the subject.** An unguarded
+        "read one more entry" would have claimed 351 wrong ones; every one of them could have been
+        accepted and was refused. The decoy column is the other half of it: at index n+1 nothing
+        resolves, so this is not "there is always one more".
+        ⚠ THE CENSUS IS DELIBERATELY CONSERVATIVE - it has no coverage map, so an entry whose
+        bytes another structure already owns is still scored on its content. That can only ADD to
+        the DRAWABLE count, so 1 of 352 is an UPPER BOUND on the false-fire rate.
+        ⭐ `total = 1` WITH a table occurs on exactly ONE file game-wide; the other 351 read 2..27.
+        """
         s = self.res.sys
         tab_p = self._p(0, 0x38)
         dsc = self._deref(self._p(0, 0xA8), 0x14)
@@ -495,11 +594,15 @@ class Yft(ydr_write.Ydr):
             total = s[dsc + 0x10]
         except IndexError:
             return
-        if total <= 1 or total > 256:
+        if total < 1 or total > 256:
             return
         n = total - 1
-        tab = self._deref(tab_p, n * 0x20)
+        tab = self._deref(tab_p, max(n, 1) * 0x20)
         if tab is None:
+            return
+        if self._entry_resolves(tab, n):
+            n += 1
+        if n <= 0:
             return
         self._put(tab, n * 0x20)
         for i in range(n):

@@ -394,6 +394,22 @@ Three changes, each measured on its own at population (`scratchpad/ybn3_grade.py
   3. `_polytail` extended to the non-triangle primitives . 14,876 -> 15,132  -10,697 B  0 regressions
      (of which the corrected `_PRIM_SLOTS` layout is -3,531 B on its own)
 
+=========================== SEVENTH PASS, 2026-08-15 (LATEST) ==============================
+⭐⭐⭐ **THE LANE IS CLOSED AT POPULATION: 15,139 / 15,139 BYTE-EXACT (100.0000%).**
+    BEFORE 15,132 / 15,139, 116 B unread in 7 files
+    AFTER  **15,139 / 15,139**, **0 B unread**
+    whole-population per-file diff, all 15,139 keys (`scratchpad/dq6_diff.py --before
+    output/_ybn6_pop2 --after output/_z1_ybnpop`): **0 REGRESSIONS**, 7 gains, 7 better,
+    0 worse, net **-116 bytes**.
+ONE change: `_polytail` clause 6 now also accepts a record whose f32 at +0x00 is exactly 0.0 -
+a DEGENERATE triangle, which a mesh cleaner deletes rather than de-duplicates, so it has no twin
+for the original clause to pin it with. The sixth pass measured that clause and DECLINED it on a
+seven-subject sample, correctly. What decided it was the DENOMINATOR, which had never been taken:
+**0 of the game's 104,624,274 counted, live triangles has an area of exactly 0.0**, and at the
+polygon array's own end - the only site the rule is evaluated at - the clause adds **0 false
+fires in 55,719 control positions**. Full scoring under `_polytail`; reproduce with
+`scratchpad/z1_area.py --report`.
+
 ⭐⭐⭐ THE MEASUREMENT THAT TURNED IT - A BASELINE, NOT A DESCRIPTION. "The extras are real
 triangles of the same mesh" had been the working description for four passes and was never scored
 against how often a COUNTED triangle repeats another counted triangle's vertex triple. Over all
@@ -661,7 +677,45 @@ class Ybn:
             3. its type nibble (`byte0 & 7`) is 0, i.e. a triangle
             4. its three vertex indices (low 15 bits) are all below `nverts`
             5. all three NEIGHBOUR indices are 0xFFFF - it is outside the adjacency graph
-            6. its vertex triple, sorted, is one THIS bound's counted triangles carry
+            6. its vertex triple, sorted, is one THIS bound's counted triangles carry, **OR** the
+               f32 at +0x00 reads exactly 0.0 - see THE DEGENERATE CLAUSE below
+
+        ⭐⭐⭐ THE DEGENERATE CLAUSE (2026-08-15), AND THE DENOMINATOR THAT DECIDED IT.
+        A de-duplication pass leaves a TWIN behind and clause 6 pins it. A mesh cleaner does not
+        de-duplicate a DEGENERATE triangle - it deletes it outright - so a dropped degenerate has
+        no twin and clause 6 cannot reach it. Seven records in the whole game were left unclaimed
+        for exactly that reason, every one with an area field of 0.0.
+        ⛔ THE PREVIOUS PASS DECLINED THIS CLAUSE, AND IT WAS RIGHT TO: it had SEVEN subjects, and
+        a clause justified by seven subjects is this lane's own coincidence generator. What was
+        never measured was the DENOMINATOR. Measured now over the whole population
+        (`scratchpad/z1_area.py`, all 15,139 files / 56,773 geometry bounds):
+
+            COUNTED, LIVE triangle records ...................... 104,624,274
+            ... whose f32 at +0x00 reads exactly 0.0 ............ **0  (0.000000%)**
+            ... with all three neighbours 0xFFFF ............... 190,580 (0.1822%)
+            ... BOTH, i.e. the full clause ...................... **0  (0.000000%)**
+            SURPLUS records past `npolys*16`, triangles ......... 1,988
+            ... whose f32 at +0x00 reads exactly 0.0 ............ 7 (0.3521%)
+
+        ⇒ **A LIVE TRIANGLE IN THIS GAME IS NEVER DEGENERATE - 0 in 104.6 million.** The clause is
+        not "bytes that look plausible"; it is a shape the counted array never takes, and the
+        denominator is large enough to say so. (The f32 at +0x00 carries the primitive type in its
+        low three bits, so "exactly 0.0" also forces the type nibble to 0 - clause 3 for free.)
+
+        ⭐ AND IT COSTS NOTHING AT THE SITE IT IS APPLIED. Same run, 242,661 control positions
+        where the following bytes are known to belong to another structure:
+            site (the rule only ever runs here)     positions   SHIPPED   with the clause
+            end of an EXACTLY-SIZED polygon array      55,719    40           **40**  (+0)
+            end of the vertex array                    47,123   199            229
+            end of the material array                  34,030    77             77
+            end of the poly-material allocation        49,944    90             90
+            end of the bound record                    55,845   255            255
+            TOTAL                                     242,661   661 (0.2724%)  691 (0.2848%)
+        **At the polygon array's own end - the only site the rule is ever evaluated at - the
+        clause adds ZERO false fires in 55,719 positions.** The +30 are at four sites the rule
+        never visits; they are the generalisation control, and they are reported rather than
+        hidden. And the greedy run still leaves every allocation alone: OVERRUN 2 before, 2 after
+        (the same two, both refused by clause 1 in the shipped walk) - the clause adds none.
 
         ⭐⭐ HOW IT IS PINNED - THREE CONTROLS, because this lane has twice paid for a claim that
         could not fail (`+0x130`, the page-count write). Reproduce: `scratchpad/ybn6_rule.py`,
@@ -747,17 +801,21 @@ class Ybn:
                         break
                     if nb != (0xFFFF, 0xFFFF, 0xFFFF):                 # 5
                         break
-                    if triples is None:
-                        triples = set()
-                        for i in range(npolys):
-                            o = po + i * 16
-                            if s[o] & 7:
-                                continue
-                            w = struct.unpack_from('<3H', s, o + 4)
-                            triples.add(tuple(sorted((w[0] & 0x7FFF, w[1] & 0x7FFF,
-                                                      w[2] & 0x7FFF))))
-                    if tuple(sorted(v)) not in triples:                # 6
-                        break
+                    # 6a - DEGENERATE: the f32 at +0x00 is exactly 0.0, a shape 0 of the
+                    # 104,624,274 counted triangles in the game takes. Checked before the
+                    # counted-triple set is built because it is O(1) and the set is O(npolys).
+                    if struct.unpack_from('<f', s, a)[0] != 0.0:
+                        if triples is None:
+                            triples = set()
+                            for i in range(npolys):
+                                o = po + i * 16
+                                if s[o] & 7:
+                                    continue
+                                w = struct.unpack_from('<3H', s, o + 4)
+                                triples.add(tuple(sorted((w[0] & 0x7FFF, w[1] & 0x7FFF,
+                                                          w[2] & 0x7FFF))))
+                        if tuple(sorted(v)) not in triples:            # 6b - TWIN
+                            break
                 else:
                     if recs is None:
                         recs = set(bytes(s[po + i * 16:po + i * 16 + 16])
