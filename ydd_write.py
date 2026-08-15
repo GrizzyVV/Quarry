@@ -27,7 +27,21 @@ The remaining 1 file is `po1_07_slod1_2_children.ydd`, 4 bytes at 0x08fff0 (`7e 
 float) at the end of a page, not attributed.
 ============================================================================================
 
-COVERAGE 2026-08-14 (LATEST, 250-file stratified draw from the game):
+POPULATION 2026-08-14 (LATEST, EVERY ONE OF THE 23,081 FILES, `--out output/_dq6_pop`):
+**23,080 / 23,081 byte-exact = 99.9957%**, mean coverage 100.0000%, 0 refusals - UNCHANGED by the
+third pass, and that is a measured result rather than an omission. `ydr_write._polytail` and its
+poly-material tail pay `.ydr` (+33) and `.yft` (+6) and this lane **+0**: over the whole-population
+per-file diff, all 23,081 keys, **0 gained, 0 REGRESSED, 0 better, 0 worse**
+(`scratchpad/dq6_diff.py --before output/_dq_pop5 --after output/_dq6_pop`). That diff is the
+reason a base-class change can ship: this lane inherits every line of it and had to be shown to
+be unharmed, not assumed to be.
+⏭ THE ONE FILE: `po1_07_slod1_2_children.ydd`, **4 bytes** - a single float in the 28-byte gap
+between a vertex buffer's end and the 0x1000 page boundary. No tagged pointer targets it, it
+extends no record, and its content has no twin anywhere in the file. It is non-zero bytes in
+ALLOCATION SLACK; claiming it would be a fill from one region's end to the next region's start.
+See `ydr_write` THIRD PASS for the class and `scratchpad/dq6_slack.py` to reproduce.
+
+COVERAGE 2026-08-14 (250-file stratified draw from the game):
 **100.0000%** overall - system 100.0000%, graphics 100.0000%, **250/250 byte-EXACT**.
 Reproduce: `python tools/roundtrip_coverage.py --lane ydd --limit 250`.
 ⚠ Δ was **85/250 byte-exact** at 99.99992% on that same draw. NOTHING IN THIS MODULE CAUSED THE
@@ -161,9 +175,14 @@ class Ydd(ydr_write.Ydr):
         self.sysr, self.gfxr = [], []
         self._seen = set()
         self._defer = []                # `ydr_write._chase` now DEFERS - see there for why
+        self._bounds = []               # [(off, btype, fld)] - see ydr_write._polytail
+        self._polyclaim = {}            # see ydr_write._polytail
         self.entries = []               # [(joaat, sys offset)] - the dictionary's own index
         self._pagemap()                 # the resource BLOCK MAP - see ydr_write._pagemap
         self._dictionary()
+        # ⭐ the polygon tail, BEFORE the blind walk - its first clause must mean "another
+        # MODELLED structure", and a 0x1000-byte chase window is not one. See ydr_write.
+        self._polytail()
         # ⭐ the blind walk runs once, AFTER every entry's typed walk. This is the general form of
         # the `_seen.discard` below: deferral protects EVERY typed walk, not just the entry roots.
         self._flush_chase()

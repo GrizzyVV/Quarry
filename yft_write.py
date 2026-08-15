@@ -1,6 +1,32 @@
 """yft_write - ROUND-TRIP WRITER for .yft fragments (RSC7 v162 / v160).
 
-=========================== SECOND PASS, 2026-08-14 (LATEST) ===============================
+=========================== THIRD PASS, 2026-08-14 (LATEST) ================================
+POPULATION, EVERY ONE OF THE 61,430 FILES (`--out output/_dq6_pop`): **61,428 / 61,430 byte-exact
+= 99.9967%**, was 61,422. SAMPLE: **250 / 250**, was 249/250. Whole-population per-file diff over
+all 171,201 `ydr`+`ydd`+`yft` keys: **0 REGRESSIONS** (`scratchpad/dq6_diff.py`).
+The six gains are `kamacho` x2, `scarab3_hi`, `airbus_hi`, `bus_hi`, `eurosx32_hi` - the
+"6 vehicles short by 13 bytes, ONE polygon record of trailing slack" the pass below ruled
+underivable. It was not a length question: see `ydr_write._polytail`, ported from `ybn_write`.
+
+⭐⭐ TWO STRUCTURES OF THIS LANE'S OWN ARE NOW MODELLED, AND THEY BUY **ZERO** BYTE-EXACT FILES.
+That is the point of them. Both were already "covered" by `_chase`'s unpinned 0x1000-byte
+windows, and **a claim that cannot fail is exactly the defect the round-trip measure exists to
+catch** - the image copies the ORIGINAL bytes at whatever offset is claimed.
+  * `_child +0xB0` -> a FIXED 48-byte record. 8,890 live uncovered targets in a uniform mod-40
+    draw of the whole game; the room to the next structure is 48 B on 8,886 (99.955%), bytes
+    +0x08..+0x30 are zero on 8,890/8,890 and `u32 @+0x04 == 1` on 8,890/8,890.
+  * `_lod_phys +0xC8` -> a SECOND PER-GROUP POINTER ARRAY, `ng * 8`. 5,923 arrays; `ceil(ng*8/16)
+    *16` equals the room on 99.88% while K=32 and K=64 overrun on 96.6% and 98.3%; every one of
+    the 12,030 entries is a tagged system pointer with a zero high word (100.00%).
+⛔ HOW THEY WERE FOUND, because the method transfers and staring at the record did not: the
+handover called these "a type-4 48-byte trailer after the polygon array" and "tagged-pointer
+arrays after the polygon array". `scratchpad/dq6_who.py` asked instead **which unmodelled gaps
+are POINTED AT** - 72 of 72 were - and `dq6_owner.py` traced each pointer back to the capture
+that already owned the bytes holding it, which named these two slots outright. A gap that begins
+where another array ends is not part of that array.
+============================================================================================
+
+=========================== SECOND PASS, 2026-08-14 ========================================
 POPULATION, **EVERY ONE OF THE 61,430 FILES** (`tools/roundtrip_population_all.py --run --lanes
 ydr,ydd,yft --out output/_dq_pop2`, then `--report`): **61,422 / 61,430 byte-exact = 99.9870%**,
 mean coverage **99.9997%** (min 83.2221%), sys 99.9996%, gfx 100.0000% (16,972 carry one),
@@ -155,6 +181,7 @@ LODG_SPAN = 0x30           # fragPhysicsLODGroup header
 LOD_SPAN = 0x130           # fragPhysicsLOD  (+0x11E child count is the last field read)
 GROUP_SPAN = 0xB0          # fragGroup (name inline @+0x80, last float @+0xA8)
 CHILD_SPAN = 0xC0          # fragTypeChild (last pointer read is +0xB0)
+CHILD_EVENTSET_SPAN = 48   # fragTypeChild +0xB0 -> a FIXED 48-byte record; see `_child`
 ARCH_SPAN = 0xB0           # phArchetypeDamp
 ARTB_SPAN = 0xA0           # articulated body struct (ItemFlags[22] ends at +0xA0)
 JOINT_SPAN = 0xF0          # one articulated joint item
@@ -206,6 +233,8 @@ class Yft(ydr_write.Ydr):
         self.sysr, self.gfxr = [], []
         self._seen = set()
         self._defer = []            # see _chase - the blind walk runs LAST, never first
+        self._bounds = []           # [(off, btype, fld)] - see ydr_write._polytail
+        self._polyclaim = {}        # see ydr_write._polytail
         self._pagemap()             # the resource BLOCK MAP - see ydr_write._pagemap
         self._frag()
 
@@ -358,6 +387,9 @@ class Yft(ydr_write.Ydr):
             if q + 4 > self.nsys:
                 break
             self._chase(self._p(0, q))
+        # ⭐ the polygon tail runs on the TYPED coverage only - before the deferred blind walk
+        # is flushed, so a 0x1000-byte window cannot pre-empt a pinned claim. See ydr_write.
+        self._polytail()
         self._flush_chase()
 
     def _fragdrawable(self, base):
@@ -576,6 +608,37 @@ class Yft(ydr_write.Ydr):
             self._flat(self._p(l1, 0x28), nc * 4)       # UnkFloat[nc]
             self._flat(self._p(l1, 0xF0), nc * 16)      # InertiaTensor[nc]
             self._flat(self._p(l1, 0xF8), nc * 16)      # UnkVec[nc]
+        # ⭐⭐ +0xC8 IS A **SECOND PER-GROUP POINTER ARRAY**, `ng * 8` bytes - a slot the walk read
+        # and never followed. It was NOT found by staring at the record: `scratchpad/dq6_who.py`
+        # asked which unmodelled gaps are POINTED AT by a tagged pointer, and
+        # `scratchpad/dq6_owner.py` traced the pointer back to the capture that already owned the
+        # bytes holding it. That is the difference between "a gap after the polygon array" and
+        # "a live pointer at `fragPhysicsLOD +0xC8`".
+        # ⚠ THE HANDOVER CALLED THIS "tagged-pointer arrays after the polygon array". It is not
+        # after the polygon array in any structural sense - it is an ALLOCATION the packer put
+        # there, and all 9 of the gaps that led to it were POINTED AT. A gap that begins where
+        # another array ends is not part of that array.
+        # ⭐ MEASURED over 6,173 cached `.yft` (a uniform mod-40 draw of the whole game),
+        # 5,923 arrays with room after them, blind walk disabled. Scoring `ceil(ng*8 / K) * K`
+        # against the room to the next modelled structure OR next tagged-pointer target:
+        #     K     FITS the room        EQUALS it exactly
+        #      1    5,923 (100.00%)         211 ( 3.56%)
+        #      2    5,923 (100.00%)         211 ( 3.56%)
+        #      8    5,923 (100.00%)         211 ( 3.56%)
+        #   **16**  5,923 (100.00%)     **5,916 (99.88%)**
+        #     32      199 (  3.36%)         192 ( 3.24%)     <- overruns on 96.6%
+        #     64       98 (  1.65%)          91 ( 1.54%)     <- overruns on 98.3%
+        #   ⇒ the array holds EXACTLY `ng` entries and its allocation is rounded to 16 bytes.
+        #     32 and 64 are refuted by the extent; 1/2/4/8 fit but explain 3.56% of it.
+        # ⭐ AND A CONTENT LAW AGREES, independently of the extent: every 8-byte entry is a
+        # TAGGED SYSTEM POINTER with a zero high word - **12,030 of 12,030 (100.00%)**.
+        # ⚠ NOT CLAIMED, deliberately: the 16-byte allocation rounding. Non-zero bytes beyond
+        # `ng * 8` measured **0** over all 5,923 arrays, so claiming the padding could not be
+        # scored - it would be exactly the unpinned claim this measure exists to catch. The
+        # table above is the evidence for `ng` entries of 8 bytes; the padding is left in place.
+        # ⛔ COUNT-DERIVED, so it goes through `_flat`, which REFUSES rather than clamps.
+        if 0 < ng <= 4096:
+            self._flat(self._p(l1, 0xC8), ng * 8)
         # groups
         if 0 < ng <= 4096:
             garr = self._deref(self._p(l1, 0xC0), ng * 8)
@@ -618,12 +681,40 @@ class Yft(ydr_write.Ydr):
             self._chase(self._p(l1, q))
 
     def _child(self, base):
-        """fragTypeChild: +0xA0 drawable, +0xA8 the DAMAGED twin, +0xB0 EventSet."""
+        """fragTypeChild: +0xA0 drawable, +0xA8 the DAMAGED twin, +0xB0 EventSet.
+
+        ⭐⭐ +0xB0 IS A FIXED 48-BYTE RECORD, and the walk had been reading the pointer without
+        ever following it. `scratchpad/dq6_who.py` found the gaps by asking which unmodelled runs
+        are POINTED AT rather than which ones look like a tail, and `dq6_owner.py` traced every
+        one of the 61 subjects back to this single slot.
+        ⚠ THE HANDOVER CALLED THIS A "type-4 48-byte trailer" after the polygon array. It is
+        NOT a trailer: 61 of 61 were pointed at by a live tagged pointer, i.e. an allocation the
+        packer happened to place after a polygon array. Sized as a tail it would have been a fill
+        from one region's end to the next region's start.
+
+        ⭐ MEASURED over 6,173 cached `.yft` (uniform mod-40 draw of the whole game), blind walk
+        disabled - **8,890 live, uncovered +0xB0 targets**, scoring the room to the next modelled
+        structure OR next tagged-pointer target:
+            room == 48 bytes ..... 8,886 / 8,890 (99.955%)     room 80: 3   room 44: 1
+        so any span wider than 48 overruns on essentially every record, which is what makes 48 a
+        READ rather than a preference.
+        ⭐ AND THE CONTENT IS CONSTANT, which the extent alone could not have told us:
+            bytes +0x08..+0x30 all zero ......... 8,890 / 8,890 (100.00%)
+            `u32 @ +0x04` == 1 .................. 8,890 / 8,890 (100.00%)
+            non-zero bytes per record ........... 5.00 mean - the float at +0x00 plus that 1
+        ⚠ WHAT THIS IS NOT: a reading of the record's MEANING. It claims a 48-byte allocation at
+        a named slot. The float at +0x00 recurs verbatim across unrelated vehicles, which is a
+        lead about what it is and is deliberately not turned into an interpretation here.
+        ⛔ A FIXED SPAN, so it goes through `_put`, which CLAMPS at the segment end - see the
+        `_put`/`_putn` split in `ydr_write`: a record that starts 44 bytes before the segment end
+        demonstrably is 44 bytes long there.
+        """
         if base is None:
             return
         self._put(base, CHILD_SPAN)
         for slot in (0xA0, 0xA8):
             self._fragdrawable(self._deref(self._p(base, slot), 0x40))
+        self._put(self._deref(self._p(base, 0xB0), 8), CHILD_EVENTSET_SPAN)
         for q in range(0, CHILD_SPAN, 4):
             self._chase(self._p(base, q))
 

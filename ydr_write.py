@@ -2,7 +2,78 @@
 (`ydd_write` and `yft_write` subclass this class, so every change here pays or breaks THREE
 lanes - always re-measure all three).
 
-=========================== SECOND PASS, 2026-08-14 (LATEST) ===============================
+=========================== THIRD PASS, 2026-08-14 (LATEST) ================================
+⭐⭐ THE SURPLUS POLYGON RECORDS ARE THE MESH'S OWN DE-DUPLICATED TRIANGLES - the `.ybn` rule,
+PORTED. The second pass (below) left "~45 files short by 1-5 POLYGON RECORDS" and ruled the class
+underivable, because it was asking for a LENGTH. It is not a length question: each surplus record
+identifies itself as a copy of a counted triangle of the same mesh. See `_polytail`.
+
+MEASURE 0 - **POPULATION, EVERY FILE** (`tools/roundtrip_population_all.py --run --lanes
+ydr,ydd,yft,ytd --workers 6 --out output/_dq6_pop`, then `--report`):
+    lane   census   BEFORE byte-exact       AFTER byte-exact        mean cov
+    ydr    86,690   86,654  99.9585%     **86,687  99.9965%**       100.0000%
+    ydd    23,081   23,080  99.9957%       23,080  99.9957%         100.0000%
+    yft    61,430   61,422  99.9870%     **61,428  99.9967%**        99.9997%
+    ytd    88,880   (untouched this pass) 88,876 of 88,879 graded   100.0000%
+⭐⭐ **WHOLE-POPULATION PER-FILE DIFF, all 171,201 `ydr`+`ydd`+`yft` keys**
+(`scratchpad/dq6_diff.py --before output/_dq_pop5 --after output/_dq6_pop`):
+    **+39 byte-exact · 0 REGRESSIONS · 39 files better · 0 worse · net -1,828 unread bytes.**
+MEASURE 1 - the 250-file boards: ydr 250/250 (unchanged), ydd 250/250 (unchanged),
+yft **249/250 -> 250/250**. ⚠ The boards could not see this work: 250/250 was already the ydr
+and ydd score BEFORE it. The subject list came from the population records, `exact == false`.
+MEASURE 2 - the 45 population failures, cached locally (`scratchpad/dq6_pull.py` ->
+`output/_dq6_subj`, graded by `scratchpad/dq6_look.py`) - the fast loop, and the only instrument
+that can attribute a gain to ONE change:
+    baseline ................................... 0 / 45   621,052 B residual
+    `_polytail` alone .......................... 27 / 45  (ydd 0/1, ydr 22/36, yft 5/8)
+    + the poly-material tail sized by `nclaim` . **39 / 45** (ydd 0/1, ydr 33/36, yft 6/8)
+
+WHAT WAS CLOSED, each with the control that could have refused it:
+ 1. `_polytail` - the surplus polygon records. Control: **7,052** polygon arrays where the right
+    answer is REFUSE; the shipped rule accepts **3 (0.043%)**, the same rule without its twin and
+    adjacency clauses accepts **4,306 (61.06%)**. 0 over-claims on the subjects.
+ 2. THE POLY-MATERIAL ARRAY IS SIZED BY `nclaim`, NOT `npolys` - one material byte per polygon
+    RECORD. Pinned by a count from a DIFFERENT array: on the 45 failures, 14 residual runs sit at
+    a material-array tail and the run length equals `nclaim - npolys` on 13 of 14 (the 14th needs
+    8 and shows 1 because 7 are zero). See `_polytail`'s tail block.
+ 3. `yft_write._child +0xB0` (a fixed 48-byte record, 8,890 targets) and `yft_write._lod_phys
+    +0xC8` (a per-group pointer array, 5,923 arrays) - two live pointers the walk READ and never
+    FOLLOWED. ⭐ **THEY BUY 0 BYTE-EXACT FILES AND ARE STILL THE MOST IMPORTANT CHANGE HERE:**
+    both were already "covered" by the blind walk's unpinned 0x1000-byte windows, and a claim
+    that cannot fail is the defect this measure exists to catch. See `yft_write._child`.
+⛔⛔ THE CORRECTION THIS PASS OWES ITS PREDECESSOR, and it is a method point, not a detail: the
+handover described 61 gaps as a "type-4 48-byte TRAILER" after the polygon array and 9 more as
+"tagged-pointer arrays after the polygon array". **All 70 were POINTED AT** - `scratchpad/
+dq6_who.py` scanned every tagged u32 in the segment for one targeting the gap's first byte and
+found one for 72 of 72. They are allocations the packer placed after a polygon array, not tails
+of it. Sized as tails they would have been a fill from one region's end to the next region's
+start. ⇒ **BEFORE SIZING A GAP, ASK WHO POINTS AT IT.** A pointed-at gap is a reachability
+defect with a NAMED SITE (`dq6_owner.py` traces the pointer back to the capture that owns it);
+only an unpointed one can even be a tail.
+⏭ WHAT REMAINS, 6 files, ALL ONE CLASS BAR ONE (`scratchpad/dq6_slack.py`):
+   NON-ZERO BYTES IN ALLOCATION SLACK. Every region sits at the END of an allocation, is
+   targeted by **0** tagged pointers, and begins 4,096-4,128 bytes past the last modelled
+   structure - i.e. exactly where `CHASE_CAPTURE` ran out. Where the content has a twin at all it
+   is a byte-copy of ANOTHER UNCLAIMED region, not of a live array: the packer's arena still
+   holding an earlier write. Nothing in the file states its length, and claiming it is precisely
+   the region-end-to-region-start fill this measure exists to catch.
+     `des_fib_ceil2_root` 417 B · `des_hosp_ceil_root` 168 B · `des_smash_root_merge` 189 B -
+       slack of a skeleton matrix array / a `_shaders` allocation; content is a partial copy of
+       the skeleton's ChildIndices, repeated at decreasing lengths (the array rebuilt in place).
+     `po1_07_slod1_2_children.ydd` 4 B - one float in the 28 bytes between a vertex buffer's end
+       and the 0x1000 page boundary.
+     `barracks_hi.yft` 2,696 B - page slack of a 970 x 60 vertex buffer; longest prefix found
+       anywhere else in the file is 2 bytes, so it has no twin and no source.
+     `xm_prop_auto_salvage_stromberg.yft` 615,750 B - NOT this class: a reachability defect,
+       diagnosed under `yft_write._drawable_array` and deliberately unfixed there.
+⛔ SEARCHED AND NOT FOUND, so the next pass does not repeat it: a tagged pointer targeting any of
+those regions (0 of 6); an owning structure whose end they extend (they are all at an allocation
+END, not a record end); a live array they copy (only other UNCLAIMED bytes). NOT SEARCHED: the
+packer's own page-plan records as a source of slack extents, and whether the arena residue is
+reproducible from the file's OTHER resources (it is a cross-file question this pass never opened).
+============================================================================================
+
+=========================== SECOND PASS, 2026-08-14 ========================================
 ⭐ WORKED FROM THE POPULATION RECORDS, NOT A SAMPLE. The 250-file draw already read 250/250 for
 this lane, so it could not see the work: the files that fail are RARE and a 250-file draw misses
 them entirely. The subject list was the 572 files the whole-game run graded short
@@ -156,8 +227,15 @@ import os
 import struct
 import sys as _sys
 
+
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ydr2xml import Res  # noqa: E402
+# ⭐ THE POLYGON-RECORD LAYOUT IS IMPORTED, NEVER COPIED. `ybn_write._PRIM_SLOTS` is the u16
+# vertex-index slot map per primitive kind, derived on 451,091 COUNTED non-triangle records in
+# 1,500 files - a derivation this lane has no reason to repeat and every reason not to fork.
+# Same doctrine as `ydd_write`/`yft_write` importing this module rather than copying its walk.
+# ⚠ `ybn_write` imports only `ydr2xml`, so there is no cycle.
+import ybn_write  # noqa: E402
 
 LOD_SLOTS = (0x50, 0x58, 0x60, 0x68)     # candidate LOD group slots; non-resolving ones no-op
 DRAWABLE_SPAN = 0x100
@@ -272,8 +350,14 @@ class Ydr:
         self.sysr, self.gfxr = [], []
         self._seen = set()
         self._defer = []                 # see `_chase` - the blind walk runs LAST, never first
+        self._bounds = []                # [(off, btype, fld)] - the typed walk's phBounds
+        self._polyclaim = {}             # bound offset -> polygon records `_polytail` accounted
         self._pagemap()
         self._drawable(0)
+        # ⭐ BEFORE the blind walk, deliberately: `_polytail`'s first clause refuses on ground
+        # another MODELLED structure already owns, and a 0x1000-byte chase window is not one.
+        # Running it after the flush would let an unpinned window pre-empt a pinned rule.
+        self._polytail()
         self._flush_chase()
 
     # ---- segment-aware capture: a tagged pointer may resolve into EITHER segment
@@ -428,6 +512,16 @@ class Ydr:
                      verts @+0xB0 · polys @+0x88 · materials @+0xF0 · poly-materials @+0x118 ·
                      vertex colours @+0xB8 · material colours @+0xF8 · BVH block @+0x130 (type 8)
 
+        ⛔⛔ SUPERSEDED 2026-08-14 (THIRD PASS) - THE PARAGRAPH BELOW IS CORRECT AND ASKS THE
+        WRONG QUESTION, which is why it is kept rather than deleted. Every search it records was
+        for a LENGTH: a field stating how many extra records there are. There is none, and there
+        does not need to be - the records IDENTIFY THEMSELVES as copies of this mesh's own
+        counted triangles. `_polytail` reads them by content and closes the class: +33 `.ydr`
+        and +6 `.yft` byte-exact at population, 0 regressions, control false-fire 0.043%.
+        ⭐ THE TRANSFERABLE LESSON: three rigorous negatives on "where is the length stored" were
+        all correct and all beside the point. When every denominator says NO, check whether the
+        question is the one the format answers.
+
         ⏭ CHARACTERISED, NOT CLOSED - THE POLYGON ARRAY'S TRAILING SLACK. On 39 of 834 geometry
         bounds (300 files) the polygon allocation runs 1-5 records past `npolys * 16` and stops
         exactly where the next allocation starts; the extra records are well-formed polygons
@@ -455,6 +549,11 @@ class Ydr:
         vtable = struct.unpack_from('<I', s, off)[0] if off + 4 <= self.nsys else 0
         fld = (BOUND_FIELDS_OLDBUILD
                if btype == 8 and vtable in BOUND_VTABLE_OLDBUILD else BOUND_FIELDS_STD)
+        # ⭐ THE BOUND LIST IS RECORDED HERE, NOT RECOVERED FROM `_seen`. `_seen` is shared with
+        # `_drawable` and the blind walk, so it holds offsets that are not bounds at all; a
+        # post-pass that re-derived "which of these is a bound" would be a second, weaker
+        # discriminator beside the one this method already applied. See `_polytail`.
+        self._bounds.append((off, btype, fld))
         self._put(off, fld['span'] if btype == 8
                   else BOUND_SPAN_BY_TYPE.get(btype, BOUND_SPAN_DEFAULT))
         self._octant_map(off)
@@ -569,6 +668,193 @@ class Ydr:
                 break
             if cp:
                 self._bound(cp, depth + 1)
+
+    # ------------------------------------------------------------------ the polygon tail
+    def _coverage_map(self):
+        """A byte map of everything the SYSTEM-segment walk has claimed so far."""
+        cov = bytearray(self.nsys)
+        for off, data in self.sysr:
+            if off is not None and data:
+                cov[off:off + len(data)] = b'\x01' * len(data)
+        return cov
+
+    def _polytail(self):
+        """THE RECORDS PAST `npolys` ARE THIS MESH'S **REMOVED DUPLICATE TRIANGLES**.
+
+        ⭐ PORTED FROM `ybn_write._polytail`, WHERE IT WAS DERIVED AND CONTROLLED. Two changes,
+        both forced by this family carrying structures `.ybn` does not:
+          * the type gate is `4 or 8`, not `8`. Over all 71,912 bounds in the `.ybn` population,
+            type 4 (plain phBoundGeometry) occurs ZERO times; here it is the majority geometry
+            type in a vehicle fragment. Six of this lane's own population failures sit on one.
+          * `nverts`/`npolys`/`nmat` come from the per-bound FIELD MAP (`BOUND_FIELDS_OLDBUILD`
+            shifts them by 8), because this family has an older-build phBoundGeometryBVH that
+            `.ybn` never sees. The polygon pointer is `+0x88` in both maps - `_bound` already
+            reads it unconditionally there.
+        ⛔ NOTHING ELSE WAS RE-DERIVED. The record layout is `ybn_write._PRIM_SLOTS`, imported.
+
+        THE REFRAME THAT MADE IT WORK, because five passes of "where is the length stored"
+        answered correctly and beside the point: the surplus is not an unknown-length run to be
+        SIZED, it is a set of records that IDENTIFY THEMSELVES. Each is a triangle this mesh
+        already carries inside `npolys`. You recognise contents; you never size the array. That
+        is why the rule is the same one here even though the containers differ.
+
+        THE RULE, and every clause can refuse. A record at `po + j*16`, j >= `npolys`, is claimed
+        only while ALL of these hold, and the walk stops at the FIRST record that fails:
+            1. no byte of it is already claimed by another MODELLED structure
+            2. it is not all zero
+            3. its primitive kind (`byte0 & 7`) is one the format defines
+            4. its vertex indices (low 15 bits - the 0x8000 bit is a flag) are all < `nverts`
+            5. TRIANGLES: all three NEIGHBOUR indices at +0x0A are 0xFFFF, i.e. the record is
+               OUTSIDE the mesh's adjacency graph
+            6. TRIANGLES: its vertex triple, sorted, is one THIS bound's counted triangles carry
+               OTHER PRIMITIVES: the 16 bytes are byte-identical to a counted record
+
+        ⭐⭐ THE ADJACENCY LAW CLAUSE 5 RESTS ON, and it was previously mis-scored as noise: over
+        the `.ybn` population's 54,807 exactly-sized arrays the largest neighbour index is NEVER
+        >= `npolys` - **0 of 54,807** - ONCE THE 0x8000 INDEX FLAG IS MASKED. An earlier pass
+        reported it "fires 25.7%" and discarded it; it had not masked the flag. It is a format
+        LAW: the field reaches the top of the array and would have exposed a longer one.
+
+        ⭐⭐ WHAT IT SCORES **ON THIS FAMILY** (`scratchpad/dq6_rule.py`), on a uniform mod-40
+        draw of the whole game - 14,780 cached drawables, 8,607 `.ydr` + 6,173 `.yft`. Both the
+        blind walk AND this method are disabled while the baseline coverage is built, or the
+        probe would be scoring its own claims:
+            NEGATIVE CONTROL - **7,052 polygon arrays** whose 16 bytes at `npolys*16` are not a
+            subject, i.e. where the right answer is known to be REFUSE:
+                the SHIPPED rule accepts ........................ 3 / 7,052 (**0.043%**)
+                the same rule WITHOUT clauses 5 and 6 accepts ... 4,306 / 7,052 (**61.06%**)
+            ⇒ a 1,435x discrimination, and it is entirely the two clauses that ask whether the
+              record belongs to THIS mesh. 0.043% is also the rate the rule has on `.ybn`
+              (0.04%) - the same number in a different container, which is what "the rule is
+              about the RECORD, not the container" predicts.
+            SUBJECTS - 15 allocations with non-zero content past `npolys*16` (bound types 8: 9,
+            4: 6): 31 records / 496 bytes claimed, reaches the allocation end exactly on 13,
+            stops short on 2, runs PAST an allocation on **0**.
+          ⚠ THE SUBJECT COUNT IS 15 HERE AND WAS 85 BEFORE THIS PASS. The other 70 were never
+            polygon surplus: 61 are `fragTypeChild +0xB0` records and 9 are the
+            `fragPhysicsLOD +0xC8` array, both now modelled in `yft_write` at their own named
+            slots. They only LOOKED like a tail because the packer put them straight after a
+            polygon array - see `yft_write._child`.
+        ⚠ WHAT THIS IS NOT. It does not recover the array's ALLOCATED LENGTH. That number is not
+        in the file (`ybn_write` REMAINING GAP lists five search spaces with their denominators),
+        and where the allocation is longer than the records it can pin, the remainder stays in
+        the residual rather than being filled to the next structure.
+        ⛔ IT RUNS BEFORE `_flush_chase`. Clause 1 must mean "another modelled structure", and a
+        blind 0x1000-byte window is not one - see `__init__`.
+        """
+        s = self.res.sys
+        cov = self._coverage_map()
+        for off, btype, fld in self._bounds:
+            if btype not in (4, 8):
+                continue
+            try:
+                nverts = struct.unpack_from('<I', s, off + fld['nverts'])[0]
+                npolys = struct.unpack_from('<I', s, off + fld['npolys'])[0]
+                nmat = s[off + fld['nmat']]
+                pp = struct.unpack_from('<I', s, off + 0x88)[0]
+            except (struct.error, IndexError):
+                continue
+            # the SAME discriminator `_bound` uses to decide "this is a geometry bound"
+            if not (0 < nverts <= 0x8000 and 0 < npolys <= 0x100000 and nmat):
+                continue
+            if npolys > 0x40000:
+                continue                 # the counted sets below would be unbounded - refuse
+            _b, po, seg = self._res(pp, 16)
+            if po is None or seg != 'sys' or po + npolys * 16 > self.nsys:
+                continue
+            # ⭐ THE COUNTED SETS ARE BUILT ONLY ONCE THE CHEAP CLAUSES HAVE PASSED. They are
+            # O(npolys) and this family carries millions of counted polygons; building them
+            # unconditionally would cost the lane several times its runtime to answer a question
+            # that is 'no' on the overwhelming majority of arrays before it is asked.
+            triples = recs = None
+            claimed = []
+            j = npolys
+            while True:
+                a = po + j * 16
+                if a + 16 > self.nsys or any(cov[a:a + 16]):            # 1
+                    break
+                r = bytes(s[a:a + 16])
+                if not any(r):                                          # 2
+                    break
+                t = r[0] & 7
+                if t not in ybn_write._PRIM_SLOTS:                      # 3
+                    break
+                try:
+                    v = tuple(struct.unpack_from('<H', s, a + k)[0] & 0x7FFF
+                              for k in ybn_write._PRIM_SLOTS[t])
+                except struct.error:
+                    break
+                if max(v) >= nverts:                                    # 4
+                    break
+                if t == 0:
+                    try:
+                        nb = struct.unpack_from('<3H', s, a + 0x0A)
+                    except struct.error:
+                        break
+                    if nb != (0xFFFF, 0xFFFF, 0xFFFF):                  # 5
+                        break
+                    if triples is None:
+                        triples = set()
+                        for i in range(npolys):
+                            o = po + i * 16
+                            if s[o] & 7:
+                                continue
+                            w = struct.unpack_from('<3H', s, o + 4)
+                            triples.add(tuple(sorted((w[0] & 0x7FFF, w[1] & 0x7FFF,
+                                                      w[2] & 0x7FFF))))
+                    if tuple(sorted(v)) not in triples:                 # 6
+                        break
+                else:
+                    if recs is None:
+                        recs = set(bytes(s[po + i * 16:po + i * 16 + 16])
+                                   for i in range(npolys))
+                    if r not in recs:                                   # 6'
+                        break
+                claimed.append(a)
+                j += 1
+            for a in claimed:
+                self._putn(a, 16)
+                cov[a:a + 16] = b'\x01' * 16
+            if not claimed:
+                continue
+            self._polyclaim[off] = npolys + len(claimed)
+            # ⭐⭐ ONE MATERIAL BYTE PER POLYGON RECORD - SO THE MATERIAL ARRAY IS SIZED BY
+            # `nclaim`, NOT BY `npolys`. `_bound` claims it as exactly `npolys` bytes; the
+            # records `_polytail` just recovered have material bytes too, and they are the
+            # 1-5 byte residual that was left in a dozen files after the polygon tail closed.
+            # ⭐ WHY IT IS PINNED AND NOT A FILL: the LENGTH COMES FROM A DIFFERENT ARRAY, at a
+            # different pointer, recovered by a rule that never looked at these bytes. A wrong
+            # record count gives a wrong tail length, so the extent can disagree - and does not.
+            #   ON THE POPULATION FAILURES (`scratchpad/dq6_pm.py`, 45 files): 14 residual runs
+            #   sit at a material-array tail and the run length equals `nclaim - npolys` on
+            #   13 of 14 - the 14th needs 8 bytes and shows 1 because the other 7 are zero.
+            #   ON THE UNIFORM mod-40 DRAW (`scratchpad/dq6_pmtail.py`, 14,780 drawables):
+            #     subjects (a surplus was pinned) ......................... 13 arrays
+            #       the extra claim FITS before the next modelled structure .. 13 / 13
+            #       it OVERRUNS one ........................................... 0
+            #       last NON-ZERO byte after `npolys` lies inside it ......... 13 / 13
+            # ⭐ ITS CONTROL FALSE-FIRE RATE IS `_polytail`'s, BY CONSTRUCTION. The extension
+            # fires only where a surplus was pinned, so on the 5,498 exactly-sized polygon
+            # arrays in that draw the claim is unchanged at `npolys` - it cannot fire at all.
+            # ⚠ THAT SPLIT MATTERS: 89 of those 5,498 controls (1.6%) do carry a non-zero byte
+            # immediately after `pm + npolys`, so "extend the material array wherever the next
+            # byte is non-zero" WOULD have false-fired. Tying the length to the pinned record
+            # count is what makes the difference.
+            # ⚠ NOT CLAIMED, deliberately: `ybn_write._polymat_pad`'s 16-BYTE ALLOCATION
+            # ROUNDING. That padding is zero, so claiming it cannot be scored - it would be
+            # exactly the unpinned, self-fulfilling claim this measure exists to catch.
+            try:
+                mp = struct.unpack_from('<I', s, off + fld['polymat'])[0]
+            except (struct.error, IndexError):
+                continue         # the record is truncated at the segment end - REFUSE
+            _b, pm, pseg = self._res(mp, 1)
+            if pm is None or pseg != 'sys':
+                continue
+            extra = len(claimed)
+            if pm + npolys + extra > self.nsys or any(cov[pm + npolys:pm + npolys + extra]):
+                continue                 # REFUSE rather than clamp - see `_putn`
+            self._putn(pm + npolys, extra)
+            cov[pm + npolys:pm + npolys + extra] = b'\x01' * extra
 
     def _bvh(self, tagged):
         """phBound `+0x130` (geometry) / `+0xA8` (composite) -> THE BVH BLOCK, 0x80 bytes.
