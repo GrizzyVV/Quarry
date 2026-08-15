@@ -140,6 +140,11 @@ measured residual (44,356 = 44,356):
 (`_polymat_pad`, -1,944 B). The other has no field, and the paragraphs below are the evidence.
 ============================================================================================
 
+⛔ Δ EVERYTHING FROM HERE TO THE FIFTH PASS IS THE HISTORY OF A QUESTION THE SIXTH PASS ANSWERED
+DIFFERENTLY. It is kept because the searched spaces and their denominators are still true and
+still worth not repeating - but "884 files / 42,412 bytes" and "one cause" are NOT current. See
+the SIXTH PASS block above: 7 files / 116 bytes, and the cause is de-duplication.
+
 REMAINING GAP - **ONE CAUSE, and it is the whole of it.** At population: 884 of 15,139 files,
 44,356 bytes, median 34 B per affected file, max 952. Split byte-by-byte over the **34 worst
 files of the post-fix population grade** (`scratchpad/ybn_hard3`, every one of which still has a
@@ -374,6 +379,91 @@ OTHER class (96 arrays, 3,732 non-zero bytes) whose gap records are NOT valid po
 nobody has yet identified.
 ============================================================================================
 
+=========================== SIXTH PASS, 2026-08-14 (LATEST) ================================
+⭐⭐ THE COUNT IS STILL NOT IN THE FILE - **AND THE RECORDS DID NOT NEED IT.** Five passes asked
+"where is the number", because the surplus was described as an unknown-length tail. It is not a
+tail of unknown things: it is **this mesh's own de-duplicated triangles**, and each one identifies
+itself. Population, and the mean is at 100.0000% for the first time:
+    BEFORE 14,255 / 15,139 (94.1608%), mean 99.9988%, min 99.4141%, 42,412 B unread
+    AFTER  **15,132 / 15,139 (99.9538%)**, mean **100.0000%**, min 99.9950%, **116 B** unread
+    whole-population per-file diff, all 15,139 keys: **0 REGRESSIONS**, 877 gains, 877 better,
+    0 worse, net **-42,296 bytes**.  ⛔ 884 files short -> **7**.
+Three changes, each measured on its own at population (`scratchpad/ybn3_grade.py --diff`):
+  1. `_polytail`, triangles only ....... 14,255 -> 14,780   -31,197 B   0 regressions
+  2. `_polymat_pad` sized by the recovered record count .. 14,780 -> 14,876  -402 B   0 regressions
+  3. `_polytail` extended to the non-triangle primitives . 14,876 -> 15,132  -10,697 B  0 regressions
+     (of which the corrected `_PRIM_SLOTS` layout is -3,531 B on its own)
+
+⭐⭐⭐ THE MEASUREMENT THAT TURNED IT - A BASELINE, NOT A DESCRIPTION. "The extras are real
+triangles of the same mesh" had been the working description for four passes and was never scored
+against how often a COUNTED triangle repeats another counted triangle's vertex triple. Over all
+15,139 files (`scratchpad/ybn6_fossil.py`):
+        counted triangles repeating a counted triple .... 198,732 / 100,746,732 = **0.20%**
+        SURPLUS records repeating a counted triple ......      1,981 /      2,666 = **74.31%**
+A 370x enrichment. The counted array is de-duplicated; its tail is where the copies went.
+⭐ AND A SECOND FIELD AGREES, with its own positive control (`scratchpad/ybn6_mesh.py`): a triangle
+carries three NEIGHBOUR POLYGON indices at +0x0A, and over the 54,807 exactly-sized arrays the
+largest is EXACTLY `npolys - 1` on 82.25% of those that have one and **NEVER >= npolys (0 /
+54,807)**. The field reaches the top of the array and would have exposed a longer one; on the
+subjects it still stops at the counted end, and 74.6% of surplus records carry no neighbour at all.
+  ⛔ Δ THIS CORRECTS THE FOURTH PASS: "adjacency reaching past npolys ... fires on an exact array
+  25.7%" is wrong. With the index masked (the 0x8000 bit on a vertex index is a flag, not part of
+  the index) it fires on **0 of 54,807**. It is a format LAW that was scored as noise.
+
+⛔⛔ ANGLE BY ANGLE, BECAUSE FOUR OF THE FIVE WERE DEAD ENDS AND EACH HAS A DENOMINATOR
+(`scratchpad/ybn6_derive.py`, `ybn6_align.py`, `ybn6_meshlaw.py`; 56,773 arrays / 1,053 subjects /
+54,807 exactly-sized controls, all 15,139 files):
+  A. IS THE ALLOCATION A FUNCTION OF THE MESH?  Grouped by a BYTE-EXACT mesh fingerprint and
+     re-scored with duplicate FILES removed (the same `.ybn` ships in patch archives - without that
+     control this measures file duplication, not the format): 6,705 meshes appear in more than one
+     distinct file, the allocation is constant across them on 6,611 (98.6%), and on **83 of 83**
+     of the meshes that have a surplus-bearing copy. ⇒ the builder is deterministic - but that is
+     what "same source asset, same tool" predicts, and 94 meshes DO carry different allocations in
+     different files, so it is not a function of the final bytes.
+  B. A FUNCTION OF THE COUNTS?  Keyed on `npolys`, **1,043 of 1,053 subjects share their `npolys`
+     with an exactly-sized control** - refuted outright. Widening the key to
+     npolys+nverts+nmat+nmatcol only makes it nearly unique (34,424 keys for 56,773 arrays).
+  C. A BUCKETED ALLOCATOR?  Powers of two in records: predicts 2.6% of subjects, false-fires on
+     92.7% of controls. `ceil(np/K)*K` for K=2..256 and a 1.5x size-class ladder: every one
+     false-fires on 44-99.7% of controls. Refuted by the control half in every case.
+  D. ALIGNMENT PADDING FOR THE **NEXT** ALLOCATION - a space the length-rounding tests never
+     opened, since `po` is not itself K-aligned: `ceil((po + np*16)/K)*K` for K = 32..65536 peaks
+     at 23.4% of subjects while false-firing on 51.2% of controls. Refuted. And the object that
+     begins at the allocation end has the SAME type distribution for subjects and controls
+     (vertex array 23.5/20.8%, polygon array 15.2/9.9%, poly-material 14.4/14.3%), so the slack
+     is not padding in front of anything in particular.
+  E. TWO BOUNDS IN ONE ALLOCATION - another bound's polygon array starts at `po + npolys*16` on
+     5,427 of 56,773 bounds (9.6%), so the packer does pack them back to back - but every one of
+     those is an exactly-sized array by definition. It is never a subject.
+  F. DOES THE MESH STATE THE LENGTH?  `nverts` says the array uses N vertices, so the smallest
+     prefix that references all of them is a count derived from a field: it OVER-claims past the
+     allocation on 9.7% of subjects and false-fires on 7.1% of controls. Refuted.
+⇒ **THE ALLOCATED LENGTH IS STILL NOT DERIVABLE.** `_polytail` does not derive it - on 294 of
+1,053 subjects it stops short of the allocation end, and it never once ran past one.
+
+⛔ THE REMAINDER, CHARACTERISED RATHER THAN COUNTED: **116 bytes in 7 files**, all of it seven
+tail triangles whose vertex triple has NO twin in the counted run, every one with an area field of
+exactly 0.0 - a DEGENERATE triangle, which a mesh cleaner deletes outright instead of
+de-duplicating, so there is no twin to pin it with.
+  ⚠ A CANDIDATE MEASURED AND DECLINED, so nobody re-derives it: adding "area == 0.0" as an
+  alternative to the twin clause closes 4 of the 7 (112 B) and accepts 0 of the 114 control
+  positions at a polygon array's end - but on the 186,942-position wider control below it accepts
+  30, and its subject sample is SEVEN. A clause justified by seven subjects is the coincidence
+  generator this lane has been bitten by before. Left unclaimed on purpose.
+
+⭐⭐ THE WIDER NEGATIVE CONTROL (`scratchpad/ybn6_bigctl.py`), because one control site per array
+is thin: the shipped rule was also scored at the END OF THE VERTEX, MATERIAL and POLY-MATERIAL
+ARRAYS and the END OF THE BOUND RECORD - four more sites per bound where a different structure
+follows, **186,942 positions in all 15,139 files**:
+        the SHIPPED rule accepts ......... 621 (0.332%)
+        the same rule WITHOUT the twin clause .. 194 (0.10%) - but it accepts 100% of the 114
+        positions that matter, at a polygon array's own end, which is what refutes it
+Its acceptances concentrate where the next object is a genuine polygon array of a related mesh
+(vertex-array end 0.422%, bound-record end 0.457%), which is the honest limit of the rule: it
+identifies a POLYGON OF THIS MESH, not the boundary of this array. The boundary is done by clause
+1 - the coverage guard - and by the run stopping on content.
+============================================================================================
+
 ⚠ Same scope as the other writers: inflated SYSTEM SEGMENT only. ⛔ Δ THE PAGE-COUNT RECORD AT
 `ptr@0x08 +8` IS NO LONGER COMPUTED - it is READ, as part of the block map `_pagemap` models.
 See `_pagemap` for why a computed value there was masking an unread allocation in every file.
@@ -434,6 +524,28 @@ from ydr2xml import Res  # noqa: E402
 BOUND_SPAN = 0x150                       # fallback / largest measured
 BOUND_SPAN_BY_TYPE = {0: 0x70, 1: 0x80, 3: 0x70, 4: 0x130, 8: 0x150, 10: 0x0B0, 13: 0x80}
 
+# ⭐ A POLYGON RECORD IS 16 BYTES AND ITS PRIMITIVE KIND IS `byte0 & 7`; the slots below are the
+# u16 VERTEX-INDEX offsets each kind carries (the 0x8000 bit on an index is a flag, not part of
+# the index). Kinds 5, 6 and 7 occur on no counted record in this lane and are deliberately
+# absent - an unknown kind refuses.
+#     0 triangle  (+ three NEIGHBOUR polygon indices at +0x0A)
+#     1 sphere    2 capsule    3 box    4 cylinder
+# ⭐⭐ DERIVED FROM COUNTED RECORDS ONLY, so it owes nothing to the gap it is used to read
+# (`scratchpad/ybn6_primlayout.py`, 1,500 files evenly spaced across the population,
+# **451,091 counted non-triangle records**). Every u16 slot in the record was scored on the one
+# property an index must have - it is below `nverts` - and the answer is unambiguous:
+#     type 1 sphere   n=  4,050   +0x02 100.0%  +0x08 100.0%   every other slot <= 26.8%
+#     type 2 capsule  n= 86,703   +0x02 100.0%  +0x08 100.0%   every other slot <= 31.6%
+#     type 3 box      n=355,164   +0x04 +0x06 +0x08 +0x0A all 100.0%   others <= 54.3%
+#     type 4 cylinder n=  5,174   +0x02 100.0%  +0x08 100.0%   every other slot <= 37.1%
+# and the two-index kinds are a vertex PAIR: `u16@+0x08 - u16@+0x02 == 1` on 86,582 / 86,703
+# capsules (99.9%) and 4,923 / 5,174 cylinders (95.1%).
+# ⛔ Δ A FIRST VERSION GUESSED `(8, 10)` FOR CAPSULE AND CYLINDER and `(8,)` for sphere. It cost
+# nothing but coverage - `+0x0A` is 0xFFFF there, so the `< nverts` clause refused every one and
+# 3,121 bytes of real capsule records stayed in the residual - which is the behaviour a wrong
+# layout is supposed to have here, and is why the range check is applied to every slot.
+_PRIM_SLOTS = {0: (4, 6, 8), 1: (2, 8), 2: (2, 8), 3: (4, 6, 8, 10), 4: (2, 8)}
+
 
 class Ybn:
     def __init__(self, res, flags=(0, 0)):
@@ -442,8 +554,10 @@ class Ybn:
         self.size = len(res.sys)
         self.regions = []
         self._seen = set()
+        self._polyclaim = {}         # bound offset -> polygon records `_polytail` accounted for
         self._pagemap()
         self._bound(0)
+        self._polytail()             # post-pass: needs the whole walk's coverage to refuse on it
         self._polymat_pad()          # post-pass: needs the whole walk's coverage to refuse on it
 
     def _off(self, ptr):
@@ -516,6 +630,148 @@ class Ybn:
         if 0 < n <= 512:
             self._flat_at(o + 16, n * 8)
 
+    def _polytail(self):
+        """THE RECORDS PAST `npolys` ARE THIS MESH'S **REMOVED DUPLICATE TRIANGLES**.
+
+        ⭐⭐ THE FINDING THIS RESTS ON, and it is a measurement with a baseline rather than a
+        description. Over ALL 15,139 files / 56,773 polygon arrays (`scratchpad/ybn6_fossil.py`):
+            counted triangles that repeat another COUNTED triangle's vertex triple, in the same
+            array ....................... 198,732 of 100,746,732 (**0.20%**) on the 54,807
+                                          exactly-sized arrays - the array is de-duplicated
+            SURPLUS records that repeat a COUNTED triple .... 1,981 of 2,666 (**74.31%**)
+        A 370x enrichment. The tail of the array is where the de-duplication pass put the copies
+        it dropped: it kept one triangle, decremented `npolys`, and left the other in place.
+        ⭐ CORROBORATED BY THE ADJACENCY, which is a second field agreeing (`ybn6_mesh.py`):
+            a triangle record carries three NEIGHBOUR POLYGON indices at +0x0A. Over the 54,807
+            exactly-sized arrays the largest neighbour index is **NEVER** >= `npolys`
+            (0 / 54,807), and it is EXACTLY `npolys - 1` on 35,600 of the 43,285 that have any
+            neighbour at all (82.25%) - so the field does reach the top of the array and WOULD
+            have exposed a longer one. On the subjects it still stops at the counted end, and
+            74.6% of the surplus records carry no neighbour at all (all three 0xFFFF): the
+            dropped copies were unlinked from the mesh's topology.
+          ⛔ Δ THIS CORRECTS THE FOURTH PASS, which reported "adjacency reaching past npolys ...
+            fires on an exact array 25.7%" and scored it as a failed predictor. Measured over the
+            whole population with the index masked (the 0x8000 bit on a vertex index is a flag,
+            not part of the index) it fires on **0 of 54,807**. It is a format LAW, not noise.
+
+        THE RULE, and every clause can refuse. A record at `po + j*16`, j >= `npolys`, is claimed
+        only while ALL of these hold, and the walk stops at the first record that fails:
+            1. no byte of it is already claimed by another modelled structure
+            2. it is not all zero
+            3. its type nibble (`byte0 & 7`) is 0, i.e. a triangle
+            4. its three vertex indices (low 15 bits) are all below `nverts`
+            5. all three NEIGHBOUR indices are 0xFFFF - it is outside the adjacency graph
+            6. its vertex triple, sorted, is one THIS bound's counted triangles carry
+
+        ⭐⭐ HOW IT IS PINNED - THREE CONTROLS, because this lane has twice paid for a claim that
+        could not fail (`+0x130`, the page-count write). Reproduce: `scratchpad/ybn6_rule.py`,
+        `scratchpad/ybn6_decoy.py`.
+          A. NEGATIVE CONTROL - the **54,807 exactly-sized arrays**, whose 16 bytes at
+             `npolys*16` are KNOWN to belong to another structure. The rule ACCEPTS them on
+             **23 / 54,807 (0.04%)**, and on every one of the 23 it stops after a single record:
+             total exposure **368 bytes in the whole game**, all of it ground another modelled
+             structure already owns, so clause 1 refuses it anyway.
+             ⭐ The comparison is the point: "claim the leading records that LOOK like well-formed
+             polygons" - the rule the fourth pass MEASURED AND REJECTED - accepts the same control
+             on **12.98%**. Same family, 325x the discrimination, and the difference is clauses
+             5 and 6.
+          B. DECOY MESH - the same greedy run given ANOTHER geometry bound's triple set from the
+             SAME file (same builder, same index magnitudes, definitely the wrong mesh), on the
+             974 subjects whose file holds a second bound:
+                 real triple set  -> reaches the allocation on 700 (71.9%), claims nothing on 254
+                 DECOY triple set -> reaches the allocation on   2 ( 0.2%), claims nothing on 970
+             ⇒ clause 6 is carrying the rule. A fill would not care whose triples it was given.
+          C. IT NEVER RUNS PAST AN ALLOCATION. Over all **1,053 subjects**, scored with NO
+             coverage guard at all so the run was free to overrun: it stops exactly at the
+             allocation end on 759 (72.1%), short on 294 (274 of which claim nothing), and past
+             it on **0**. 31,344 bytes claimed inside an allocation, **0 bytes past one**.
+        ⚠ WHAT THIS IS NOT. It does not recover the array's ALLOCATED LENGTH - that number is not
+        in the file (see REMAINING GAP), and on 294 of 1,053 subjects this rule stops short of it
+        and those bytes stay in the residual. It recovers the RECORDS, on the evidence that they
+        are this mesh's own dropped triangles.
+        ⚠ GATED ON TYPE 8, like `_polymat_pad`, because that is the only geometry type this lane
+        has: over all 71,912 bounds in the population, types 4, 0, 1, 3 and 13 occur ZERO times
+        (third pass). A `.ydr`/`.yft` does carry type 4, so a writer sharing this code must widen
+        the gate - and `scratchpad/ybn6_drw.py` has already measured what happens if it does.
+        """
+        s = self.res.sys
+        cov = bytearray(self.size)
+        for off, data in self.regions:
+            if off is not None and data:
+                cov[off:off + len(data)] = b'\x01' * len(data)
+        for off in sorted(self._seen):
+            if off + 0x150 > self.size or s[off + 0x10] != 8:
+                continue
+            try:
+                nverts = struct.unpack_from('<I', s, off + 0xD0)[0]
+                npolys = struct.unpack_from('<I', s, off + 0xD4)[0]
+                nmat = s[off + 0x120]
+                pp = struct.unpack_from('<I', s, off + 0x88)[0]
+            except (struct.error, IndexError):
+                continue
+            if not (0 < nverts <= 0x8000 and 0 < npolys <= 0x100000 and nmat):
+                continue
+            po = self._off(pp)
+            if po is None or po + npolys * 16 > self.size:
+                continue
+            if npolys > 0x40000:
+                continue                 # the counted set below would be unbounded - refuse
+            # ⭐ THE COUNTED SETS ARE BUILT ONLY WHEN THE CHEAP CLAUSES HAVE ALREADY PASSED. They
+            # are O(npolys) and the population carries 100.7 million counted triangles, so
+            # building them unconditionally would cost the lane several times its runtime to
+            # answer a question that is 'no' on 53,754 of 54,807 arrays before it is asked.
+            triples = recs = None
+            claimed = []
+            j = npolys
+            while True:
+                a = po + j * 16
+                if a + 16 > self.size or any(cov[a:a + 16]):           # 1
+                    break
+                r = bytes(s[a:a + 16])
+                if not any(r):                                         # 2
+                    break
+                t = r[0] & 7
+                if t not in _PRIM_SLOTS:                               # 3
+                    break
+                try:
+                    v = tuple(struct.unpack_from('<H', s, a + k)[0] & 0x7FFF
+                              for k in _PRIM_SLOTS[t])
+                except struct.error:
+                    break
+                if max(v) >= nverts:                                   # 4
+                    break
+                if t == 0:
+                    try:
+                        nb = struct.unpack_from('<3H', s, a + 0x0A)
+                    except struct.error:
+                        break
+                    if nb != (0xFFFF, 0xFFFF, 0xFFFF):                 # 5
+                        break
+                    if triples is None:
+                        triples = set()
+                        for i in range(npolys):
+                            o = po + i * 16
+                            if s[o] & 7:
+                                continue
+                            w = struct.unpack_from('<3H', s, o + 4)
+                            triples.add(tuple(sorted((w[0] & 0x7FFF, w[1] & 0x7FFF,
+                                                      w[2] & 0x7FFF))))
+                    if tuple(sorted(v)) not in triples:                # 6
+                        break
+                else:
+                    if recs is None:
+                        recs = set(bytes(s[po + i * 16:po + i * 16 + 16])
+                                   for i in range(npolys))
+                    if r not in recs:                                  # 6'
+                        break
+                claimed.append(a)
+                j += 1
+            for a in claimed:
+                self._flat_at(a, 16)
+                cov[a:a + 16] = b'\x01' * 16
+            if claimed:
+                self._polyclaim[off] = npolys + len(claimed)
+
     def _polymat_pad(self):
         """THE POLY-MATERIAL ARRAY IS ALLOCATED IN 16-BYTE UNITS, not in `npolys` bytes.
 
@@ -567,8 +823,18 @@ class Ybn:
                 continue
             if not (0 < nverts <= 0x8000 and 0 < npolys <= 0x100000 and nmat):
                 continue
-            pad = (-npolys) % 16
-            if not pad:
+            # ⭐ Δ 2026-08-14 (sixth pass) - THE ARRAY IS SIZED BY THE RECORD COUNT `_polytail`
+            # ACCOUNTED FOR, not by `npolys`. It is one material byte per polygon, so a polygon
+            # array carrying `nclaim` records carries `nclaim` material bytes, and the 16-byte
+            # allocation law above then rounds THAT. `npolys` is used wherever `_polytail`
+            # claimed nothing, which is 54,807 of 56,773 arrays.
+            # ⚠ This is a claim DERIVED from another claim, so it inherits `_polytail`'s
+            # evidence and nothing more - and the overlap guard below is what stops it
+            # compounding an error: if the larger allocation is wrong it runs into the next
+            # modelled structure and NOTHING is captured for that array.
+            nclaim = self._polyclaim.get(off, npolys)
+            pad = -(-nclaim // 16) * 16 - npolys
+            if pad <= 0:
                 continue
             mo = self._off(mp)
             if mo is None:
