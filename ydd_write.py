@@ -177,12 +177,14 @@ class Ydd(ydr_write.Ydr):
         self._defer = []                # `ydr_write._chase` now DEFERS - see there for why
         self._bounds = []               # [(off, btype, fld)] - see ydr_write._polytail
         self._polyclaim = {}            # see ydr_write._polytail
+        self._bonecounts = []           # see ydr_write._buildgrid
         self.entries = []               # [(joaat, sys offset)] - the dictionary's own index
         self._pagemap()                 # the resource BLOCK MAP - see ydr_write._pagemap
         self._dictionary()
         # ⭐ the polygon tail, BEFORE the blind walk - its first clause must mean "another
         # MODELLED structure", and a 0x1000-byte chase window is not one. See ydr_write.
         self._polytail()
+        self._buildgrid()
         # ⭐ the blind walk runs once, AFTER every entry's typed walk. This is the general form of
         # the `_seen.discard` below: deferral protects EVERY typed walk, not just the entry roots.
         self._flush_chase()

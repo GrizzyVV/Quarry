@@ -256,6 +256,7 @@ class Yft(ydr_write.Ydr):
         self._defer = []            # see _chase - the blind walk runs LAST, never first
         self._bounds = []           # [(off, btype, fld)] - see ydr_write._polytail
         self._polyclaim = {}        # see ydr_write._polytail
+        self._bonecounts = []       # see ydr_write._buildgrid
         self._pagemap()             # the resource BLOCK MAP - see ydr_write._pagemap
         self._frag()
 
@@ -411,6 +412,7 @@ class Yft(ydr_write.Ydr):
         # ⭐ the polygon tail runs on the TYPED coverage only - before the deferred blind walk
         # is flushed, so a 0x1000-byte window cannot pre-empt a pinned claim. See ydr_write.
         self._polytail()
+        self._buildgrid()
         self._flush_chase()
 
     def _fragdrawable(self, base):

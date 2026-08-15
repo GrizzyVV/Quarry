@@ -324,7 +324,11 @@ def acquire(game_root: str, keys_dir: str = None, magic_path: str = None, verbos
                                 "opened without one (it is inert on its own)")
     for exe in exes:
         say(f"aes key   : searching {os.path.basename(exe)} ...")
-        key, off = find_aes_key(exe)
+        # ⛔ WAS find_aes_key(exe) - a full SHA-1-per-offset scan of GTA5.exe, measured at
+        # 52.35 CPU s, run ONCE PER TASK (179 tasks) = the single largest preamble cost in the
+        # whole export. `find_aes_key_cached` sits ten lines above, its own docstring says the
+        # answer cannot change mid-run, and `acquire_aes` already uses it. Measured 2026-08-15.
+        key, off = find_aes_key_cached(exe)
         if key is None:
             continue
         say(f"aes key   : found at 0x{off:08x} in {os.path.basename(exe)}")

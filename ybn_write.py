@@ -1148,6 +1148,21 @@ class Ybn:
             self._bvh(off)
 
         # composite children
+        # ⛔⛔ ONLY ON A COMPOSITE - Δ 2026-08-15, mirrored from `ydr_write._bound` where it was
+        # derived. `was:` this block ran on EVERY type, so on a type-8 geometry-BVH bound - where
+        # `+0xA0` is not a child count at all - a value that merely happened to land under 4096
+        # sized three `_flat` claims. THE IMAGE COPIES THE ORIGINAL BYTES AT WHATEVER OFFSET IS
+        # CLAIMED, so such a claim reproduces perfectly and NOTHING can reject it.
+        # ⭐ MEASURED over ALL 15,139 `.ybn` / 71,912 bounds (scratchpad/zn_typecensus.py) - this
+        # lane carries ONLY types 8 and 10, and `u16 @+0xA0` separates them completely:
+        #     type  8 (56,773): >4096 on 52,986 · 257-4096 on 3,460 · 17-256 on 211 · 1-16 on 5
+        #     type 10 (15,139): 1-16 on 14,711 · 17-256 on 20 · **never above 256**
+        # ⇒ **3,676 type-8 bounds got past the old `n > 4096` guard** and had the composite slots
+        # read on them. The guard was never the discriminator; it only capped how wrong the read
+        # could be. The TYPE is the discriminator, and the vtable corroborates it: the type-8 and
+        # type-10 vtable sets are disjoint over all 71,912 bounds (overlap 0).
+        if btype != 10:
+            return
         try:
             n = struct.unpack_from('<H', s, off + 0xA0)[0]
             carr, tr, fl = (struct.unpack_from('<I', s, off + 0x70)[0],
@@ -1166,18 +1181,20 @@ class Ybn:
         # DERIVED IN `ydr_write._bound`; measured over BOTH samples (250 .ydr + 147 .ybn):
         # 255 non-geometry bounds carry it, n * 32 fits in 246/246 that resolve, 0 aliased to
         # +0x70 or +0x78. Mirrored here because these two walkers are the same phBound offsets.
-        if not geom and 0 < n <= 4096:
-            self._flat(struct.unpack_from('<I', s, off + 0x88)[0], n * 32)
-            # ⭐ AND +0xA8 ON A COMPOSITE IS THE SAME BVH BLOCK the geometry bounds carry at
-            # +0x130 - a BVH over the CHILDREN. Same reader, same four laws.
-            # ⛔ Δ 2026-08-14 (third pass) - gated on `btype == 10`, not on `not geom`. On a
-            # GEOMETRY bound +0xA8 is inside the GeometryCentre vec4, and `not geom` is every type
-            # that is not 4 or 8 *plus* any type-4/8 bound whose counts failed the plausibility
-            # window - so the old gate could aim this read at the middle of a float. See the
-            # population measurement in the +0x130 note above: the change alters 0 of 71,912
-            # bounds here, and a law-passing block was found at +0xA8 on a non-composite in 0.
-            if btype == 10:
-                self._bvh(off, 0xA8)
+        # ⛔ Δ 2026-08-15: `was:` `if not geom and 0 < n <= 4096:`. The `btype == 10` gate above
+        # already says composite, and `not geom` said something WEAKER and different - every type
+        # that is not 4 or 8, **plus** any type-4/8 bound whose counts failed the plausibility
+        # window. A clause that cannot change the answer hides which test is doing the work.
+        self._flat(struct.unpack_from('<I', s, off + 0x88)[0], n * 32)
+        # ⭐ AND +0xA8 ON A COMPOSITE IS THE SAME BVH BLOCK the geometry bounds carry at
+        # +0x130 - a BVH over the CHILDREN. Same reader, same four laws.
+        # ⛔ Δ 2026-08-14 (third pass) - gated on `btype == 10`, not on `not geom`. On a
+        # GEOMETRY bound +0xA8 is inside the GeometryCentre vec4, and `not geom` is every type
+        # that is not 4 or 8 *plus* any type-4/8 bound whose counts failed the plausibility
+        # window - so the old gate could aim this read at the middle of a float. See the
+        # population measurement in the +0x130 note above: the change alters 0 of 71,912
+        # bounds here, and a law-passing block was found at +0xA8 on a non-composite in 0.
+        self._bvh(off, 0xA8)
         coff = self._off(carr)
         if coff is None:
             return

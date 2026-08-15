@@ -316,7 +316,21 @@ STUB_RECORD = 0x50
 # ⚠ AN UNKNOWN TYPE FALLS BACK TO 0x180, which is the old over-claim: it is kept ONLY so a bound
 # type this sample never saw cannot silently lose its whole record, and it fires on 17 of 11,626
 # bounds here (types 6, 16 and 178). Re-measure before widening the table.
-BOUND_SPAN_BY_TYPE = {0: 0x70, 1: 0x80, 3: 0x70, 4: 0x130, 8: 0x150, 10: 0xB0, 13: 0x80}
+# ⭐ Δ 2026-08-15 - TYPES 12 AND 15 ADDED, and they were the two the fallback was actually hitting.
+# Re-measured on the SAME rule (room to the next tagged-pointer target) over 18,587 cached
+# drawables / 40,172 bounds, `scratchpad/zn_typecensus.py`:
+#     type 12 ... 0x80  1,693 of 1,694  (one at 0x90)      min room 0x80
+#     type 15 ... 0x70  24 of 29        (five at 0x80)      min room 0x70
+# The fallback was claiming **0x180 for a 0x80 record** on every type-12 bound - 0x100 of the next
+# allocation per bound, 433,664 B across the sample - and 0x110 per type-15 bound. A record cannot
+# extend past the first byte another allocation owns, so those are over-claims by measurement, not
+# by preference. ⚠ The type-15 figure rests on 29 bounds; it is the smallest sample in this table.
+# ⛔ THE 0x180 FALLBACK STAYS for a type never seen. After the composite gate in `_bound` the only
+# types this family reaches are 0/1/3/4/8/10/12/13/15 - the 42 "bounds" with types 2/5/6/7/11/16/
+# 32/48/72/89/95/100/116-122/185/188/224 were the UNGATED composite walk recursing into non-bounds
+# (one of them a name string, vtable 0x706f7250 = "Prop") and they are gone with it.
+BOUND_SPAN_BY_TYPE = {0: 0x70, 1: 0x80, 3: 0x70, 4: 0x130, 8: 0x150, 10: 0xB0, 12: 0x80,
+                      13: 0x80, 15: 0x70}
 
 # ⭐⭐ THE OLDER-BUILD phBoundGeometryBVH: A 0x140 RECORD, NOT 0x150 (2026-08-14).
 # `des_ranchsafe001_start/end.ydr` carry type-8 bounds whose vtable is 0x405b5408, a value that
@@ -376,12 +390,14 @@ class Ydr:
         self._defer = []                 # see `_chase` - the blind walk runs LAST, never first
         self._bounds = []                # [(off, btype, fld)] - the typed walk's phBounds
         self._polyclaim = {}             # bound offset -> polygon records `_polytail` accounted
+        self._bonecounts = []            # every skeleton's bone count - see `_buildgrid`
         self._pagemap()
         self._drawable(0)
         # ⭐ BEFORE the blind walk, deliberately: `_polytail`'s first clause refuses on ground
         # another MODELLED structure already owns, and a 0x1000-byte chase window is not one.
         # Running it after the flush would let an unpinned window pre-empt a pinned rule.
         self._polytail()
+        self._buildgrid()
         self._flush_chase()
 
     # ---- segment-aware capture: a tagged pointer may resolve into EITHER segment
@@ -656,32 +672,80 @@ class Ydr:
         if btype == 10:
             self._bvh(struct.unpack_from('<I', s, off + 0xA8)[0]
                       if off + 0xAC <= self.nsys else 0)
+        # ⛔⛔ THE COMPOSITE SLOTS ARE READ ONLY ON A COMPOSITE - Δ 2026-08-15. `was:` this whole
+        # block ran on EVERY bound type, and it read `+0x70` / `+0x78` / `+0x90` **before** the
+        # `n > 4096` guard that sat three lines below it, so a garbage `n` had already sized three
+        # `_flat` calls by the time the guard was reached. The guard now runs FIRST and the type
+        # is the gate.
+        # ⭐⭐ IT IS THE FLAGSHIP LAW LIVE IN OUR OWN CODE: A CLAIMED REGION IS EVIDENCE ONLY IF A
+        # WRONG CLAIM COULD HAVE BEEN REJECTED. The image copies the ORIGINAL bytes at whatever
+        # offset is claimed, so `_flat(+0x90, 55296 * 8)` reproduces 442,368 bytes perfectly and
+        # NOTHING can reject it. Worked example: a **type-12** bound at 0x3113c0 in `barracks.yft`
+        # reads `u16 @+0xA0` = 55,296 and takes 442,368 B = 13.6% of that file's 3.25 MB system
+        # segment. Its twin `barracks_hi.yft` did not, and that is the whole reason one "owned"
+        # bytes the other left unreached.
+        # MEASURED BEFORE THE CHANGE over 18,587 cached drawables (scratchpad/zm_boundctl.py),
+        # counting only spans the writer ACTUALLY claimed:
+        #     429 files (2.31%) - 437,821,064 B claimed by these four slots on NON-composites
+        #     +0x78 341 MB · +0x90 96.5 MB · type-12 alone 75,064,576 B
+        #     294 files / 415,271 B rested on that read ALONE (nothing else claimed them)
+        # ⭐⭐ THE TYPE BYTE IS THE DISCRIMINATOR AND THE RECORD'S OWN EXTENT PROVES IT. `room` =
+        # the next tagged-pointer target above the record start, i.e. the first byte another
+        # allocation is known to own. Over the same 18,587 files / 40,172 bounds
+        # (scratchpad/zn_typecensus.py), per type: extent, then how often `+0xA2` is INSIDE it:
+        #     type  0  sphere      181   0x70            +0xA2 inside     22
+        #     type  1  capsule   1,075   0x80 (1,064)    +0xA2 inside      6
+        #     type  3  box      17,810   0x70 (17,152)   +0xA2 inside      5
+        #     type  4  geometry  8,627   0x130 (8,617)   +0xA2 inside  8,627
+        #     type  8  geom-BVH    569   0x150 (560)     +0xA2 inside    569
+        #     type 10  composite 9,066   0xB0 (7,675)    +0xA2 inside  9,066
+        #     type 12           1,694   **0x80 (1,693)** +0xA2 inside      0
+        #     type 13  cylinder  1,057   0x80 (1,047)    +0xA2 inside      0
+        #     type 15              29    0x70 (24)       +0xA2 inside      0
+        # ⇒ ON A TYPE-12 BOUND `+0xA0` IS 32 BYTES PAST THE END OF THE RECORD, on 1,694 of 1,694.
+        # The 55,296 is the NEXT allocation's bytes. Same for types 0/1/3/13/15.
+        # ⭐ AND WHERE `+0xA0` *IS* INSIDE THE RECORD (types 4 and 8) IT IS NOT A COUNT:
+        #     type 4: `u16 @+0xA0` > 4096 on 5,324 of 5,670 live · type 8: 428 of 457
+        #     `+0x70` is a tagged system pointer on **0** of those 6,127 - there is no child array
+        #     type 10: `u16 @+0xA0` is 1..16 on 8,438 and 17..256 on 628 - **never** > 256, and
+        #     `+0x70` is a tagged pointer on 9,066 of 9,066.
+        # A separation with no overlap in either direction, on a denominator of 40,172.
+        # ⭐ THE VTABLE AT +0x00 CORROBORATES IT - an identity the game's packer wrote, not us:
+        # type 10 reads 0x4062bac8 / 0x40629aa8 / 0x4062b5d8 / 0x4062baa8, type 12 reads
+        # 0x40630068 / 0x4062e038 / 0x40630048 / 0x40630188. The sets do not intersect.
+        # ⛔ AND THE UNGATED READ WAS RECURSING INTO NON-BOUNDS. A garbage `n` licensed a garbage
+        # child array, and every pointer in it went back into `_bound`: 42 "bounds" in the sample
+        # carry type bytes 2/5/6/7/11/16/32/48/72/89/95/100/116-122/185/188/224 with `vtables`
+        # like 0x706f7250 - ASCII "Prop", i.e. a NAME STRING claimed as a 0x180-byte bound record.
+        # Gating on type 10 ends that recursion at its source.
+        if btype != 10:
+            return
         try:
             n = struct.unpack_from('<H', s, off + 0xA0)[0]
-            carr = struct.unpack_from('<I', s, off + 0x70)[0]
-            self._flat(carr, n * 8)
-            self._flat(struct.unpack_from('<I', s, off + 0x78)[0], n * 64)
-            self._flat(struct.unpack_from('<I', s, off + 0x90)[0], n * 8)
-            # ⭐ +0x88 ON A **NON-GEOMETRY** BOUND IS A PER-CHILD AABB ARRAY, n * 32 - one
-            # {vec3 min, u32}{vec3 max, float} pair per child. On a GEOMETRY bound the same slot
-            # is the polygon array (read above, sized by npolys), so the two readings are gated by
-            # opposite discriminators and cannot collide - which is exactly why this one was never
-            # reached: a composite's +0x88 was only ever interpreted as polygons, and a composite
-            # has none.
-            # MEASURED over BOTH samples (250 .ydr + 147 .ybn, scratchpad/probe_childaabb.py):
-            #   non-geometry bounds with a live +0x88 and a valid child count ...... 255
-            #   n * 32 fits the segment, of those that resolve ................. 246 / 246
-            #   aliased to the child-pointer array (+0x70) or the transforms (+0x78) .... 0
-            #   currently uncovered ...................... 94 bounds, 13,536 bytes
-            # Worked example, prop_off_chair_01 bound 0x0191c0: nverts/npolys/nmat all 0, child
-            # count u16 @+0xA0 = 16, +0x88 -> 0x018fc0, and the block runs to 0x0191c0 = 512 B
-            # = 16 x 32 EXACTLY. Records alternate sign-flipped vec3 pairs, i.e. min/max boxes.
-            if not geom and 0 < n <= 4096:
-                self._flat(struct.unpack_from('<I', s, off + 0x88)[0], n * 32)
         except struct.error:
             return
+        # ⛔ THE GUARD RUNS BEFORE THE READS, NOT AFTER THEM.
         if not n or n > 4096:
             return
+        carr = struct.unpack_from('<I', s, off + 0x70)[0]
+        self._flat(carr, n * 8)
+        self._flat(struct.unpack_from('<I', s, off + 0x78)[0], n * 64)
+        self._flat(struct.unpack_from('<I', s, off + 0x90)[0], n * 8)
+        # ⭐ +0x88 ON A COMPOSITE IS A PER-CHILD AABB ARRAY, n * 32 - one {vec3 min, u32}
+        # {vec3 max, float} pair per child. On a GEOMETRY bound the same slot is the polygon
+        # array (read above, sized by npolys), so the two readings are gated by opposite
+        # discriminators and cannot collide.
+        # MEASURED over BOTH samples (250 .ydr + 147 .ybn, scratchpad/probe_childaabb.py):
+        #   non-geometry bounds with a live +0x88 and a valid child count ...... 255
+        #   n * 32 fits the segment, of those that resolve ................. 246 / 246
+        #   aliased to the child-pointer array (+0x70) or the transforms (+0x78) .... 0
+        # Worked example, prop_off_chair_01 bound 0x0191c0: nverts/npolys/nmat all 0, child
+        # count u16 @+0xA0 = 16, +0x88 -> 0x018fc0, and the block runs to 0x0191c0 = 512 B
+        # = 16 x 32 EXACTLY. Records alternate sign-flipped vec3 pairs, i.e. min/max boxes.
+        # ⛔ `was:` gated on `not geom`, which is every type that is not 4 or 8 **plus** any
+        # type-4/8 bound whose counts failed the plausibility window. The type gate above already
+        # says composite, so the extra clause said nothing and hid what the real gate was.
+        self._flat(struct.unpack_from('<I', s, off + 0x88)[0], n * 32)
         _b3, coff, cseg = self._res(carr, n * 8)
         if coff is None or cseg != 'sys':
             return
@@ -879,6 +943,113 @@ class Ydr:
                 continue                 # REFUSE rather than clamp - see `_putn`
             self._putn(pm + npolys, extra)
             cov[pm + npolys:pm + npolys + extra] = b'\x01' * extra
+
+    # ------------------------------------------------------------------ the build-residue grid
+    def _buildgrid(self):
+        """A 0x30-PITCH RECORD GRID, ONE RECORD PER BONE, LEFT BEHIND BY THE ASSET BUILD.
+
+            +0x00 u64 tag  (the BONE INDEX)      +0x08 u64 0        +0x10 u64 1
+            +0x18 u64 host address               +0x20 u64 0        +0x28 u64 host address
+
+        ⭐⭐ IT IS BUILD RESIDUE AND THAT IS PROVEN, NOT ASSERTED. `+0x18` / `+0x28` hold RAW
+        64-BIT ADDRESSES of the machine that packed the file (the 0x04xxxxxx band: 172 of 234
+        such words in the three subjects, the rest zero, 2 outside it). They carry NO resource
+        tag - the high nibble is not 5 or 6 - so `Res.deref` cannot resolve them and the GAME
+        CANNOT FOLLOW THEM EITHER. Nothing in the file points at the grid; it is the packer's own
+        scratch table, written into the page and then partly built over.
+
+        THE RULE, and every clause can refuse. Records are collected at pitch 0x30 in runs of
+        >= 3, and the grid is claimed ONLY IF:
+            L1  every tag is DISTINCT                 - a table indexing bones indexes each once
+            L2  the record count is <= the bone count
+            L3  |{0..nb-1} \\ tags| == (slots inside [first, last] that are NOT shaped)
+                                     + (nb - the total slot span),  both terms >= 0
+
+        ⭐⭐ L3 IS THE CLAUSE THAT COULD HAVE REFUTED THE WHOLE READING AND DID NOT. It is an
+        identity between two things counted independently: how many BONES have no record, and how
+        many 0x30 SLOTS a live allocation was laid down over. On the three subjects it holds
+        EXACTLY - and the arithmetic is different in each, so it is not one coincidence repeated:
+            des_fib_ceil2_root  nb=123  recs=117  missing 6 == inner 0 + pad 6
+            des_hosp_ceil_root  nb= 97  recs= 89  missing 8 == inner 6 + pad 2
+            des_smash_root_merge nb=108 recs= 99  missing 9 == inner 8 + pad 1
+        The overwriting structures are visible: in `des_smash_root_merge` the slot for the
+        missing tag 25 is still THERE at 0x0be7d0 with its tag word intact and everything from
+        +0x10 on written over by another allocation.
+        ⭐ AND A FOURTH WITNESS NOBODY WENT LOOKING FOR: in 3 of 3 files the byte immediately
+        past the last claimed record - i.e. the next 0x30 slot - holds a tag that is IN THE
+        MISSING SET (0x18=24 of {24,44,45,102,103,104}; 0x47=71 of {0,2,3,4,71,86,87,88};
+        0x19=25 of {17,18,19,25,40,59,60}). By chance that is 6/123 x 8/97 x 7/108 = 2.6e-4.
+        It is left UNCLAIMED: one byte per file, and a rule keyed on "a value in a 6-of-123 set"
+        is far weaker than the identity above - it corroborates the reading, it does not license
+        a claim.
+
+        ⭐⭐ THE DENOMINATOR (`scratchpad/zr_gridlaw.py`), run at the SITE THIS METHOD RUNS AT,
+        over 18,587 cached drawables (8,607 `.ydr` + 6,173 `.yft` uniform draw, plus the work
+        queue) with the blind walk excluded so the rule is never scored against its own windows:
+            SUBJECTS - the 3 files ......................... shape fires 3, L1-L3 hold 3
+            CONTROL  - 18,587 drawables ......... **the shape fires 0, the law passes 0**
+        ⇒ FALSE-FIRE RATE **0.0000%** on 18,587 exactly-sized controls. Not one control file even
+        produced three consecutive records of the shape, let alone satisfied the identity.
+
+        ⚠ WHAT THIS DOES **NOT** DO, said plainly: it does not make any of the three files
+        byte-exact. It claims 264 / 102 / 179 non-zero bytes of their 417 / 168 / 189 residual.
+        What is left in all three is the ASCENDING u32 COUNTER FILL that runs from a skeleton
+        array's modelled end to the end of its allocation (`des_fib` 1,2,3,4,...; `des_hosp` and
+        `des_smash` the same run with four words built over). ⛔ THAT IS DELIBERATELY NOT CLAIMED:
+        its length is `slack/4` and no field in the file states it, so claiming it would be
+        filling from one region's end to the next region's start - the one move this measure
+        exists to catch. It is described in `docs/OPEN_ITEMS` and left in the residual.
+        """
+        nbs = sorted(set(n for n in self._bonecounts if 0 < n <= 8192), reverse=True)
+        if not nbs:
+            return
+        s, nsys = self.res.sys, self.nsys
+        if nsys < 0x40:
+            return
+        # ⭐ THE SCAN IS A `bytes.find` ON THE RECORD'S OWN FIXED WORDS, not a python sweep of
+        # every 16-byte position. `+0x08 == 0` and `+0x10 == 1` are 16 contiguous fixed bytes;
+        # memchr finds them at C speed. The python loop over `nsys // 16` positions cost ~0.26 s
+        # on a 4 MB fragment segment - it would have roughly doubled this lane's population run
+        # to buy the same three files. The predicate is identical either way.
+        needle = b'\x00' * 8 + b'\x01' + b'\x00' * 7
+        nbmax = nbs[0]
+        hits = []
+        i = s.find(needle)
+        while i >= 0:
+            p = i - 8
+            if p >= 0 and not (p & 15) and p + 0x30 <= nsys:
+                if (not struct.unpack_from('<Q', s, p + 0x20)[0]
+                        and struct.unpack_from('<Q', s, p)[0] < nbmax
+                        and (struct.unpack_from('<Q', s, p + 0x18)[0]
+                             or struct.unpack_from('<Q', s, p + 0x28)[0])):
+                    hits.append(p)
+            i = s.find(needle, i + 1)
+        if not hits:
+            return
+        for nb in nbs:
+            sub = [p for p in hits if struct.unpack_from('<Q', s, p)[0] < nb]
+            runs = []
+            for p in sub:
+                if runs and p == runs[-1][-1] + 0x30:
+                    runs[-1].append(p)
+                else:
+                    runs.append([p])
+            recs = [p for r in runs if len(r) >= 3 for p in r]
+            if not recs:
+                continue
+            tags = [struct.unpack_from('<Q', s, p)[0] for p in recs]
+            if len(set(tags)) != len(tags) or len(tags) > nb:      # L1, L2
+                continue
+            span = (max(recs) + 0x30 - min(recs)) // 0x30
+            inner, pad = span - len(recs), nb - span
+            if inner < 0 or pad < 0 or (nb - len(tags)) != inner + pad:       # L3
+                continue
+            # ⛔ NO COVERAGE TEST HERE, and that is the point: a slot a live allocation was
+            # written over FAILS THE SHAPE and never reaches this loop. What survives the shape
+            # is the record itself, so the claim is licensed by content, not by emptiness.
+            for p in recs:
+                self._putn(p, 0x30)
+            return
 
     def _bvh(self, tagged):
         """phBound `+0x130` (geometry) / `+0xA8` (composite) -> THE BVH BLOCK, 0x80 bytes.
@@ -1104,6 +1275,10 @@ class Ydr:
         except struct.error:
             return
         if 0 < nb <= 8192:
+            # ⭐ RECORDED FOR `_buildgrid`, which needs the bone count and must not re-derive it:
+            # a second reading of "how many bones" would be a second, weaker discriminator beside
+            # the one this method already applied. Same reasoning as `_bounds` in `_bound`.
+            self._bonecounts.append(nb)
             ba = struct.unpack_from('<I', s, sk + 0x20)[0]
             self._flat(ba, nb * BONE_STRIDE)
             self._alloc_prefix(ba, nb)
