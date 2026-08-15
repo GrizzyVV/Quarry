@@ -2,6 +2,23 @@ r"""ycd2xml - GTA V .ycd (rage::crClipDictionary, RSC7 v46) -> RAGE .ycd.xml.
 
 CLEAN-ROOM: derived from oracle XML + game binary + our own quarry code only.
 
+⭐⭐ STATUS SUPERSEDED 2026-08-15 - MEASURED AT POPULATION BY A WRITER, NOT AGAINST ORACLES.
+  `quarry/ycd_write.py` round-trips this lane's own reader results across ALL 24,844 .ycd:
+  24,836 / 24,840 v46 files BYTE-EXACT (99.9839%), mean coverage 100.0000%, and the entire
+  residual is FOUR page-count bytes in four files.
+  ⛔ THE "OPEN" PARAGRAPH BELOW IS THE PART THAT IS WRONG, AND IT WAS ALREADY WRONG WHEN WRITTEN
+  AGAINST THIS FILE'S OWN CODE - `INLINE_QZ_PROVEN` and `_decode_inline_qz` (the 64-frame block
+  Rice codec, selectors 0..13) had already replaced the "proven only for selector 0" rule the
+  header still describes. Measured over the POPULATION rather than 57 oracles:
+      4,732,238 inline-QuantizeFloat channels, 100.0000% decoded - ZERO undecoded -
+      across 953 distinct (W, numBits, selector) cells / 96 distinct (selector, W) cells.
+  And decoded is now the weaker claim: the writer RE-ENCODES each payload's Rice stream and
+  recomputes its per-block bit offsets, and the code stream reproduces the file's own bytes.
+  So "the whole remaining gap is INLINE QuantizeFloat" and "game-wide that pool is 3.7M channels"
+  are both retired. ⚠ A DOCSTRING IS NOT A MEASUREMENT: this header sat two derivations behind
+  the code under it for five days. Re-measure or do not assert.
+
+⛔ SUPERSEDED, KEPT VERBATIM BELOW THIS LINE:
 STATUS (2026-08-10, measured against ALL 57 oracles): 25/57 byte-identical, 0 MISSING.
   `was:` "measured against all 10 oracles: 10/10 FULLY byte-identical" - a TRUE statement about
   a 10-oracle board that read as a completeness claim once 47 more oracles existed. The same
@@ -191,6 +208,22 @@ def declined_version(blob):
     element (hexdump-verified on all four, 2026-08-10) - so emitting the declaration alone is
     byte-identical conformance, not a shortcut. Every decline is COUNTED by the caller, so the
     class is visible in the run summary rather than looking like a successful conversion.
+
+    ⛔⛔ THE "DIES INSIDE INFLATE" HALF IS REFUTED (re-tested 2026-08-15 against today's container
+    code, all four): they inflate CLEANLY - 7,122 / 32,552 / 62,559 / 133,225 B in produce
+    16,384 / 65,536 / 98,304 / 172,032 B system segments, and `Res.from_bytes` succeeds on 4/4.
+    They are also NOT a foreign container: all four carry the same crClipDictionary shape
+    (11 buckets, 1 clip, 1 animation each) and `ycd_write` walks them, reaching 20.7%-56.5% of
+    the segment. What is actually unmodelled is the SEQUENCE DATA REGION - `_locate_counts` finds
+    no candidate on 1/1/3/5 of their sequences - so the honest label is "v43 sequence encoding
+    underived", not "the reader dies inside inflate".
+    ⚠ THE OTHER HALF - that the reference exporter also declines them - is UNTOUCHED by this and
+    was NOT re-tested here; the reference declining a file is not evidence about the file.
+    ⚠ THE DECLINE IS DELIBERATELY LEFT IN PLACE: emitting a real conversion needs the v43
+    sequence encoding, which nobody has derived. This note exists so the next agent re-opens the
+    right question. Related and already closed: the `.ybd` lane's single v40 file
+    (`des_setpiece.ybd`) round-trips 100.0000% with 0 unreached bytes - measured 2026-08-15, so
+    an old container version is not by itself a reason to decline.
     """
     if len(blob) < 8 or blob[:4] != b'RSC7':
         return False

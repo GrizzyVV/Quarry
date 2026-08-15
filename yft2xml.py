@@ -117,6 +117,37 @@ from ydr2xml import (Res, drawable_lines, esc, fmt_float, read_geometries, _refu
 # every fragment must leave through exactly one of these four doors.
 register_ledger("fragment_extras", "seen",
                 ("absent", "emitted", "refused", "unresolved", "all_items_declined"))
+
+# ⭐⭐ THE OUTER LEDGER (2026-08-15) - A GATE INSIDE A BRANCH CANNOT SEE THE FRAGMENTS THAT NEVER
+# REACH THE BRANCH. The `fragment_extras` ledger above lives inside `_emit_drawable_array`, which
+# is called from ONE arm of `convert()`'s cloth/non-cloth dispatch. Measured 2026-08-15 on a
+# 1,500-file .yft draw (x64e/x64c/x64f/x64h): the inner ledger reported
+#     seen 1,403 = absent 1,283 + emitted 120 ... BALANCED
+# while 1,500 fragments were FED. The 97 missing are CLOTH fragments, and the ledger called itself
+# BALANCED anyway - because they were never its inputs. The same disease the inner ledger was
+# built to cure, one frame up: an accounting that cannot see an input cannot fail on it.
+# ⭐ THE IDENTITY IS THE DISPATCH ITSELF: every fragment that enters convert() leaves by exactly
+# one door - the cloth arm, the non-cloth arm, or a NAMED refusal - so cloth + non_cloth is
+# checked against the intake BEFORE the branch gets to decide anything.
+# ⚠ `errored` is a door too, and declaring it is what keeps this identity honest: without it every
+# exception would read as an unaccounted silent drop, and a ledger that cries wolf gets ignored,
+# which is how the inner one came to be trusted while blind to 97 files.
+register_ledger("fragment_dispatch", "seen",
+                ("cloth", "non_cloth", "version_declined", "no_main_drawable", "errored"))
+
+# One-element box holding the door the CURRENT convert() call left by. Module-level like OUTCOMES
+# itself (the workers are PROCESSES, not threads); cleared by convert()'s `finally` so a raise
+# cannot leak a stale door into the next file.
+_DISPATCH_DOOR = []
+
+
+def _dispatch_leave(outcome):
+    """Record which door this fragment left the dispatch by. FIRST CALL WINS, so a branch that is
+    entered and then raises is still reported as that branch - taking the branch IS the
+    disposition, which is the fact this ledger exists to check."""
+    if not _DISPATCH_DOOR:
+        _DISPATCH_DOOR.append(outcome)
+        _account("fragment_dispatch", outcome)
 # The 2026-08-06 byte-identical build reuses the float-text law + the yld cloth helpers.
 from meta2xml import fmt_num as _F, num_list, scalar_list
 from yld2xml import _vec4_block
@@ -1309,9 +1340,33 @@ def _emit_cloths(r):
 
 
 def convert(res, stem, extras=None):
-    """-> (xml text, []). THE entry point; byte-identical vs the reference exporter oracle. `extras` is
-    accepted for call-site compatibility but no longer changes output - the full fragment is always
-    built. Sidecars are [] here; quarry.to_interchange_xml still appends the embedded-texture ones."""
+    """-> (xml text, []). THE entry point; byte-identical vs the reference exporter oracle.
+
+    ⭐ THIS IS THE ACCOUNTING SHELL ONLY - it counts the fragment IN, delegates to
+    `_convert_dispatch` (the unchanged body), and names the door on the way out. It is a WRAPPER
+    rather than counters sprinkled through the body specifically so the emitting code below is not
+    re-indented or re-flowed: the emitted XML has to be provably unchanged, and the cheapest proof
+    is a diff that touches no line that writes a byte. (Verified 2026-08-15: 1,500 .yft converted
+    before and after, 1,500/1,500 SHA-256 identical, 0 differing.)
+    """
+    _DISPATCH_DOOR.clear()
+    _account("fragment_dispatch", "seen")
+    try:
+        return _convert_dispatch(res, stem, extras)
+    except BaseException:
+        # A door, not a hole: an exception is a real disposition and naming it is what stops the
+        # identity from reporting honest failures as silent drops. `_dispatch_leave` is
+        # first-call-wins, so a fragment that already named a door keeps it.
+        _dispatch_leave("errored")
+        raise
+    finally:
+        _DISPATCH_DOOR.clear()
+
+
+def _convert_dispatch(res, stem, extras=None):
+    """The fragment body, unchanged. `extras` is accepted for call-site compatibility but no longer
+    changes output - the full fragment is always built. Sidecars are [] here; quarry's
+    to_interchange_xml still appends the embedded-texture ones."""
     # v160 = the vehicle-MOD-PART stamp (tampa/torn/serrano2 wings, polbuffalo, seashark3…):
     # SAME layout as 162 — three witnesses decode byte-identical against fresh oracles under
     # the 162 offsets (v160_probe.py, 2026-08-08), and every accepted file's own oracle
@@ -1319,7 +1374,11 @@ def convert(res, stem, extras=None):
     try:
         res.require_version(YFT_VERSION, "Legacy fragment")
     except ValueError:
-        res.require_version(160, "Legacy fragment (v160 mod-part stamp)")
+        try:
+            res.require_version(160, "Legacy fragment (v160 mod-part stamp)")
+        except Exception:
+            _dispatch_leave("version_declined")
+            raise
         _refuse("fragment_v160_accepted_same_layout_as_162", stem)
     frag_name = res.cstr(res.u32(NAME_SLOT))
     if not frag_name:
@@ -1327,6 +1386,7 @@ def convert(res, stem, extras=None):
         frag_name = "pack:/" + stem
     _, draw_base = res.deref(res.u32(DRAWABLE_SLOT), 0xD0)
     if draw_base is None:
+        _dispatch_leave("no_main_drawable")
         raise ValueError("main drawable pointer (+0x30) does not resolve")
     nb = _bone_count(res, draw_base)
 
@@ -1334,6 +1394,10 @@ def convert(res, stem, extras=None):
     L.append(" <Name>%s</Name>" % esc(frag_name))
     L += _frag_header(res)
     if _is_cloth(res):
+        # ⭐ ACCOUNTED BEFORE THE BRANCH DOES ANYTHING. This arm never calls
+        # `_emit_drawable_array`, so a cloth fragment is invisible to the `fragment_extras` ledger
+        # by construction - naming the door here is the only place the intake can be closed.
+        _dispatch_leave("cloth")
         # cloth: NO top-level <Drawable>; the drawable is emitted under <Cloths><Item>
         L += _bone_transforms(res, nb)
         L += _emit_physics(res)
@@ -1341,6 +1405,7 @@ def convert(res, stem, extras=None):
         L += _fragment_lights(res)
         L += _emit_cloths(res)
     else:
+        _dispatch_leave("non_cloth")     # this arm's fragments are the `fragment_extras` intake
         body, lights = _drawable_body(res, draw_base, " ")
         L.append(" <Drawable>")
         L.extend(body)
