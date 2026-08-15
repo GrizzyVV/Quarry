@@ -5,6 +5,14 @@
 WHY: `.ytd` is 88,880 files - the LARGEST lane in GTA V. A lane with no writer is UNMEASURED,
 not passing (Matt, 2026-08-13).
 
+⭐⭐ COVERAGE AT POPULATION 2026-08-15 - THE LANE IS CLOSED. Every `.ytd` in the game, 88,880:
+    EXACT round-trip (every byte) : 88,879 / 88,879 = 100.0000%   (1 container REFUSED, and it
+    is `parachute_decals.ytd`, whose stored bytes do not decode to its declared page plan on any
+    route yet tried - see `read_ytd`. It is a CONTAINER problem, not a model problem.)
+    Reproduce: tools/roundtrip_population_all.py --run --lanes ytd, then --report.
+    The last three (`peddamagedecals` / `hakuchou` / `innovation`) closed on 2026-08-15 by
+    `_source_paths`; 0 regressions over 88,880 keys, 3 improved.
+
 COVERAGE AT POPULATION 2026-08-14 - every `.ytd` in the game, 88,880 files / 335,752 textures:
     EXACT round-trip (every byte) : 88,876 / 88,879      (1 container REFUSED, see `read_ytd`)
     mean coverage 99.999996%   system segment 99.999796%   graphics segment 100.000000%
@@ -17,9 +25,11 @@ TWO INDEPENDENT CHANGES LANDED THE SAME DAY; keep them apart, because they move 
   * THE 0x18 HEADER SLOT in `quarry.py::Rpf.payload` (another agent, same day): +5 files, by
     making five containers decode that this reader had been refusing. Not this file's doing.
     See `read_ytd`, which had them diagnosed WRONG and now records what they actually are.
-The 3 files still short are `peddamagedecals` / `hakuchou` / `innovation`, and the bytes they miss
-are unreferenced build-tool source paths - DEAD SPACE, re-proven by a pointer-site scan over all
-three (see `_cstr`). Their graphics segments are already 100.000000%.
+⛔ `was:` "The 3 files still short are `peddamagedecals` / `hakuchou` / `innovation`, and the bytes
+they miss are unreferenced build-tool source paths - DEAD SPACE ... Their graphics segments are
+already 100.000000%." Half of that stands: the paths ARE unreferenced, and no wider scan has found
+a pointer. What was wrong is the inference that unreferenced means unrecoverable - the strings
+identify themselves by `joaat(basename)` against the dictionary's own hash array. `_source_paths`.
 Reproduce the board:  python tools/roundtrip_coverage.py --lane ytd --limit 250   -> 250/250.
 Reproduce the population: tools/roundtrip_population_all.py --run --lanes ytd, then --report.
 
@@ -67,6 +77,7 @@ import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ydr2xml import Res, seg_size  # noqa: E402
 import ytd2xml  # noqa: E402
+import meta_write  # noqa: E402  (joaat - the hash the dictionary itself stores)
 
 
 class ContainerError(ValueError):
@@ -77,6 +88,13 @@ class ContainerError(ValueError):
 DICT_SPAN = 0x40
 TEX_SPAN = 0x90
 NAME_LIMIT = 160
+# A build-tool source path is longer than a texture NAME and shorter than any plausible run of
+# accidental ASCII. The longest witnessed is 90 bytes (`innovation.ytd`); 256 is the read cap,
+# not a fitted bound - a candidate that hits it without a NUL is simply not a string.
+PATH_LIMIT = 256
+
+# `_source_paths` fires on content, so its FIRE COUNT is the number to report - see that method.
+SOURCE_PATHS = collections.Counter()
 
 # ⛔ A DROP WITH NO COUNTER IS INDISTINGUISHABLE FROM "NOTHING TO DO" - the same idiom `ydr2xml`
 # and `ytd2xml` use. Process-global, accumulates across a run; read it to report the gap.
@@ -267,6 +285,18 @@ class Ytd:
         fixed 64 bytes here would claim whatever follows the string, which on a packed string
         table is the NEXT name; that is the fill-to-the-next-region failure in miniature.
 
+        ⛔⛔ SUPERSEDED 2026-08-15 - EVERYTHING BELOW IS CORRECT ABOUT REACHABILITY AND WRONG
+        ABOUT WHAT REACHABILITY DECIDES. `was:` "RULED OUT - IT IS DEAD SPACE, NOT A MISSED
+        STRUCTURE ... DO NOT 'close' this gap." (an AGENT's call, 2026-08-14, not Matt's.) The
+        pointer-site scans were re-run WIDER and every one still reports zero - including two the
+        original never ran, the graphics segment and every 4-byte slot of every grcTexture record.
+        There is no pointer. What that rules out is a POINTER, not a PIN: each path's basename
+        joaat-hashes to an entry of the dictionary's own hash array, 21 of 21 with 0 misses, so a
+        wrong claim is rejected by the file's own data. `_source_paths` does the reading and
+        carries the denominators and the false-fire rate. All three files are byte-exact.
+        ⭐ THE TRANSFERABLE LESSON, and this lane has now learned it twice: "nothing points at it"
+        ends the search for an OWNER, and says nothing about whether the CONTENT identifies itself.
+
         ⏭ THE ENTIRE REMAINING GAP IN THIS LANE LIVES BESIDE THIS CALL - and it is UNREACHABLE.
         ⭐ Δ 2026-08-14 at POPULATION it is THREE files of 88,874, not one of 1,519, and all three
         are the same shape: `x64a.rpf::peddamagedecals.ytd` (652 B in 11 runs, system 92.041%),
@@ -356,6 +386,87 @@ class Ytd:
             except struct.error:
                 break
             self._texture(tp_raw)
+        _hb, ho, hseg = self._res(hash_p, count * 4)
+        if ho is not None and hseg == 'sys':
+            self._source_paths(set(struct.unpack_from('<%dI' % count, s, ho)))
+
+    def _source_paths(self, hashes):
+        """THE BUILD-TOOL SOURCE PATH BLOCK - one NUL-terminated path per texture, and NOTHING IN
+        THE RESOURCE POINTS AT IT.
+
+        ⛔⛔ `_cstr` USED TO CARRY A PARAGRAPH SAYING "RULED OUT - IT IS DEAD SPACE ... DO NOT
+        'close' this gap." That was an AGENT's call, it was right about REACHABILITY and wrong
+        about what reachability decides. Everything it measured still stands and has been re-run
+        wider here:
+            tag-5 pointers from the SYSTEM segment into the block ...................... 0
+            any of the 36 four-byte slots of ANY grcTexture record, decoded as a pointer
+              into the block (not only the slots the writer reads) ..................... 0
+            the 16 slots of the pgDictionary header, likewise .......................... 0
+            tag-5 pointers from the GRAPHICS segment into the block (417,792 aligned
+              u32 sites over the three files) ......................................... 0
+            runs that decode wholly as tagged pointers (a table of pointers to the rest) 0
+        ⇒ there is no pointer. THE STRINGS ARE STILL PINNED, by their own CONTENT:
+
+        ⭐⭐ THE CONTROL THAT COULD REFUTE EVERY CLAIM. Each path's BASENAME, minus its extension,
+        joaat-hashes to an entry of THIS dictionary's own hash array:
+            peddamagedecals.ytd  11 paths -> 11 hashes match, 0 miss
+            hakuchou.ytd          5 paths ->  5 match, 0 miss
+            innovation.ytd        5 paths ->  5 match, 0 miss
+        A wrong start offset yields a different string, a different stem and a different hash, so
+        a wrong claim is REJECTED rather than silently absorbed - which is the property a claim
+        needs here, because the image copies the original bytes at whatever offsets are claimed.
+        This is the same instrument that closed `.ydd`: match by `joaat(name)`, not by extent.
+
+        THE LAYOUT the claims imply (checked, not assumed - it is not what the rule uses):
+        entries are 16-BYTE ALIGNED and consecutive, `next = start + align16(len + 1)`, holding
+        in 21 of 21 entries across the three files; the block ends exactly where the next live
+        structure begins (`peddamagedecals` at the hash array 0x0A20, `hakuchou` at the pointer
+        array 0x04C0).
+        ⛔ THE RULE DELIBERATELY DOES NOT USE THAT CHAIN. Walking a chain would make every entry
+        after the first depend on the previous entry's LENGTH, so one bad length would claim a
+        run of neighbours; scoring each candidate on its own hash keeps every claim independently
+        refutable, which is what the false-fire figure is measuring.
+
+        ⚠ IT IS A PATH, and the rule says so: the string must be printable ASCII, at least 8
+        bytes, and contain a path separator. That is what keeps the rule off the LIVE short-name
+        block, whose names carry no separator and are already claimed by `_cstr`.
+        """
+        s, out = self.res.sys, 0
+        for o in range(0, self.nsys - 8, 16):
+            if not (0x20 <= s[o] < 0x7F):
+                continue
+            # ⭐ THE CANDIDATE MUST BE A STRING START. Without this the scan also fires on every
+            # 16-byte SUFFIX of a path whose cut falls before the last separator - same basename,
+            # same stem, same hash - and claims the same bytes again: 73 fires for 21 entries on
+            # the three subjects. An entry is 16-aligned with NUL padding in front of it, so
+            # `s[o-1] == 0` is the file's own witness that `o` begins the string.
+            if o and s[o - 1]:
+                continue
+            end = s.find(b'\x00', o, min(o + PATH_LIMIT, self.nsys))
+            if end < 0 or end - o < 8:
+                continue
+            raw = bytes(s[o:end])
+            if not all(0x20 <= c < 0x7F for c in raw):
+                continue
+            try:
+                txt = raw.decode('ascii')
+            except UnicodeDecodeError:
+                continue
+            sep = max(txt.rfind('/'), txt.rfind('\\'))
+            if sep < 0:
+                continue                       # a name, not a path: `_cstr` owns those
+            stem = txt[sep + 1:]
+            dot = stem.rfind('.')
+            if dot > 0:
+                stem = stem[:dot]
+            if not stem:
+                continue
+            if meta_write.joaat(stem) in hashes:
+                self._put(o, end - o + 1)
+                out += 1
+        SOURCE_PATHS['files_with_paths' if out else 'files_without'] += 1
+        SOURCE_PATHS['paths_claimed'] += out
+        return out
 
     def _texture(self, tagged):
         s = self.res.sys

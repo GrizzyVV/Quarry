@@ -907,6 +907,79 @@ class Yft(ydr_write.Ydr):
         u18 = self._deref(self._p(mc, 0x18), 0x200)
         if u18 is not None:
             self._put(u18, 0x200)
+            self._morph_arrays(u18)
+
+    def _morph_arrays(self, blk):
+        """The morph block's OWN pgArrays - pointers this module held for 0x200 bytes and never
+        followed. Same signature as every other gap this campaign has closed.
+
+        ⭐ THE SUBJECT THAT FOUND IT, `barracks_hi.yft`: 3,024 bytes unreached, 0 tagged pointers
+        appearing to target them - because the run does not START there. `_chase` covers the
+        first 0x1000 of the array, so the residual is a TAIL and the pointer sits 4,096 bytes
+        earlier. Walking the run backwards by its own content law gives 0x44e360 .. 0x44ff30 =
+        7,120 B = 445 records, and the descriptor at `blk+0x50` reads
+        `{ptr -> 0x44e360, u16 count 445, u16 capacity 445}` - 445 * 16 = 7,120 EXACTLY.
+        ⚠ ITS TWIN `barracks.yft` HAS THE SAME BYTES AND SCORED EXACT, AND THAT WAS NOT EVIDENCE:
+        they were inside a 442,368-byte `_bound` claim taken from `+0x90` on a **type-12** bound
+        whose `u16 @+0xA0` read 55,296 - i.e. a self-fulfilling claim of the kind this measure
+        exists to catch (see `ydr_write._bound`, reported not edited). "Owned in the other build"
+        was an artefact, so the structure had to be found here rather than copied from there.
+
+        LAYOUT - a pgArray descriptor, scanned on the 8-byte grid inside the block:
+            +0x00 u64 tagged pointer | +0x08 u16 count | +0x0A u16 capacity | +0x0C u32 0
+        ⛔ THE ELEMENT SIZE IS NOT DERIVABLE FROM THE ROOM, and that was measured before being
+        abandoned: over 238 morph blocks the interval `room-15 <= count*esize <= room` admits a
+        UNIQUE integer only sometimes and returns DIFFERENT integers for the same slot in
+        different files (slot +0x50 gave 16 on eleven files and 36 on two). A room bound is an
+        upper bound on the allocation, not on the array, so slot -> element size cannot be read
+        off it. ⇒ the element size is decided by a law of the CONTENT, below.
+
+        ⭐⭐ THE LAW, and it can REFUSE: every 16-byte record is `{float a, b, c, d}` with
+        `|a + b + c - 1| <= 1e-3` - a barycentric triple (a point named by the triangle it lies
+        on) plus a signed offset. Nothing is claimed unless it holds for ALL `count` records.
+        MEASURED over 7,771 cached `.yft` (two whole-game draws), blind walk DISABLED,
+        238 morph blocks, 164 descriptors passing the pgArray gate:
+            subject passes ................. 26 / 164   (14 at +0x50, 12 at +0xA0, 0 elsewhere)
+            subject FAILS at those slots ....  0
+            records claimed ................ 2,353 x 16 B, 0 records violating the law
+        FALSE-FIRE against EXACTLY-SIZED controls, evaluated at the site the rule is evaluated:
+            an unrelated 16-aligned window of the same count*16 bytes ....  0 / 164   0.0000%
+            the count*16 bytes immediately AFTER the array ...............  8 / 164   4.8780%
+            the count*16 bytes immediately BEFORE the array ..............  8 / 164   4.8780%
+        ⭐ The two neighbour decoys are not false fires, they are the SIBLING array: +0x50 and
+        +0xA0 point at adjacent allocations, so each one's "neighbour window" is the other one's
+        array. The control that is genuinely off-structure scores ZERO.
+        ⛔ The gate is on the CONTENT, not on the slot number: +0x50 and +0xA0 are what this
+        sample happens to use, and hard-coding them would be fitting the sample instead of
+        reading the file.
+        """
+        s = self.res.sys
+        for q in range(0, 0x200, 8):
+            if blk + q + 16 > self.nsys:
+                break
+            p, hi, cnt, cap, tail = struct.unpack_from('<IIHHI', s, blk + q)
+            if (p >> 28) != 5 or hi or tail or not cnt or cap != cnt:
+                continue
+            off = self._deref(p, cnt * 16)
+            if off is None or off + cnt * 16 > self.nsys:
+                continue
+            if self._bary16(off, cnt):
+                self._putn(off, cnt * 16)
+
+    def _bary16(self, off, cnt):
+        """`cnt` records of {float a,b,c,d} with a+b+c == 1. See `_morph_arrays` for the
+        denominator and the false-fire rate; this is the test that lets the claim REFUSE."""
+        s = self.res.sys
+        for i in range(cnt):
+            try:
+                a, b, c, _d = struct.unpack_from('<4f', s, off + i * 16)
+            except (struct.error, ValueError):
+                return False
+            if a != a or b != b or c != c:          # NaN never satisfies the law
+                return False
+            if abs((a + b + c) - 1.0) > 1e-3:
+                return False
+        return True
 
     def _cloth_verlet(self, vc):
         if vc is None:
