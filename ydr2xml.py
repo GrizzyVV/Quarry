@@ -118,6 +118,86 @@ def report_refusals(stats=None, stream=None):
         print("      e.g. %s" % line, file=out)
 
 
+# ------------------------------------------------------- accounting identity (silent-drop gate)
+
+# ⛔⛔ A REFUSAL COUNTER PROVES A DROP WAS SEEN. IT CANNOT PROVE ONE WASN'T (2026-08-15).
+# `_refuse` above closed the drops we KNEW about. It cannot close the ones nobody named, because
+# `report_refusals` "prints NOTHING when every counter is zero" - so a branch that never ran, a
+# branch that ran and correctly found nothing, and a branch that silently dropped everything all
+# produce the SAME output: silence.
+#
+# ⭐⭐ THE FIX IS AN IDENTITY, NOT MORE COUNTERS:
+#         inputs_seen == sum(named outcomes)
+# If the two disagree, some input left by a path nobody named - and an unnamed path IS a silent
+# drop. This is the vault's own law ("a claimed region is evidence only if a wrong claim could
+# have been rejected") applied to CONTROL FLOW instead of bytes: an accounting that cannot fail
+# is not an accounting.
+#
+# ⭐ THIS REPORTER PRINTS EVEN WHEN THE BOOKS BALANCE, and that is deliberate - the opposite of
+# report_refusals. "Clean" is precisely the state we could not previously distinguish from
+# "never ran", so a balanced ledger has to SAY SO to be worth anything.
+#
+# ⚠ THE SAME DISEASE, ELSEWHERE, FOUND THE SAME DAY: `sidecar_into` (quarry.py:776) has no
+# byte-identical skip and `stats['xml_sidecars']` has no "already current" counterpart, so any
+# "N of N sidecars written" figure is a TAUTOLOGY - numerator and denominator are one counter and
+# it can only ever print 100%. Any new counter should be checked against this shape before it is
+# trusted. (Family: ENGINEERING_LOG "FOUR INSTRUMENTS THAT LIED".)
+OUTCOMES = collections.Counter()      # (branch, outcome) -> n
+LEDGERS = {}                          # branch -> (intake_outcome, (disposal outcomes, ...))
+
+
+def register_ledger(branch, intake, disposals):
+    """Declare that `branch` must dispose of every `intake` through exactly one of `disposals`.
+    Declaring the identity is what makes the check able to FAIL - an unregistered branch is
+    counted but never audited."""
+    LEDGERS[branch] = (intake, tuple(disposals))
+
+
+def _account(branch, outcome, n=1):
+    """Record that `branch` disposed of n inputs via the named `outcome`. Never raises."""
+    OUTCOMES[(branch, outcome)] += n
+
+
+def report_accounting(stats=None, stream=None):
+    """Check every registered ledger's books and print the disposition. Returns the total number
+    of UNACCOUNTED inputs across all branches - 0 means every input left by a named path.
+
+    A caller may treat a non-zero return as a hard failure. It is not raised here because the
+    export must finish and report, not die at the disclosure step.
+    """
+    out = stream if stream is not None else sys.stdout
+    unaccounted_total = 0
+    lines = []
+    for branch in sorted(LEDGERS):
+        intake, disposals = LEDGERS[branch]
+        seen = OUTCOMES[(branch, intake)]
+        if not seen:
+            continue                              # branch never ran this run; nothing to audit
+        parts = [(d, OUTCOMES[(branch, d)]) for d in disposals]
+        placed = sum(n for _, n in parts)
+        gap = seen - placed
+        unaccounted_total += abs(gap)
+        body = " + ".join("%s %s" % (d, format(n, ",")) for d, n in parts)
+        mark = "BALANCED" if gap == 0 else ("!!!! UNACCOUNTED %s" % format(gap, ","))
+        lines.append("    %-28s seen %-10s = %s   %s"
+                     % (branch, format(seen, ","), body, mark))
+        if stats is not None:
+            stats["accounting_%s_seen" % branch] = seen
+            for d, n in parts:
+                stats["accounting_%s_%s" % (branch, d)] = n
+            if gap:
+                stats["accounting_%s_UNACCOUNTED" % branch] = gap
+    if not lines:
+        return 0
+    print("emitter accounting (inputs == named outcomes; a gap IS a silent drop):", file=out)
+    for ln in lines:
+        print(ln, file=out)
+    if unaccounted_total:
+        print("    !!!! %s input(s) left by a path nobody named - this is a SILENT DROP, not a "
+              "rounding error." % format(unaccounted_total, ","), file=out)
+    return unaccounted_total
+
+
 # ---------------------------------------------------------------- container
 
 PAGE_BITS = {0: 27, 1: 26, 2: 25, 3: 24, 4: 17, 5: 11, 6: 7, 7: 5, 8: 4}

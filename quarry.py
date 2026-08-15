@@ -3997,6 +3997,16 @@ def report_lane_counters(stats):
     try:
         import ydr2xml
         ydr2xml.report_refusals(stats)   # emitter table (ydr+ydd+yft) -> stats[emitter_*] + print
+        # ⭐ AND THE OTHER HALF: report_refusals is silent on a clean run BY DESIGN, so it cannot
+        # tell "nothing was dropped" from "the branch never ran". report_accounting checks the
+        # declared identity (inputs == named outcomes) and prints EVEN WHEN BALANCED - a gap is a
+        # silent drop by definition. Returns the unaccounted total; surfaced into stats so a
+        # supervisor can gate on it rather than a human having to read the log.
+        _unacct = ydr2xml.report_accounting(stats)
+        if _unacct:
+            stats['EMITTER INPUTS UNACCOUNTED FOR (silent drop - see accounting table above)'] = \
+                stats.get('EMITTER INPUTS UNACCOUNTED FOR (silent drop - see accounting table '
+                          'above)', 0) + _unacct
     except Exception as ex:
         print(f'  (emitter refusal report unavailable: {type(ex).__name__}: {ex})')
     try:

@@ -107,7 +107,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # quarry's single ydr2xml.report_refusals(stats) call reports fragment declines too. A second
 # private table here would be a second thing to remember to surface.
 from ydr2xml import (Res, drawable_lines, esc, fmt_float, read_geometries, _refuse,
-                     _bound_lines, _model_group_lines, DRAWABLE_MODEL_GROUPS)
+                     _bound_lines, _model_group_lines, DRAWABLE_MODEL_GROUPS,
+                     _account, register_ledger)
+
+# ⭐ THE FRAGMENT-EXTRAS LEDGER (2026-08-15). The corrected emitter was proven not to INVENT a
+# <DrawableArray> (352/352 correct at population). It was NOT proven never to silently DROP one:
+# the absent path was a bare `return []` with no counter, so "correctly absent" and "we never
+# looked" were the same observation. Declaring the identity here is what makes that checkable -
+# every fragment must leave through exactly one of these four doors.
+register_ledger("fragment_extras", "seen",
+                ("absent", "emitted", "refused", "unresolved", "all_items_declined"))
 # The 2026-08-06 byte-identical build reuses the float-text law + the yld cloth helpers.
 from meta2xml import fmt_num as _F, num_list, scalar_list
 from yld2xml import _vec4_block
@@ -845,6 +854,10 @@ def _emit_drawable_array(r):
     ⚠ count > 1 is UNWITNESSED. The parallel-array shape generalises to it with no new guess, so
     it is emitted and COUNTED rather than refused — a rising counter is the signal to go looking
     for the file."""
+    # ⭐ EVERY fragment is counted IN here, and must be counted OUT through exactly one door
+    # below. The identity (seen == absent + emitted + refused + unresolved) is checked by
+    # ydr2xml.report_accounting(); a gap means a fragment left by a path nobody named.
+    _account("fragment_extras", "seen")
     p = _yU(r, 0x38)
     namep = _yU(r, 0x40)
     count = _yU(r, 0x48)
@@ -854,19 +867,31 @@ def _emit_drawable_array(r):
         if (p >> 28) == 5 or count:
             _refuse("fragment_extras_pointer_count_disagree",
                     "ptr 0x%08x count %d" % (p, count))
+            _account("fragment_extras", "refused")
+        else:
+            # ⭐ THE DOOR THAT USED TO BE INVISIBLE. This is the legitimate absent case (+0x38
+            # and +0x40 NULL, +0x48 zero, +0x4C 0xFFFFFFFF - 2,884 of 3,000 in the derivation
+            # draw). It was a bare `return []`, which made "correctly absent" and "never looked"
+            # the same observation. Counting it is what turns the accounting into evidence.
+            _account("fragment_extras", "absent")
         return []
     if (namep >> 28) != 5:
         _refuse("fragment_extras_name_array_absent", "%d extras" % count)
+        _account("fragment_extras", "refused")
         return []
     if count > 64:
         _refuse("fragment_extras_count_implausible", "count %d" % count)
+        _account("fragment_extras", "refused")
         return []
     if count != 1:
+        # ⚠ NOT a disposal - this one is counted and then CONTINUES to emit (count > 1 is
+        # unwitnessed, and the parallel-array shape generalises to it with no new guess).
         _refuse("fragment_extras_count_not_1_unwitnessed", "count %d" % count)
     _, tab = r.deref(p, count * 8)
     _, ntab = r.deref(namep, count * 8)
     if tab is None or ntab is None:
         _refuse("fragment_extras_arrays_unresolved", "count %d" % count)
+        _account("fragment_extras", "unresolved")
         return []
     L = [" <DrawableArray>"]
     for i in range(count):
@@ -898,8 +923,12 @@ def _emit_drawable_array(r):
         L.extend(" " + ln for ln in body)
         L.append("  </Item>")
     if len(L) == 1:                     # every item was declined - emit nothing, not an empty tag
+        # ⚠ DISTINCT from "unresolved": the arrays resolved fine, but no ITEM survived. Folding
+        # these together would hide which half of the walk is failing.
+        _account("fragment_extras", "all_items_declined")
         return []
     L.append(" </DrawableArray>")
+    _account("fragment_extras", "emitted")
     return L
 
 

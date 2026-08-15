@@ -99,6 +99,21 @@ T_BOOL, T_S8, T_U8, T_S16, T_U16, T_S32, T_U32 = 0x01, 0x10, 0x11, 0x12, 0x13, 0
 T_FLOAT, T_VEC3, T_VEC4 = 0x21, 0x33, 0x34
 T_STRUCT, T_PTR, T_STRING, T_HASH = 0x05, 0x07, 0x44, 0x4A
 T_FIXEDARR, T_ARRAY, T_ENUM_U8, T_ENUM, T_FLAGS = 0x50, 0x52, 0x60, 0x62, 0x65
+# 0x64 = 16-bit ENUM (2-byte slot) and 0x63 = 32-bit BITSET (4-byte slot). ADDED 2026-08-15 while
+# measuring the `ymt` lane. THEY WERE NOT MISSING BYTES - THEY WERE AN UNPINNED CLAIM: with no
+# field_size the reader claimed 0 bytes for them, so `struct_pad_ranges` handed the slot to a
+# `recordpad` cell that COPIES THE ORIGINAL BYTES. The round-trip therefore passed on them no
+# matter what the model believed, which is exactly the defect a8a126e removed from `_bound`.
+# Measured over all 2,326 RSC7-META .ymt in the game: 12,400 bytes of NON-ZERO record padding in
+# 1,142 files, and 12,400 / 12,400 (100.0000%) of them land on a declared 0x63/0x64 entry -
+# 3,010 x 4 B at CPedPropMetaData+0x028 (0x63, enum 0xFB1CEDD7) and 180 x 2 B at
+# CComponentInfo+0x028 (0x64, enum 0x34B4A664). 0 unattributed, and an unattributed byte was
+# reportable, so the attribution could have been refused.
+# WIDTH IS READ OFF THE FILE, not assumed: the next DECLARED entry sits at +0x02C after the 0x63
+# (4 B) and at +0x02A after the 0x64 (2 B), and the observed pad runs were exactly 4 and 2 bytes.
+# `meta2xml.py` (T_ENUM_U16 / T_FLAGS_U32B, line ~470) already decoded both - the writer was the
+# half that did not.
+T_ENUM_U16, T_FLAGS_U32B = 0x64, 0x63
 # 0x40 = INLINE CHAR BUFFER, `refKey` bytes wide, NUL-padded (found by the round-trip gate on
 # compositeEntityTypes: three 0x40 fields at 0/136/200 with refKey 0x40 = char[64]). It is a
 # VALUE, not a pointer - the text lives in the record itself.
@@ -165,8 +180,10 @@ def field_size(struct_def, e):
         return 16
     if t in PRIM:
         return PRIM[t][0]
-    if t in (T_HASH, T_ENUM, T_FLAGS, T_PTR):
+    if t in (T_HASH, T_ENUM, T_FLAGS, T_PTR, T_FLAGS_U32B):
         return 4
+    if t == T_ENUM_U16:
+        return 2
     if t == T_ENUM_U8:
         return 1
     if t in (T_STRING, T_ARRAY):
@@ -548,10 +565,14 @@ class _Reader(object):
                 v = v[0] if len(v) == 1 else v
                 self.cell(seg, o, fmt, v, "prim")
                 return v
-            if t in (T_HASH, T_ENUM, T_FLAGS):
+            if t in (T_HASH, T_ENUM, T_FLAGS, T_FLAGS_U32B):
                 v = struct.unpack_from("<I", buf, o)[0]
                 self.cell(seg, o, "I", v, {T_HASH: "hash", T_ENUM: "enum",
-                                           T_FLAGS: "flags"}[t])
+                                           T_FLAGS: "flags", T_FLAGS_U32B: "bitset32"}[t])
+                return v
+            if t == T_ENUM_U16:
+                v = struct.unpack_from("<H", buf, o)[0]
+                self.cell(seg, o, "H", v, "enum16")
                 return v
             if t == T_ENUM_U8:
                 v = buf[o]
@@ -792,6 +813,22 @@ def read_ymap(src):
     return _RoundTrip(src if isinstance(src, (bytes, bytearray)) else open(src, 'rb').read())
 
 
+def read_ymt(src):
+    """.ymt round-trip entry point - see _RoundTrip.
+
+    ADDED 2026-08-15. This module's first line has claimed `ymt` since it was written, but the
+    selftest only ever iterated ("ytyp", "ymap") and no ymt figure existed anywhere - the lane was
+    UNMEASURED, not passing. It is the same reader and the same writer: a scenario region, a ped
+    variation info and an interior ytyp are all v2 META, and the format is what the writer
+    addresses, not the extension.
+    ⚠ ONLY 2,326 of the game's 4,713 .ymt are RSC7 v2 META. The other 2,387 are PSIN (2,190) and
+    RBF0 (197) containers - a different format entirely, which this writer cannot address in
+    principle. `tools/roundtrip_coverage.py` gates on the container magic and DISCLOSES the
+    out-of-format count rather than counting it as an error or hiding it.
+    """
+    return _RoundTrip(src if isinstance(src, (bytes, bytearray)) else open(src, 'rb').read())
+
+
 def write_meta(img, **kw):
     return img.write(**kw)
 
@@ -821,7 +858,10 @@ if __name__ == "__main__":
 
     _random.seed(a.seed)
     rc = 0
-    for kind in ("ytyp", "ymap"):
+    # ⭐ "ymt" ADDED 2026-08-15. It was in this module's FIRST LINE and not in this tuple, which is
+    # precisely how the lane went unmeasured while the docstring claimed it. A selftest that
+    # iterates fewer kinds than the module advertises is a silent scope hole.
+    for kind in ("ytyp", "ymap", "ymt"):
         # RECURSIVE, and NOT type-first. The old globs were `<root>/*/<kind>/*.<kind>`, i.e. the
         # RETIRED type-first corpus layout. Under the pure game mirror no such path exists, so
         # this selftest silently matched NOTHING - see the refusal below.
