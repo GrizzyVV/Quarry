@@ -483,6 +483,19 @@ identifies a POLYGON OF THIS MESH, not the boundary of this array. The boundary 
 ⚠ Same scope as the other writers: inflated SYSTEM SEGMENT only. ⛔ Δ THE PAGE-COUNT RECORD AT
 `ptr@0x08 +8` IS NO LONGER COMPUTED - it is READ, as part of the block map `_pagemap` models.
 See `_pagemap` for why a computed value there was masking an unread allocation in every file.
+
+⛔⛔ THE BYTE ACCOUNT, ADDED 2026-08-16, AND IT IS NOT A FLATTERING NUMBER. `m.regions()` returns
+`(value, derived, zero_fill, carried)` and for this lane **`value` and `derived` are ZERO on every
+file**: the image is built by PASTING VERBATIM SLICES OF THE SOURCE at modelled offsets (`_flat`,
+`_flat_at` and the header span in `_bound` all append `bytes(res.sys[a:b])`), so 100% of the bytes
+this writer reproduces are CARRIED. That is the same fact this module already states three times
+in its own defect history - "the comparison image copies the ORIGINAL bytes at whatever offsets
+are claimed, so an unpinned claim always matches" - now expressed as a measurement instead of a
+warning. ⇒ **THE MODELLED THING IN THIS LANE IS THE LAYOUT, NOT THE FIELD VALUES.** A 100.0000%
+round-trip here says the span map TILES the file's content (every offset and length derived from a
+count or a tagged pointer the walk decoded); it says nothing about any value having been
+understood, and it could not - no value is ever re-encoded. Quote `carried` beside the coverage
+figure, never instead of it. See `_Spans.__call__`.
 ASCII output only.
 """
 import os
@@ -563,12 +576,85 @@ BOUND_SPAN_BY_TYPE = {0: 0x70, 1: 0x80, 3: 0x70, 4: 0x130, 8: 0x150, 10: 0x0B0, 
 _PRIM_SLOTS = {0: (4, 6, 8), 1: (2, 8), 2: (2, 8), 3: (4, 6, 8, 10), 4: (2, 8)}
 
 
+class _Spans(list):
+    """THE MODELLED-SPAN LIST - AND, WHEN CALLED, THIS LANE'S BYTE ACCOUNT.
+
+    ⛔ WHY IT IS A LIST SUBCLASS RATHER THAN A PLAIN METHOD, because the choice is not cosmetic.
+    `m.regions` has been the list of `(offset, bytes)` spans since this lane was built, and **28
+    probe scripts iterate it** - several of them named ABOVE as the reproduce command for a
+    shipped clause (`scratchpad/z1_area.py --report`, `ybn6_rule.py`, `ybn6_decoy.py`,
+    `ybn4_polymat.py`, `ybn3_probe_span.py`, `gap_class.py` ...). Taking the name for a method
+    would have broken every one of those without touching a byte of the format, so the byte
+    account is hung off `__call__` and the list keeps its name:
+        for off, data in m.regions   ->  the spans, exactly as before (unchanged)
+        m.regions()                  ->  (value, derived, zero_fill, carried)
+    ⛔ Nothing here participates in `write()`. This is a measurement bolted onto the model; the
+    emitted image is byte-for-byte what it was before this class existed.
+    """
+
+    def __init__(self, size):
+        list.__init__(self)
+        self.size = size        # an INT, deliberately not the model - no per-file reference cycle
+
+    def _claimed(self):
+        """1 per byte some span claims - the same paste `write()` performs, COUNTED instead of
+        written, so bytes claimed by two overlapping spans are counted ONCE. Named `_claimed`
+        and not `coverage` on purpose: `roundtrip_coverage.measure` keys the two-segment lane
+        protocol off `hasattr(m, 'coverage')`, and this must never answer that."""
+        cov = bytearray(self.size)
+        for off, data in self:
+            if off is not None and data:
+                cov[off:off + len(data)] = b'\x01' * len(data)
+        return cov
+
+    def __call__(self):
+        """(value, derived, zero_fill, carried) byte split of the reproduced image.
+
+        ⛔⛔ **THIS LANE IS A PHOTOCOPIER AND THE NUMBER SAYS SO: `carried` is ~100%.** Byte
+        identity cannot tell a rebuilt region from a copied one, and here there is nothing to
+        tell apart - every byte the writer emits is a verbatim slice of the source.
+            value   = 0. NOT ONE BYTE IS RE-ENCODED. Every append site in this module -
+                      `_flat`, `_flat_at`, and the header span in `_bound` - appends
+                      `bytes(self.res.sys[a:b])`. There is no `struct.pack` anywhere in the
+                      write path. `struct.unpack_from` appears ~30 times, all of it to decide
+                      WHERE and HOW LONG a span is; none of it to produce an output byte.
+            derived = 0, AND THAT IS A DELIBERATE PAST DECISION, not an omission. The one
+                      computed word this lane ever wrote - the page-count byte at the block
+                      map's +0x08 - was DELETED in the third pass (see `_pagemap`), which took
+                      the lane from 14,255 byte-exact to 0 and proved every passing file was
+                      resting on a synthesised value. `_pagemap` then earned all 14,255 back by
+                      READING the block map. So this lane has already paid, once, for the only
+                      derived byte it had.
+            zero_fill = the bytes no span claims. They stay zero, and at population this lane is
+                      15,139 / 15,139 byte-exact with 0 bytes unread, so on the game's own
+                      corpus every one of them is zero in the ORIGINAL too - reproduced by not
+                      writing, which proves nothing and is why it is its own bucket. (On a
+                      hypothetical file with a gap, a NON-ZERO original byte would land in this
+                      bucket and the file would simply fail its round-trip - `unreached()` is
+                      the instrument for that, not this split.)
+            carried = everything else: the span map, pasted.
+        ⇒ WHAT THE 100.0000% ROUND-TRIP ACTUALLY BUYS, stated so nobody quotes it as more: the
+        span map TILES the file - every offset and length is derived from a count or a tagged
+        pointer decoded out of the file, and this module's whole defect history (`+0x130`, the
+        page-count write, the composite mis-discrimination) is the record of what happens when
+        one is not. It is a complete LAYOUT, not an understood VALUE SET.
+        ⭐ THE ACCOUNTING IDENTITY HOLDS BY CONSTRUCTION, not by adjustment:
+        `value + derived + zero_fill + carried == self.size == len(Ybn.write())`, because
+        `write()` pastes into a `bytearray(self.size)` and every span is bounds-checked to
+        `<= self.size` at capture time.
+        """
+        carried = self.size - self._claimed().count(0)
+        return (0, 0, self.size - carried, carried)
+
+
 class Ybn:
     def __init__(self, res, flags=(0, 0)):
         self.res = res
         self.sys_flags, self.gfx_flags = flags
         self.size = len(res.sys)
-        self.regions = []
+        # ⚠ A `_Spans`, which IS a list and behaves as one everywhere it was already used; it is
+        # additionally CALLABLE, and calling it returns this lane's byte account. See `_Spans`.
+        self.regions = _Spans(self.size)
         self._seen = set()
         self._polyclaim = {}         # bound offset -> polygon records `_polytail` accounted for
         self._pagemap()

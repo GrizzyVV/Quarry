@@ -1820,6 +1820,55 @@ class Ydr:
             gi[off:off + len(data)] = data
         return bytes(si), bytes(gi)
 
+    def regions(self):
+        """(value, derived, zero_fill, carried) byte split of the reproduced image.
+
+        THE IMAGE IS THE TWO INFLATED SEGMENTS - `len(sys) + len(gfx)`, exactly what `write()`
+        returns. The RSC7 wrapper and the deflate stream are outside this writer entirely, so
+        they are not counted in any bucket rather than being quietly credited to one.
+
+        THE HONEST HEADLINE, AND IT IS NOT A FLATTERING ONE: **THIS LANE IS 100% CARRIED.**
+        `value` and `derived` are ZERO BY CONSTRUCTION, and that is a statement about the code,
+        not an estimate. There is not one `struct.pack` in this module: every byte the image
+        holds arrives through `_put` / `_putn` / `_flat`, each of which appends a VERBATIM SLICE
+        of `res.sys` / `res.gfx` (see the three append sites at the top of the class), and
+        `write()` only lays those slices into a zero-filled buffer. `.ydr` (and `.ydd` / `.yft`,
+        which inherit this class) is a REACHABILITY writer: it decodes pointers and counts to
+        decide WHICH bytes belong to the drawable's graph, and then copies them.
+
+        SO WHAT DOES THE 100.0000% COVERAGE ACTUALLY BUY? Exactly one thing, and this module has
+        said so since it was written: COMPLETENESS OF REACH, never interpretation. A byte counts
+        as reproduced only if some decoded pointer/count claimed it, so an unreached region stays
+        zero and shows as a difference - the gaps are the finding. What byte identity CANNOT do
+        here is refute a claimed span, because the image copies the original bytes at whatever
+        offset is claimed. That is precisely why the spans in this file are pinned by extent
+        evidence (BOUND_SPAN_BY_TYPE, the `_bvh` laws, the `_pagemap` allocation rule, `_putn`
+        refusing a count-derived overrun) rather than by whether they score better - an unpinned
+        claim is self-fulfilling, and `carried == 100%` is why that discipline is the only thing
+        standing between this lane and a fill.
+
+        ZERO-FILL IS THE UNREACHED REMAINDER, NOT PADDING WE UNDERSTAND. Anything no capture
+        claimed stays zero in the image; on a byte-exact file those bytes are zero in the source
+        too. It is deliberately NOT split into "padding" and "gap" - this writer holds no
+        evidence that would tell the two apart, and inventing that split would be the same
+        unfalsifiable move the spans above avoid.
+
+        The count is over DISTINCT image bytes: captures may overlap (the typed walks and the
+        deferred blind walk can claim the same ground), so a naive sum of region lengths would
+        exceed the image and break the accounting identity
+        `value + derived + zero_fill + carried == len(sys) + len(gfx)`.
+        """
+        # Mirrors `write()` slice-for-slice - same buffers, same slice assignment - so the marks
+        # land exactly where the bytes land and the total cannot drift from the image size.
+        cs, cg = bytearray(self.nsys), bytearray(self.ngfx)
+        for off, data in self.sysr:
+            cs[off:off + len(data)] = b'\x01' * len(data)
+        for off, data in self.gfxr:
+            cg[off:off + len(data)] = b'\x01' * len(data)
+        carried = cs.count(1) + cg.count(1)
+        total = len(cs) + len(cg)
+        return (0, 0, total - carried, carried)
+
     def coverage(self):
         gs, gg = self.write()
         ns = sum(1 for i in range(self.nsys) if gs[i] == self.res.sys[i])

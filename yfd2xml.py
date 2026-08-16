@@ -28,7 +28,7 @@ import os
 import struct
 import sys
 
-sys.path.insert(0, r"B:\ClaudeCode_Projects\_UEFiveMTool\quarry")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ydr2xml import Res                       # noqa: E402  (RSC7 container reader)
 from meta2xml import fmt_num, joaat, num_list  # noqa: E402  (float law, jenkins, 10-per-line law)
 

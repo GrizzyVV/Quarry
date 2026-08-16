@@ -321,6 +321,58 @@ class Yed(Model):
         self.rd_array(vo + 16 + src_area, '<f', rest // 4, 'blend_plane')
         return payload
 
+    # ------------------------------------------------------------------ the byte account
+    def regions(self):
+        """(value, derived, zero_fill, carried) byte split of the reproduced image.
+
+        ⭐ DISCLOSURE, NOT DECORATION. Byte identity alone cannot tell a REBUILT region from a
+        COPIED one: a writer that memcpy's a span it does not understand still scores 100%. This
+        method is the lane saying which of its bytes it actually understood, and it is the number
+        to quote NEXT TO the coverage figure - never instead of it.
+
+            value      re-encoded from a decoded value (`Model.rd`, one struct claim per record)
+            derived    COMPUTED from the model, not read from the bytes it overwrites - here that
+                       is exactly the 4-byte page-count word `Model._stamp_pagecount` recomputes
+                       from the RSC7 segment flags
+            zero_fill  never claimed; the image leaves the byte at zero
+            carried    VERBATIM copies out of the source buffer (`Model.carry`)
+
+        ⭐ `carried` IS 0 BY CONSTRUCTION IN THIS LANE, and that is a structural fact rather than
+        a claim. `pgdict_write.Model.carry` is the ONLY verbatim-copy path this model has, it is
+        the only thing that files a CARRIED claim, and this writer never invokes it - the module
+        header's "Model.carry() is called ZERO times" line is the same statement. There is no
+        slice of the source buffer anywhere in this file either, so there is no region whose
+        claim could be self-fulfilling, and `carried` cannot become non-zero without a new call
+        site that the accounting would then count.
+
+        ⚠ SCOPE, and it is the same scope the round-trip measures: the INFLATED SYSTEM SEGMENT
+        that `Model.write()` produces, not the compressed RSC7 container. The identity checked
+        below is therefore against `self.size` == `len(self.write())`.
+
+        ⚠ ZERO_FILL IS NOT ALL PADDING. It is `zero_pad` (never claimed, and the ORIGINAL byte is
+        zero - padding we did not have to understand) PLUS `zero_residual` (never claimed and
+        NON-ZERO in the original - data we DROP, which is the finding this campaign exists to
+        surface). They are folded here because both are zero in the produced image and the tuple
+        has four slots; they stay separated in `accounting()`, and `zero_residual` is 0 on this
+        lane at population (242/242 exact). Read them apart with:
+            a = m.accounting(); a['zero_pad'], a['zero_residual'], a['value_named']
+        `accounting()` also splits VALUE into NAMED fields vs untyped tiling words - on `.yed`
+        every VALUE byte is NAMED - which `regions()` cannot express and which is the stronger
+        statement of the two.
+        """
+        a = self.accounting()
+        value = a['value_named'] + a['value_words']
+        derived = a['derived']
+        zero_fill = a['zero_pad'] + a['zero_residual']
+        carried = a['carried']
+        # ⛔ THE ACCOUNTING IDENTITY IS THE CHECK, AND IT REFUSES RATHER THAN FUDGES A BUCKET.
+        # `accounting()` already refuses on an overlapping claim; this re-states the sum against
+        # the image length so a future edit that adds a bucket cannot quietly lose bytes.
+        if value + derived + zero_fill + carried != self.size:
+            raise ModelError('yed: byte account %d + %d + %d + %d != image %d'
+                             % (value, derived, zero_fill, carried, self.size))
+        return (value, derived, zero_fill, carried)
+
 
 def read_yed(src):
     return pgdict_write.read(src, Yed)

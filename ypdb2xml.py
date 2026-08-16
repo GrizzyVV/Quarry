@@ -49,11 +49,23 @@ Sample record (272 bytes, fixed layout):
   +188  f32   Weights[weightCount]          -> <Weights>  (14 vals, 10/line)
   +244  f32   BoundsMin[3]                  -> <BoundsMin x y z>
   +256  f32   BoundsMax[3]                  -> <BoundsMax x y z>
-  +268  f32   trailing       (= 13.5 for every sample; NOT in XML)  (constant)
+  +268  f32   trailing       -> <UnkTail value=..>
+        ⛔ THIS LINE USED TO READ "(= 13.5 for every sample; NOT in XML) (constant)" AND BOTH
+        HALVES WERE WRONG. Measured over the whole lane 2026-08-16 (56/56 files, 516 samples):
+        SIX distinct values, 100% NON-ZERO - 8.3 (x188), 13.5 (x164), 12.0 (x100), 6.0 (x44),
+        5.0 (x16). It is not constant, and it is now emitted.
+        ⭐ The "constant" claim came from the original two-oracle base, where every sample
+        happened to hold 13.5 - a POPULATION of two files. This is the same shape as the fixed
+        272-byte stride below: true of the sample that was looked at, false of the lane.
+
+⚠ THE "Sample record (272 bytes, fixed layout)" HEADING BELOW IS ALSO THE TWO-ORACLE SHAPE.
+`decode()` walks a CURSOR with count-driven sizes because animal posematchers store 2-6
+points/weights per sample - see the note at the walk. The offsets are correct for the 14-point
+shape and indicative for the rest; the CODE is the authority, not this diagram.
 """
 import os, sys, struct
 
-sys.path.insert(0, r'B:\ClaudeCode_Projects\_UEFiveMTool\quarry')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from meta2xml import fmt_num, joaat, esc
 
 # --- oracle-derived clip/clipset string dictionary (see module docstring) ------

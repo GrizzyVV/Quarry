@@ -537,6 +537,72 @@ class Ydd(ydr_write.Ydr):
                 self.sysr[k] = (o, data[:DRAWABLE_RECORD])
                 return
 
+    # ---------------------------------------------------------------- the byte account
+    def regions(self):
+        """(value, derived, zero_fill, carried) byte split of the reproduced image.
+
+        ⛔⛔ THE HONEST HEADLINE, STATED BEFORE THE COVERAGE FIGURE: **97.15% OF THIS LANE IS
+        CARRIED VERBATIM, AND VALUE AND DERIVED ARE BOTH EXACTLY ZERO.** This lane's 100.0000%
+        round-trip is a REACHABILITY result, not an understanding result, and the two must be
+        quoted together or neither. Nothing in this writer is re-encoded from a decoded value:
+        `_put`/`_putn`/`_flat` each append `bytes(res.sys[a:b])` (or the graphics twin) and
+        `ydr_write.write` lays those slices into a zero-filled image and SYNTHESISES NOTHING. So
+        `value` and `derived` are 0 BY CONSTRUCTION - there is no `struct.pack` on this path at
+        all - and the split is a two-way one: a byte is either a verbatim copy or a byte the walk
+        never claimed and therefore left zero.
+        ⚠ `derived` was not always 0: `write()` used to overwrite the block-map page-count word
+        with a value recomputed from the RSC7 flags. It was REMOVED 2026-08-14 (see
+        `ydr_write.write` / `_pagemap`) precisely because it was pasting a computed value over a
+        region nothing had read. There is no computed byte left to count.
+
+        WHAT THE BUCKETS MEAN HERE, said plainly so nobody reads a flattering number into them:
+          carried    every byte a capture claimed - the union of the `sysr`/`gfxr` spans, computed
+                     the same way `write()` lays the image, so an overlap is counted ONCE and
+                     cannot inflate the figure.
+          zero_fill  every byte no capture claimed. ⛔ It is NOT modelled padding: it is the gap
+                     the walk never reached, and it round-trips only because those bytes are zero
+                     in the source too (the image is zero-filled - `ydr_write._texdict` records
+                     the same point). It is not understood ground either.
+          value      0. No byte of this image passes through a decoded, typed value.
+          derived    0. Nothing is computed from the model.
+
+        MEASURED 2026-08-16 on the lane's own stratified draw (`scratchpad/ydd_split.py`, sample
+        size printed, drawn through `roundtrip_coverage.harvest` from the GAME):
+            250 files, 264,257,536 B of image
+                VALUE 0.0000% | DERIVED 0.0000% | ZERO-FILL 2.8486% | CARRIED **97.1514%**
+                accounting identity held 250/250; lowest carried share berd_001_r.ydd 27.8094%
+             25 files, 26,402,816 B
+                VALUE 0.0000% | DERIVED 0.0000% | ZERO-FILL 2.4447% | CARRIED **97.5553%**
+                identity held 25/25
+        ⭐ THE CONTROL THAT COULD HAVE REFUTED `value == derived == 0`, run over the same 250
+        files: every byte of the produced image that NO capture claims is ZERO, and every byte a
+        capture does claim EQUALS the source. **0 exceptions in 264,257,536 bytes.** Had the
+        writer computed or packed anything, an unclaimed image byte would be non-zero and the
+        control would fire. That is why the identity `value + derived + zero_fill + carried ==
+        len(sys image) + len(gfx image)` is a partition of the image and not arithmetic
+        bookkeeping.
+        ⚠ SCOPE - TWO SEGMENTS, ONE ACCOUNT. The image this lane produces is the pair
+        (system, graphics), so the denominator is `nsys + ngfx` (the INFLATED segments), not the
+        compressed RSC7 file. A sys-only account would understate the lane exactly the way a
+        sys-only coverage figure did before this module reported both.
+        ⚠ WHAT THIS DOES **NOT** SAY: it is a statement about THIS WRITER, not about the lane's
+        readers. `ydr2xml`/`ydd2xml` decode drawables to typed values; how much of the file that
+        recovers is a separate measurement and is not claimed here.
+        ⛔ `.ydr` and `.yft` share `ydr_write.Ydr` and would report the same shape, but this
+        module does not edit shared modules (see `_trim` for the same rule) - so those two lanes
+        still have NO byte account, which is not the same as 0% carried.
+        """
+        # the SAME coverage map the polygon-tail rule grades against, so the account cannot
+        # drift from what the walk actually claimed.
+        cov_s = self._coverage_map()
+        cov_g = bytearray(self.ngfx)
+        for off, data in self.gfxr:
+            if off is not None and data:
+                cov_g[off:off + len(data)] = b'\x01' * len(data)
+        zero_fill = cov_s.count(0) + cov_g.count(0)
+        carried = (self.nsys + self.ngfx) - zero_fill
+        return (0, 0, zero_fill, carried)
+
 
 def read_ydd(src):
     blob = bytes(src) if isinstance(src, (bytes, bytearray)) else open(src, 'rb').read()

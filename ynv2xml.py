@@ -98,7 +98,8 @@ pre-2026-08-10 emitter's output (the two original oracles were exactly that clas
 which is how the Portals/Points surface stayed invisible to a 2-oracle base).
 """
 import sys, os, math, struct
-sys.path.insert(0, r'B:\ClaudeCode_Projects\_UEFiveMTool\quarry')
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ydr2xml import Res
 from meta2xml import fmt_num, esc
 

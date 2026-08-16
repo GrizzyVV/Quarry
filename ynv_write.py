@@ -77,7 +77,16 @@ class Ynv:
         self.sys_flags, self.gfx_flags = flags
         self.size = len(res.sys)
         self.header = bytes(res.sys[:min(HEADER, self.size)])
-        self.regions = []               # (offset, bytes) - every modelled region
+        # ⚠ RENAMED 2026-08-16 from `self.regions` (list) so the name could carry the lane's
+        # BYTE ACCOUNT, `regions()` - the four-bucket method every accounted lane exposes
+        # (`awc_write`, `ypdb_write`). Nothing outside this module read the list: the lane's only
+        # entry point is `read_ynv` and its only consumer is `tools/roundtrip_coverage.py`, which
+        # calls `unreached()`. NO WRITE PATH CHANGED - `write()` iterates the same tuples in the
+        # same order, so the emitted image is byte-for-byte what it was.
+        self._regions = []              # (offset, bytes) - every modelled region
+        # Indices into `_regions` whose bytes are COMPUTED, not copied. Only `_start_index_array`
+        # puts anything here; everything else in this writer is a slice of the source.
+        self._derived_regions = set()
         s = res.sys
 
         # four block lists, each: descriptor -> block array -> per-block data
@@ -104,7 +113,7 @@ class Ynv:
             return
         off = self._off(ptr)
         if off is not None:
-            self.regions.append((off, bytes(self.res.sys[off:off + nbytes])))
+            self._regions.append((off, bytes(self.res.sys[off:off + nbytes])))
 
     def _blocklist(self, desc_ptr, stride):
         """Descriptor -> block array -> each block's data. Modelled per BLOCK, not as one slab,
@@ -114,7 +123,7 @@ class Ynv:
         if doff is None:
             return
         s = self.res.sys
-        self.regions.append((doff, bytes(s[doff:doff + 0x30])))     # the descriptor itself
+        self._regions.append((doff, bytes(s[doff:doff + 0x30])))     # the descriptor itself
         try:
             nblocks = struct.unpack_from('<I', s, doff + 0x20)[0]
             arr_ptr = struct.unpack_from('<I', s, doff + 0x10)[0]
@@ -123,7 +132,7 @@ class Ynv:
         aoff = self._off(arr_ptr)
         if aoff is None or nblocks > 4096:
             return
-        self.regions.append((aoff, bytes(s[aoff:aoff + nblocks * 16])))   # the block array
+        self._regions.append((aoff, bytes(s[aoff:aoff + nblocks * 16])))   # the block array
         counts = []
         for i in range(nblocks):
             b = aoff + i * 16
@@ -170,7 +179,10 @@ class Ynv:
         for c in counts:
             out.append(acc)
             acc += c
-        self.regions.append((off, b''.join(struct.pack('<I', v) for v in out)))
+        self._regions.append((off, b''.join(struct.pack('<I', v) for v in out)))
+        # DERIVED, and it is the ONLY derived region in the list: these bytes are a prefix sum
+        # this writer computes, never a slice of the source. `regions()` counts it as such.
+        self._derived_regions.add(len(self._regions) - 1)
 
     NODE_SIZE = 0x54            # BBMin/BBMax + sector ptr + four child slots ending at 0x4C+8
     SECTOR_SIZE = 0x20          # sector-data record: poly-list ptr +0x08, points ptr +0x10,
@@ -189,7 +201,7 @@ class Ynv:
             if n in self._seen_nodes or n + self.NODE_SIZE > len(s):
                 continue
             self._seen_nodes.add(n)
-            self.regions.append((n, bytes(s[n:n + self.NODE_SIZE])))
+            self._regions.append((n, bytes(s[n:n + self.NODE_SIZE])))
             try:
                 sec_raw = struct.unpack_from('<I', s, n + 0x2C)[0]
             except struct.error:
@@ -197,7 +209,7 @@ class Ynv:
             if sec_raw:
                 sec = self._off(sec_raw)
                 if sec is not None and sec + self.SECTOR_SIZE <= len(s):
-                    self.regions.append((sec, bytes(s[sec:sec + self.SECTOR_SIZE])))
+                    self._regions.append((sec, bytes(s[sec:sec + self.SECTOR_SIZE])))
                     try:
                         npts = struct.unpack_from('<H', s, sec + 0x1A)[0]
                         self._flat(struct.unpack_from('<I', s, sec + 0x10)[0], npts * 8)
@@ -223,7 +235,7 @@ class Ynv:
     def write(self):
         img = bytearray(self.size)
         img[:len(self.header)] = self.header
-        for off, data in self.regions:
+        for off, data in self._regions:
             if off is not None and data:
                 img[off:off + len(data)] = data
         # page-count record: COMPUTED, never carried (see module docstring)
@@ -243,6 +255,64 @@ class Ynv:
         n = min(len(got), len(orig))
         bad = [i for i in range(n) if got[i] != orig[i]]
         return len(bad), sum(1 for i in bad if orig[i] != 0), bad
+
+    # ------------------------------------------------------------------ byte account
+    # Tag values written into the shadow image below. `_ZERO` is 0 so an untouched byte is
+    # already tagged zero-fill, exactly as an untouched byte of `write()`'s image is already 0.
+    _ZERO, _VALUE, _DERIVED, _CARRIED = 0, 1, 2, 3
+
+    def regions(self):
+        """(value, derived, zero_fill, carried) byte split of the reproduced image.
+
+        ⭐ DISCLOSURE, NOT DECORATION. Byte identity alone cannot tell a rebuilt region from a
+        copied one, and this vault's law is that A CLAIMED REGION IS EVIDENCE ONLY IF A WRONG
+        CLAIM COULD HAVE BEEN REJECTED. `carried` is the part of a passing file that could not
+        have failed on its own content.
+
+        ⛔⛔ AND FOR THIS LANE THE ANSWER IS UGLY, WHICH IS THE POINT. `ynv_write` is a
+        REGION-CAPTURE writer: every entry appended to `_regions` except one is
+        `bytes(res.sys[a:b])` - the source's own bytes, replayed at the offset the model claims.
+        So VALUE is **0 bytes on every file**: this writer re-encodes nothing from a decoded,
+        width-typed value. Only two things are computed rather than copied -
+            - the per-block START-INDEX arrays (`_start_index_array`, a prefix sum), and
+            - the 4-byte page-count record at `ptr@0x08 +8`
+        - and both land in DERIVED. Everything else the model "reads" it reads only far enough to
+        know WHERE the bytes are and HOW MANY, never WHAT they mean; the vertex, edge, polygon,
+        portal and quadtree payloads are memcpy'd. The lane's 100% round-trip therefore means
+        "the pointer graph and the extents are right", NOT "the navmesh is understood".
+        ⚠ 40/40 reference parity plus 100% round-trip plus this number is the whole honest
+        statement, and the third term is the one that says how much decoding is still owed.
+
+        ⭐ COUNTED BY REPLAYING `write()` ONTO A SHADOW IMAGE, byte for byte, in the same order
+        with the same slice assignments - NOT by summing region lengths. Region lengths would
+        double-count every overlap (the page-count record lands INSIDE a carried descriptor, and
+        `bytearray` slice assignment past the end GROWS the image), and a sum that does not tile
+        the image is exactly the kind of accounting this vault's laws exist to refuse. Because
+        the shadow image is built by the identical operations, `len(tag) == len(self.write())`
+        and the four buckets partition it: the accounting identity holds by construction, not by
+        a residual bucket absorbing the difference.
+        ⚠ SCOPE: the base is the INFLATED SYSTEM SEGMENT, the same image `unreached()` grades -
+        not the deflate container and not the archive bytes.
+        """
+        tag = bytearray(self.size)
+        tag[:len(self.header)] = bytes([self._CARRIED]) * len(self.header)
+        for i, (off, data) in enumerate(self._regions):
+            if off is not None and data:
+                kind = self._DERIVED if i in self._derived_regions else self._CARRIED
+                tag[off:off + len(data)] = bytes([kind]) * len(data)
+        # Mirrors `write()`'s page-count block EXACTLY, including the same computation, so that a
+        # file where `page_count` raises is accounted the same way it is written.
+        try:
+            import meta_write
+            buf, o = self.res.deref(self.res.ptr(0x08), 16)
+            if buf is not None and o + 12 <= len(tag):
+                _val = ((meta_write.page_count(self.sys_flags) & 0xFF)
+                        | ((meta_write.page_count(self.gfx_flags) & 0xFF) << 8))
+                tag[o + 8:o + 12] = bytes([self._DERIVED]) * 4
+        except Exception:
+            pass
+        return (tag.count(self._VALUE), tag.count(self._DERIVED),
+                tag.count(self._ZERO), tag.count(self._CARRIED))
 
 
 def read_ynv(src):

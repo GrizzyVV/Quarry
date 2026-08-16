@@ -48,7 +48,7 @@ import os
 import struct
 import sys
 
-sys.path.insert(0, r"B:\ClaudeCode_Projects\_UEFiveMTool\quarry")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ydr2xml import (Res, _bound_lines, _bound_deref, _bound_header_lines,     # noqa: E402
                      _bound_flags_text, BOUND_COMPOSITE_FLAG_BITS)
 from meta2xml import fmt_num, esc, num_list, scalar_list, joaat  # noqa: E402

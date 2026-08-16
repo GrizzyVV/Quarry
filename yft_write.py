@@ -993,6 +993,72 @@ class Yft(ydr_write.Ydr):
         for q in range(0, CLOTH_VERLET_SPAN, 4):
             self._chase(self._p(vc, q))
 
+    # ---------------------------------------------------------------- byte account
+    def regions(self):
+        """(value, derived, zero_fill, carried) byte split of the reproduced image.
+
+        DISCLOSURE, NOT DECORATION. Byte identity alone cannot tell a rebuilt region from a
+        copied one, and this lane is the copied case: it is a REACHABILITY writer, not an
+        encoder. `value` and `derived` are 0 BY CONSTRUCTION - every byte this lane emits comes
+        from `_put`/`_putn`/`_flat`/`_putc`/`_flatc`, and every one of those appends a literal
+        `bytes(self.res.sys[off:off+n])` slice; `ydr_write.write()` lays those slices into a
+        zero-filled image and synthesises nothing (there is not one `struct.pack` on the emit
+        path in either module). `ydr_write._put` already says it out loud: "Every capture is a
+        VERBATIM COPY of the source, so ANY byte claimed trivially reproduces."
+
+        SO THE LANE'S 99.9984% BYTE-EXACT IS A REACHABILITY SCORE, NOT AN UNDERSTANDING SCORE.
+        What the model earns is WHICH BYTES IT CLAIMS - the offsets and extents that the spans,
+        counts and predicates in this module derive from the file's own fields. A wrong span or
+        a misread count moves the claim and the file goes short, which is what makes the walk
+        falsifiable. What it does NOT earn is the CONTENT of any claimed byte: no value in this
+        lane is ever decoded and re-encoded, so no wrong reading of a field's MEANING could be
+        rejected by the round-trip. Quote `carried` next to the coverage figure, never instead.
+
+        THE BUCKETS, exactly as this lane fills them:
+          value      0 - nothing is re-encoded from a decoded value.
+          derived    0 - nothing is computed into the image. The one computed word this lane
+                     used to write (the page-count at blockmap+8) was REMOVED on 2026-08-14
+                     precisely because it was overwriting a byte the walk had already carried;
+                     see `ydr_write.write()`. Counts/spans/strides that this module derives are
+                     used to SIZE and PLACE a copy, never to produce a byte.
+          zero_fill  the image bytes no region claims. They are left zero by `write()`. This is
+                     UNCLAIMED GAP, not modelled padding - it only "passes" the comparison where
+                     the source is itself zero there, which is why it is booked separately from
+                     carried and never counted as understanding.
+          carried    the number of DISTINCT image bytes written from a source slice, i.e. the
+                     UNION of the claimed spans. Regions overlap freely here (typed walks and
+                     the deferred blind chase claim the same bytes), so a sum of `len(data)`
+                     would double-count and break the identity below - it is a union, not a sum.
+
+        THE IDENTITY, which is the check:  value + derived + zero_fill + carried == nsys + ngfx,
+        the exact size of the two-segment image `write()` returns.
+        """
+        carried = _union_len(self.sysr, self.nsys) + _union_len(self.gfxr, self.ngfx)
+        return (0, 0, (self.nsys + self.ngfx) - carried, carried)
+
+
+def _union_len(regions, size):
+    """Distinct bytes covered by `regions` - a list of (offset, data) as `write()` consumes it.
+
+    UNION, NOT SUM. The walk claims the same bytes more than once by design (see `_chase`'s
+    deferral note), and `write()` is idempotent over an overlap: laying a region twice paints
+    the same image bytes. Counting them twice would report more carried bytes than the image
+    has. `size` is passed so a region that ran past the segment end would show up as a broken
+    accounting identity rather than being silently absorbed.
+    """
+    if not regions:
+        return 0
+    spans = sorted((off, off + len(data)) for off, data in regions if data)
+    total = 0
+    cur_a, cur_b = spans[0]
+    for a, b in spans[1:]:
+        if a > cur_b:
+            total += cur_b - cur_a
+            cur_a, cur_b = a, b
+        elif b > cur_b:
+            cur_b = b
+    return total + (cur_b - cur_a)
+
 
 def read_yft(src):
     blob = bytes(src) if isinstance(src, (bytes, bytearray)) else open(src, 'rb').read()

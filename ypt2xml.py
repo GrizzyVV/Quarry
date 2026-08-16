@@ -37,7 +37,8 @@ REUSE:  Res (RSC7 reader) <- ydr2xml ; read_textures/to_xml (embedded grcTexture
         <- ytd2xml ; joaat / fmt_num / esc <- meta2xml.
 """
 import argparse, os, struct, sys
-sys.path.insert(0, r"B:\ClaudeCode_Projects\_UEFiveMTool\quarry")
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ydr2xml import Res
 import ytd2xml
 from meta2xml import joaat, fmt_num, esc

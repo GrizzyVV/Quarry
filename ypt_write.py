@@ -1155,6 +1155,42 @@ class Ypt:
             pass
         return bytes(ks), bytes(kg)
 
+    def regions(self):
+        """(value, derived, zero_fill, carried) byte split of the reproduced image.
+
+        ⭐ DISCLOSURE, NOT DECORATION. Byte identity alone cannot tell a rebuilt region from a
+        copied one, and this vault's law is that a claimed region is evidence ONLY IF A WRONG
+        CLAIM COULD HAVE BEEN REJECTED. `carried` is the part of a passing file that could not
+        have failed on its own content; quote it next to the 100.0000% figure, never instead.
+
+        ⛔ THE DENOMINATOR IS BOTH SEGMENTS, so the number is LARGE and that is the correct
+        answer. `write()` produces (system, graphics) and this counts every byte of both:
+            value + derived + zero_fill + carried == len(sys image) + len(gfx image)
+        The graphics segment is ~49% of this lane's bytes and it is ~81% CARRIED, because it is
+        the embedded TEXTURE PIXELS - a BC-compressed texel block is not what this measure is
+        about. So the COMBINED carried figure is dominated by pixels, not by the effect graph.
+        The system segment - where the rmPtfx object model actually lives - reads 1.86% carried
+        over all bytes / 5.11% over its non-zero bytes (population figures, module header).
+        Per-segment splits are available from `kindmap()`, which this is the summary of.
+
+        WHERE THE CARRIED BYTES COME FROM, all of them labelled at the claim site:
+          `pixels`        - texture mip chains in the graphics segment (the bulk)
+          `drawable`      - `ydr_write`'s verbatim spans for an embedded gtaDrawable, applied
+                            only where the typed model claimed nothing (see `_apply_drawable`)
+          `vtable.anchor` - 8 B/file, the build identity; nothing else in the file derives it
+          `vtable.learn`  - first instance of a class this build's table does not know
+          `*.bits`        - a value that did not survive its own type (signalling NaN), emitted
+                            verbatim rather than dressed up as a decoded value
+        """
+        ks, kg = self.kindmap()
+        value = ks.count(VALUE) + kg.count(VALUE)
+        derived = ks.count(DERIVED) + kg.count(DERIVED)
+        carried = ks.count(CARRIED) + kg.count(CARRIED)
+        # Everything the model never claimed stays zero in the written image. It is only CORRECT
+        # where the original is zero too - `unreached()` is what tests that, not this split.
+        zero_fill = ks.count(0) + kg.count(0)
+        return (value, derived, zero_fill, carried)
+
     @staticmethod
     def _same(a, b):
         n = min(len(a), len(b))

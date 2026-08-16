@@ -526,6 +526,79 @@ class Ytd:
         x = int.from_bytes(a[:n], 'little') ^ int.from_bytes(b[:n], 'little')
         return x.to_bytes(n, 'little').count(0)
 
+    def regions(self):
+        """(value, derived, zero_fill, carried) byte split of the reproduced image.
+
+        ⭐ DISCLOSURE, NOT DECORATION, AND THIS LANE'S NUMBER IS UGLY ON PURPOSE. Byte identity
+        alone cannot tell a REBUILT region from a COPIED one, and this vault's law is that a
+        claimed region is evidence ONLY IF A WRONG CLAIM COULD HAVE BEEN REJECTED. Read `_put`:
+        this writer is a SPAN CAPTURER. Every region it claims is `bytes(self.res.sys[off:off+n])`
+        or the graphics equivalent, splatted back at the same offset by `write()`. So on this lane
+        essentially EVERY reproduced byte is CARRIED, and the 100.0000% coverage figure means
+        "the walk reaches the right spans", NOT "the dictionary is decoded and re-encoded".
+        Quote the two numbers together; the coverage figure alone overstates what is understood.
+
+        WHAT EACH BUCKET IS HERE, and why three of the four are small or empty:
+          value      0. There is NO struct.pack of a decoded field anywhere in `write()`. Fields
+                     ARE parsed (w/h/stride/mips/format in `_texture`, count/pointers in `_dict`)
+                     but they are parsed to decide WHICH BYTES TO COPY and HOW MANY - they are
+                     never re-encoded, so not one byte of the image is a re-encoded value.
+                     ⚠ That is a real and refutable claim about the spans: a wrong `count`, a
+                     wrong tagged pointer or a wrong `stored_mipchain_bytes` moves or resizes a
+                     copied span and the round-trip REJECTS the file. What it cannot do is prove
+                     any byte INSIDE a span was understood.
+          derived    4 - the page-count u32 written by THE PAGE-COUNT LAW in `write()`, computed
+                     from `self.sys_flags`/`self.gfx_flags` via `meta_write.page_count`. It is the
+                     one field this writer emits from the model rather than copying, and the
+                     docstring above records what happens without it: 0/299 byte-exact. Counted
+                     here under the SAME guard `write()` uses, so a file where the blockmap
+                     pointer does not resolve reports 0 and not a hopeful 4. Those 4 bytes are
+                     subtracted from `carried` because `write()` OVERWRITES a carried span there.
+          zero_fill  every byte no span claimed. `write()` starts from `bytearray(nsys)` /
+                     `bytearray(ngfx)`, so unclaimed == emitted zero.
+                     ⛔ THIS BUCKET IS NOT A CLEAN BILL. It is "left zero", not "known to be
+                     zero": on a byte-exact file the source is zero there too, but on a file that
+                     is NOT byte-exact the dropped data sits in this bucket. `coverage()` /
+                     `roundtrip_coverage.py` is the instrument that separates the two - this
+                     method deliberately does not guess, it accounts.
+          carried    the UNION of the captured spans (a union, not a sum: `_dict` claims
+                     DICT_SPAN, `_texture` claims TEX_SPAN, and a duplicate or overlapping claim
+                     must be counted once because `write()` splats it once).
+
+        IDENTITY: value + derived + zero_fill + carried == nsys + ngfx == len(sys image) +
+        len(gfx image), i.e. the whole of what `write()` returns. CHECKED, not asserted: 250/250
+        files of the standard draw balance exactly, 0 failures (2026-08-16).
+
+        MEASURED 2026-08-16 over the `--lane ytd --limit 250` draw, 232,833,024 image bytes:
+            value 0 (0.0000%) | derived 1,000 (0.0004%) | zero_fill 60,358,652 (25.9236%)
+            CARRIED 172,473,372 = 74.0760% of the image
+        ⭐ AND THE SHARPER READING: of the bytes this writer actually REPRODUCES (image minus
+        zero_fill), 99.9994% are carried. The 25.92% zero_fill is page padding past the end of
+        the mip chains, not understanding. So the lane's 100.0000% coverage rests on a walk that
+        photocopies every span it reaches - correct, closed, and NOT decoded.
+        """
+        claimed_s, claimed_g = bytearray(self.nsys), bytearray(self.ngfx)
+        for off, data in self.sysr:
+            claimed_s[off:off + len(data)] = b'\x01' * len(data)
+        for off, data in self.gfxr:
+            claimed_g[off:off + len(data)] = b'\x01' * len(data)
+
+        # THE PAGE-COUNT LAW, accounted under the EXACT guard `write()` applies (including its
+        # `len(si)` bound), so the split describes the image that is actually produced rather
+        # than an idealised one.
+        derived = 0
+        try:
+            buf, o = self.res.deref(self.res.ptr(0x08), 16)
+            if buf is not None and o + 12 <= self.nsys:
+                derived = 4
+                claimed_s[o + 8:o + 12] = b'\x00\x00\x00\x00'   # derived, so NOT carried
+        except Exception:
+            pass
+
+        carried = claimed_s.count(1) + claimed_g.count(1)
+        total = self.nsys + self.ngfx
+        return (0, derived, total - derived - carried, carried)
+
     def coverage(self):
         gs, gg = self.write()
         ns = self._same(gs, self.res.sys)

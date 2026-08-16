@@ -11,7 +11,8 @@ import sys, os, struct
 
 # Counted refusal classes, cleared per file by the caller and folded into the run summary.
 RESIDUALS = {}
-sys.path.insert(0, r'B:\ClaudeCode_Projects\_UEFiveMTool\quarry')
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ydr2xml import Res
 from meta2xml import fmt_num, esc
 

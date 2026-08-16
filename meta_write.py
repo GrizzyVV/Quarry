@@ -398,6 +398,133 @@ class MetaImage(object):
         return struct.pack("<4sIII", b"RSC7", self.version, self.sys_flags,
                            self.gfx_flags) + payload
 
+    # ------------------------------------------------------------ byte account
+    # ⭐ DISCLOSURE, NOT DECORATION. Byte identity alone cannot tell a rebuilt region from a
+    # copied one: a claimed region is evidence ONLY IF A WRONG CLAIM COULD HAVE BEEN REJECTED.
+    # The four buckets below are painted onto a tag image laid out byte-for-byte like `image()`
+    # and in the SAME ORDER, so a later `put` overwrites an earlier tag exactly as it overwrites
+    # the byte. `zero_fill` is the untagged remainder - and that is only sound because nothing
+    # writes there: audited over 75 files (25 ymap + 25 ytyp + 25 ymt) with
+    # `image()` re-read at every untagged byte, 0 non-zero bytes were found outside the paint.
+    #   VALUE    struct.pack of a field the reader DECODED (hashes, floats-as-bits, prims,
+    #            enums, and the pointer/descriptor words echoed back from the parsed u32)
+    #   DERIVED  computed by the model, never read at that position: the tagged pointers
+    #            rebuilt by `tagptr()` from the model's own offsets, every count, the +0x08
+    #            page-count record, and the big-endian length in front of the +0x40 blob
+    #   ZERO     deliberately left zero - segment page padding, the 20 unused bytes of the
+    #            +0x08 record, a string's NUL terminator
+    #   CARRIED  a SLICE OF THE SOURCE re-emitted unchanged, so the round-trip could not have
+    #            rejected it: `recordpad` (undeclared record bytes), `charbuf` (inline char[N]),
+    #            `dataptr` (opaque block payload), `strdata` (the char pool) and every
+    #            `gaps` run (bytes no cell reached at all)
+    # ⚠ VALUE IS THE WEAKER HALF OF "UNDERSTOOD". A large slice of it is pointer and descriptor
+    # words re-encoded from the value parsed at that same offset, against a layout this writer
+    # PINS from the source (see the module docstring) - reproduced, not allocated.
+    T_VALUE, T_DERIVED, T_ZERO, T_CARRIED = 1, 2, 3, 4
+    #: cell kinds whose `value` is a raw source slice rather than a re-encoded field
+    CARRIED_KINDS = frozenset(("recordpad", "charbuf", "dataptr", "strdata"))
+
+    def regions(self):
+        """(value, derived, zero_fill, carried) byte split of the reproduced image.
+
+        The image is the DECOMPRESSED system + graphics segments - the same bytes `image()`
+        renders and `write()` deflates. The 16-byte RSC7 container header and the deflate
+        stream are outside the account on purpose: a compressed byte belongs to no region.
+        """
+        V, D, Z, C = self.T_VALUE, self.T_DERIVED, self.T_ZERO, self.T_CARRIED
+        sysn, gfxn = seg_size(self.sys_flags), seg_size(self.gfx_flags)
+        systag, gfxtag = bytearray(sysn), bytearray(gfxn)
+
+        def put(seg, off, n, *parts):
+            """Mirror of `image().put`: one write, DROPPED WHOLE if it runs past the segment."""
+            b = systag if seg == SEG_SYS else gfxtag
+            if off + n > len(b):
+                return
+            p = off
+            for ln, t in (parts or ((n, V),)):
+                if ln > 0:
+                    b[p:p + ln] = bytes((t,)) * ln
+                p += ln
+
+        # --- header (+0x00 .. +0x50), one paint per put(), same order
+        put(SEG_SYS, 0x00, 8, (8, V))                    # vft
+        put(SEG_SYS, 0x08, 8, (8, D))                    # tagged ptr -> page record
+        put(SEG_SYS, 0x10, 12, (12, V))                  # unk10 / unk14 / unk18
+        put(SEG_SYS, 0x1C, 4, (4, V))                    # root block index
+        put(SEG_SYS, 0x20, 8, (8, D))                    # tagged ptr -> struct table
+        put(SEG_SYS, 0x28, 8, (8, D))                    # tagged ptr -> enum table
+        put(SEG_SYS, 0x30, 8, (8, D))                    # tagged ptr -> block table
+        put(SEG_SYS, 0x38, 8, (8, V))                    # unk38
+        put(SEG_SYS, 0x40, 8, (8, D))                    # tagged ptr -> +0x40 blob
+        put(SEG_SYS, 0x48, 8, (8, D))                    # nStruct / nEnum / nBlocks - COUNTS
+
+        # --- the +0x08 page record: 4 derived bytes in 24, the rest deliberately zero
+        if self.p08_off is not None:
+            put(SEG_SYS, self.p08_off, 24, (8, Z), (4, D), (12, Z))
+
+        # --- struct infos + entry tables
+        if self.struct_table_off is not None:
+            for i, s in enumerate(self.structs):
+                put(SEG_SYS, self.struct_table_off + i * 32, 32,
+                    (16, V),                             # name_hash, key, cls, u0C
+                    (8, D),                              # tagptr -> entry table
+                    (4, V), (2, V),                      # length, u1C
+                    (2, D))                              # entry COUNT
+                eoff = self.entry_table_off.get(s.name_hash)
+                if eoff is None:
+                    continue
+                for j in range(len(s.entries)):
+                    put(SEG_SYS, eoff + j * 16, 16, (16, V))
+
+        # --- enum infos + member tables
+        if self.enum_table_off is not None:
+            for i, en in enumerate(self.enums):
+                put(SEG_SYS, self.enum_table_off + i * 24, 24,
+                    (8, V),                              # name_hash, key
+                    (8, D),                              # tagptr -> member table
+                    (4, D),                              # member COUNT
+                    (4, V))                              # u14
+                moff = self.member_table_off.get(en.name_hash)
+                if moff is None:
+                    continue
+                for j in range(len(en.members)):
+                    put(SEG_SYS, moff + j * 8, 8, (8, V))
+
+        # --- block table
+        if self.block_table_off is not None:
+            for i in range(len(self.blocks)):
+                put(SEG_SYS, self.block_table_off + i * 16, 16,
+                    (8, V),                              # struct_hash, length
+                    (8, D))                              # tagptr -> block data
+
+        # --- block payloads, cell by cell
+        for c in self.cells:
+            n = c.size()
+            if c.kind == "strdata":                      # source slice + a written NUL
+                put(c.seg, c.off, n, (n - 1, C), (1, Z))
+            elif c.kind in self.CARRIED_KINDS:
+                put(c.seg, c.off, n, (n, C))
+            else:
+                put(c.seg, c.off, n, (n, V))
+
+        # --- gap runs: bytes NO cell reached, copied out of the source verbatim
+        for seg, off, data in self.gaps:
+            put(seg, off, len(data), (len(data), C))
+
+        # --- the +0x40 blob: computed BE length in front of an opaque carried payload
+        if self.blob40 is not None and self.blob40_off is not None:
+            n = len(self.blob40)
+            put(SEG_SYS, self.blob40_off, 4 + n, (4, D), (n, C))
+
+        value = systag.count(V) + gfxtag.count(V)
+        derived = systag.count(D) + gfxtag.count(D)
+        carried = systag.count(C) + gfxtag.count(C)
+        # ⚠ the untagged remainder is FOLDED INTO zero_fill, so the identity holds by
+        # construction - and it is honest only because the audit above found nothing written
+        # there. If a write site is ever added to `image()` without a paint here, it will hide
+        # in this bucket; re-run the audit when `image()` changes.
+        return (value, derived, sysn + gfxn - value - derived - carried, carried)
+
 
 # ------------------------------------------------------------------ reader -> model
 class _Reader(object):
@@ -801,6 +928,16 @@ class _RoundTrip(object):
         return (100.0 * same / self.size if self.size else 0.0,
                 100.0 * same / self.size if self.size else 0.0,
                 None)
+
+    def regions(self):
+        """(value, derived, zero_fill, carried) byte split - see MetaImage.regions().
+
+        ⚠ THE DENOMINATOR IS THE DECOMPRESSED IMAGE, NOT `self.size`. `coverage()` above grades
+        the compressed FILE; a byte account of a deflate stream would be meaningless, so the two
+        numbers have different denominators ON PURPOSE. Quote the split next to the coverage
+        figure, never instead of it.
+        """
+        return self.img.regions()
 
 
 def read_ytyp(src):

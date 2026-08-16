@@ -321,6 +321,51 @@ class Yld(Model):
             if c is not None:
                 self._bound(c, depth + 1)
 
+    # ------------------------------------------------------------------ byte account
+    def regions(self):
+        """(value, derived, zero_fill, carried) byte split of the reproduced image.
+
+        DISCLOSURE, NOT DECORATION. Byte identity alone cannot tell a rebuilt region from a
+        copied one, and this vault's law is that a claimed region is evidence ONLY IF A WRONG
+        CLAIM COULD HAVE BEEN REJECTED. Quote `carried` next to the coverage figure, never
+        instead of it.
+
+        The split is NOT recomputed here - it is read straight off `Model.accounting()`, the
+        same per-byte map the claim recorder maintains, so the two can never drift apart. The
+        four columns are the accounting's six, folded exactly once:
+            value     = value_named + value_words   re-encoded from a decoded, typed value
+            derived   = the RSC7 page-count word, COMPUTED from the segment flags
+            zero_fill = zero_pad + zero_residual    left zero in the image
+            carried   = `Model.carry()` output      a verbatim copy out of the source
+
+        CARRIED IS 0 BY CONSTRUCTION IN THIS LANE, and that is a structural fact rather than a
+        claim: `Model.write()` builds the image from the claim list alone, and the ONLY claim
+        kind that copies source bytes is `Model.carry()`, which this file never calls. The one
+        place a source slice is taken - the inline controller name at +0x58 in `_controller` -
+        is read for the MODEL'S OWN USE and is never written into the image; those bytes reach
+        the image as tiled u32 words claimed by `rd_fields`, i.e. as VALUE.
+
+        AND THE HONEST HALF. `value` here pools two columns that are not equally strong
+        evidence: `value_named` (a semantic field map) and `value_words` (an untyped tiling
+        that proves the span was REACHED and nothing about what the bytes mean). Callers that
+        can carry the distinction should read `accounting()` directly rather than this
+        four-tuple - the header block of this module quotes both.
+
+        ZERO_FILL POOLS ONE MORE THING WORTH SAYING OUT LOUD: `zero_residual` (never claimed
+        AND non-zero in the original - dropped data, the finding) lands in the same column as
+        ordinary padding, because in the IMAGE both are zero and the accounting identity is
+        over the image. It is 0 on this lane's population; `accounting()['zero_residual']` is
+        where to check that it still is.
+
+        SCOPE: the image is the inflated SYSTEM SEGMENT, which is what this writer reproduces
+        and what the round-trip compares. The RSC7 container header and the deflate stream are
+        outside the model and outside this account.
+        """
+        a = self.accounting()
+        value = a['value_named'] + a['value_words']
+        zero_fill = a['zero_pad'] + a['zero_residual']
+        return (value, a['derived'], zero_fill, a['carried'])
+
 
 # ⭐ PER-TYPE SPANS. `ybn_write.BOUND_SPAN_BY_TYPE` measured these over 71,912 bounds; the
 # composite 0xB0 is re-confirmed on 59/59 roots here by the allocation. Types this lane never

@@ -8,9 +8,23 @@ Byte-identity with another reader cannot see a gap both readers share - and in t
 reference proved unreliable three separate ways. A writer can see it, because **you cannot rebuild
 a section you never read**, and it makes every .ynd in the game an oracle at no cost.
 
-MODEL, NOT MEMCPY. Every array is decoded to per-record values and re-encoded into a ZERO-FILLED
-image. Anything the model never reaches stays zero and shows up as a difference, so a byte we do
-not understand is LOUD rather than silently carried. **The gaps are the finding.**
+⛔⛔ BYTE ACCOUNT (added 2026-08-16, `regions()`), AND IT CORRECTS THE PARAGRAPH BELOW IT.
+Measured over a 25-file board: **VALUE 0.0000% | DERIVED 0.0155% | ZERO-FILL 84.5%approx |
+CARRIED 15.5%approx**, and of the bytes the writer actually EMITS, **99.98% are carried verbatim**.
+This writer decodes nothing into typed fields: `_recs` slices whole records out of `res.sys` and
+`write()` assigns those slices straight back, so the "per-record values" claim below is TRUE only
+in the sense of per-record COPIES. The one modelled byte-group is the 4-byte page-count word.
+⚠ The carried share of the WHOLE image looks small only because a .ynd is padded to an 8/16/24/32
+KB page and most of that page is empty - zero-fill, not understanding. Quote `regions()` next to
+the coverage figure, never instead of it, and never quote carried-of-image without the emitted
+denominator beside it.
+
+MODEL, NOT MEMCPY - ⚠ ASPIRATIONAL, NOT WHAT THE CODE DOES; see the byte account above. Every
+array is walked PER RECORD and re-emitted into a ZERO-FILLED image. Anything the model never
+reaches stays zero and shows up as a difference, so a byte we do not understand is LOUD rather
+than silently carried. **The gaps are the finding.** What the per-record walk buys is that a wrong
+stride, a wrong count or a wrong array offset is REJECTABLE; what it does not buy is any claim
+about the CONTENT of a node, a link, a junction or the heightmap.
 
 ⚠ SCOPE: round-trips the INFLATED SYSTEM SEGMENT, not the compressed RSC7 container. Reproducing
 the container also means reproducing an exact deflate stream, which is a separate problem - mixing
@@ -36,6 +50,10 @@ from ydr2xml import Res  # noqa: E402
 
 NODE, LINK, JUNC, JREF = 40, 8, 12, 8
 HEADER = 0x70
+
+# Byte-account kinds for `Ynd.regions()`. _ZERO is the DEFAULT so an unclaimed byte can never be
+# credited to a bucket by omission; _VALUE exists and is never painted, which is the finding.
+_ZERO, _VALUE, _DERIVED, _CARRIED = 0, 1, 2, 3
 
 
 class Ynd:
@@ -120,6 +138,67 @@ class Ynd:
         n = min(len(got), len(orig))
         bad = [i for i in range(n) if got[i] != orig[i]]
         return len(bad), sum(1 for i in bad if orig[i] != 0)
+
+    # ------------------------------------------------------------------ byte account
+    def _paint(self):
+        """Kind-per-byte mark array over the image `write()` produces.
+
+        ⛔ IT MIRRORS `write()` STATEMENT FOR STATEMENT, in the SAME ORDER and with the SAME SLICE
+        EXPRESSIONS, so a later assignment overwrites an earlier claim exactly as it overwrites the
+        bytes - and so a slice that would grow or shrink the image grows or shrinks the mark by the
+        same amount. That is what makes `len(mark) == len(write())` an identity rather than a hope.
+        Slice-assigned, never looped per byte: this runs at population over 1,027 files.
+        """
+        mark = bytearray(self.size)                      # _ZERO until something claims it
+        mark[:HEADER] = bytes([_CARRIED]) * len(self.header)
+        for (off, recs), stride in ((self.nodes, NODE), (self.links, LINK),
+                                    (self.juncs, JUNC), (self.jrefs, JREF)):
+            if off is None:
+                continue
+            for i, rec in enumerate(recs):
+                mark[off + i * stride: off + (i + 1) * stride] = bytes([_CARRIED]) * len(rec)
+        hoff, hm = self.hmap
+        if hoff is not None and hm:
+            mark[hoff:hoff + len(hm)] = bytes([_CARRIED]) * len(hm)
+        # The page-count record is the ONE thing this writer computes; mirror `write()`'s guard
+        # AND its try/except so the mark agrees with the bytes even when the import or the deref
+        # fails and `write()` leaves the word zero.
+        try:
+            import meta_write
+            buf, o = self.res.deref(self.res.ptr(0x08), 16)
+            if buf is not None and o + 12 <= len(mark):
+                _val = ((meta_write.page_count(self.sys_flags) & 0xFF)      # noqa: F841
+                        | ((meta_write.page_count(self.gfx_flags) & 0xFF) << 8))
+                mark[o + 8:o + 12] = bytes([_DERIVED]) * 4
+        except Exception:
+            pass
+        return mark
+
+    def regions(self):
+        """(value, derived, zero_fill, carried) byte split of the reproduced image.
+
+        ⛔⛔ THE HONEST HEADLINE, AND IT IS THE WORST ONE IN THE REGISTRY: **`value` IS ZERO ON
+        EVERY FILE.** This writer decodes NOTHING into typed fields. `_recs` slices whole records
+        out of `res.sys` and `write()` assigns those slices straight back; the header is a 0x70
+        memcpy; the heightmap is a blob copy. The only byte in the image that is not a photocopy is
+        the 4-byte page-count word, which is COMPUTED (`derived`). Everything else the model
+        reproduces is CARRIED - so of the bytes this lane actually emits, 100% could not have
+        failed on its own content, and the 259/259 byte-exact figure is a statement about the
+        LAYOUT (offsets, counts and strides land where the model says) and NOT about the format.
+        ⭐ WHAT THE 100% DOES BUY, stated so it is not read as nothing: the per-RECORD copy makes
+        an off-by-one stride or a wrong count REJECTABLE, and the page-count word is a genuine
+        must-recompute. Quote carried WITH the coverage figure, never instead of it.
+        ⚠ AND DO NOT READ THE CARRIED PERCENTAGE AS "MOSTLY UNDERSTOOD BECAUSE IT IS SMALL". A
+        .ynd is padded to an 8/16/24/32 KB page and most of that padding is empty, so zero_fill
+        dominates the image and pushes carried's share of the WHOLE FILE down. Against the bytes
+        the writer actually reproduces (value + derived + carried) the carried share is ~99.9%.
+        """
+        mark = self._paint()
+        carried = mark.count(_CARRIED)
+        derived = mark.count(_DERIVED)
+        value = mark.count(_VALUE)                       # 0 by construction - nothing is decoded
+        zero_fill = len(mark) - carried - derived - value
+        return (value, derived, zero_fill, carried)
 
 
 def read_ynd(src):
