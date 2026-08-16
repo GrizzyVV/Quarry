@@ -132,6 +132,27 @@ a file that will not decode is reported and left absent rather than written wron
 can produce it, and the full failure list is written to disk. A zero-work run exits non-zero: a run
 that was asked to do something and produced nothing is a failure, not an empty success.
 
+**7 — Matching a reference proves compatibility, not completeness.** Rule 1 compares our XML to a
+reference export. That test is blind to any field *neither* tool emits — and the blindness is not
+theoretical. On `.ypdb`, QUARRY's XML matched the reference and was **dropping a real value on
+every sample**: a 32-bit float, 516 of them across the lane, six distinct non-zero values. Both
+tools omitted it, so parity stayed green.
+
+Nor does the internal round-trip catch it. That measure runs `binary -> value model -> binary`;
+the XML is not in the loop, so a reader can reach every byte while the emitter drops one. `.ypdb`
+scored 100% on it throughout.
+
+The test that does catch it rebuilds the original **from our own XML** and compares:
+
+```
+game binary  ->  our XML  ->  rebuilt binary  ->  compare
+```
+
+`.ypdb` now passes it at population — 56/56 byte-identical, nothing absent, nothing lost to float
+spelling. It is the first lane proven complete in both directions. The others are being measured;
+each writer can now report what share of a file it *reconstructs from values* versus copies
+verbatim, and that share is a hard ceiling on what any rebuild-from-XML can recover.
+
 ---
 
 ## Known limitations — the honest list
