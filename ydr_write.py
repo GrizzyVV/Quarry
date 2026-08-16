@@ -2,6 +2,25 @@
 (`ydd_write` and `yft_write` subclass this class, so every change here pays or breaks THREE
 lanes - always re-measure all three).
 
+=========== BYTE ACCOUNT, 2026-08-16 - READ BEFORE QUOTING THIS LANE'S 100% ================
+THIS WRITER UNDERSTANDS *WHICH* BYTES, NOT *WHAT* THEY SAY: `regions()` (bottom of the class)
+returns VALUE 0 | DERIVED 0 | the rest CARRIED VERBATIM + zero-fill. There is no `struct.pack`
+in this module - every byte of the image is a verbatim slice of `res.sys`/`res.gfx` claimed by a
+decoded pointer/count and laid into a zero-filled buffer. It is a REACHABILITY writer.
+MEASURED 2026-08-16 (throwaway harness over `roundtrip_coverage.harvest`, ASCII output only):
+    ydr 250-file board  99,819,520 image B : CARRIED 79.7463% | ZERO-FILL 20.2537% | VALUE 0
+                        identity holds 250/250, byte-exact 250/250, carried/file mean 77.3960%
+    ydr  25-file board  CARRIED 83.3821%   ydd 25 CARRIED 97.5553%   yft 25 CARRIED 77.1028%
+                        (ydd/yft INHERIT this method - one class, one account)
+⭐ AND THE ZERO-FILL IS NOT A SECOND KIND OF UNDERSTANDING: 20.25% of the image is bytes NO
+capture ever claimed. They pass only because they are zero on BOTH sides - measured, 0 unclaimed
+bytes are non-zero in the source across all 325 files sampled. So "100.0000% coverage" on this
+lane means 79.75% reached-and-copied + 20.25% agreed-by-zero, and 0% re-encoded from a value.
+⛔ Quote the carried figure WITH the coverage figure, never instead of it - and never the
+coverage alone. Nothing here is refutable by content, which is exactly why the spans below are
+pinned by extent evidence (BOUND_SPAN_BY_TYPE, the `_bvh` laws, `_pagemap`, `_putn`'s refusal).
+============================================================================================
+
 =========================== FOURTH PASS, 2026-08-15 (LATEST) ===============================
 ⭐⭐⭐ ONE CHANGE HERE, AND IT IS A REACHABILITY FIX, NOT AN EXTENT CLAIM: `_texdict` now reads
 `pgDictionary+0x20`, the KEY ARRAY - `count` joaat name hashes, the layout `ytd_write` has

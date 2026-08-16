@@ -40,6 +40,17 @@ never touches still matches if the original is zero. Measured over 1,300 files: 
 system segment lies INSIDE a modelled region, 2.3774% lies outside and is ZERO (allocation and
 page padding), and the only non-zero byte outside any region is the COMPUTED page-count record
 (200/200 files checked, no other). Quote 100% round-trip with that sentence attached.
+
+⛔⛔ 2026-08-16 - AND NOW THE SECOND SENTENCE TO ATTACH: THE BYTE ACCOUNT, `regions()`.
+This is a REGION-CAPTURE writer - every region except one is `bytes(res.sys[a:b])` replayed at
+the offset the model claims - so a passing file is mostly PHOTOCOPIED, not understood. Measured
+over a 250-file board (`--limit 250` draw, 34,430,976 image bytes, accounting identity holding on
+250/250):
+    VALUE 0 B (0.0000%) | DERIVED 11,504 B (0.0334%) | ZERO-FILL 1,046,374 B (3.0390%)
+    CARRIED-VERBATIM 33,373,098 B (96.9275%)     per-file carried 51.2451% .. 99.7911%
+⇒ the lane's 100% says THE POINTER GRAPH AND THE EXTENTS ARE RIGHT. It does not say the vertex,
+edge, polygon, portal or quadtree payloads have been decoded - they have not. The only bytes here
+that a wrong model could have got wrong are the start-index prefix sums and the page-count record.
 ASCII output only.
 """
 import os

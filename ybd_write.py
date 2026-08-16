@@ -56,6 +56,10 @@ COVERAGE AT POPULATION 2026-08-15 - THE LANE IS CLOSED. Every `.ybd` in the game
     CARRIED 0 B = 0.0000% <- `Model.carry()` is called ZERO times in this lane
     ZERO-FILL 26,140 B = 22.7923%   never claimed; the ORIGINAL byte is zero (padding + block-map records)
     ZERO-RESIDUAL 0 bytes   never claimed and NON-ZERO in the original - the finding, and it is empty
+  > THOSE COLUMNS ARE MACHINE-READABLE: `Ybd.regions()` returns (value, derived, zero_fill,
+    carried) - the shape `tools/debt_census.py` reads - straight off `accounting()`, so the lane
+    can be put beside the lanes that DO carry instead of sitting in the "cannot say" list. It
+    reads the model and changes nothing the writer emits (images byte-identical, 4/4).
   MUST-FAIL CONTROL (`python tools/pgdict_control.py --lane ybd --limit 500 --cap 0`):
     VALUE  ....... 9,968 / 9,968 moved the image (100.0000%)
     DROP   ....... 7,880 / 9,968 (79.05%); escapes are all-zero claims
@@ -414,6 +418,45 @@ class Ybd(Model):
             self._flat(struct.unpack_from('<I', s, d + 0x00)[0], '<16B', cap, 'bvh_node')
         if tcap:
             self._flat(struct.unpack_from('<I', s, d + 0x70)[0], '<16B', tcap, 'bvh_tree')
+
+    def regions(self):
+        """(value, derived, zero_fill, carried) byte split of the reproduced image.
+
+        ⭐ DISCLOSURE, NOT DECORATION, and it ADDS NOTHING NEW - it is the shared
+        `pgdict_write.Model.accounting()` in the 4-tuple shape `tools/debt_census.py` reads, so
+        this lane can be put next to `awc`/`ypdb` without a per-lane special case. The columns
+        are the accounting's own, and that function REFUSES on an overlapping claim rather than
+        letting two claims on one byte inflate the VALUE share, so the identity
+            value + derived + zero_fill + carried == len(self.write())
+        is checked at the source rather than asserted here.
+
+        ⛔ CARRIED IS 0 BECAUSE `Model.carry()` IS CALLED ZERO TIMES IN THIS LANE - not because
+        the lane is flattering itself. `pgdict_write` has exactly one verbatim-copy path and
+        nothing here reaches for it; `Model.write()` packs from decoded values only.
+        ⚠ WHAT THAT 0 DOES **NOT** MEAN, and the honest reading is the second number:
+        `accounting()['value_words']` counts VALUE bytes claimed as UNNAMED filler words by
+        `pgdict_write.tile` (the unlabelled slots of a phBound header), and record-level claims
+        like `bound_polygon` ('<16B') are named but their interior fields are not. Both are
+        re-encoded from decoded values, so neither is carried - but neither is field-level
+        understanding either. Quote `value_named` vs `value_words` when that distinction matters;
+        `regions()` merges them because the 4-tuple contract has one VALUE column.
+        ⚠ AND HERE IS THE SIZE OF THAT CAVEAT, MEASURED RATHER THAN GESTURED AT (population, all
+        4 files, 2026-08-16): of the 88,532 VALUE bytes, **71,776 = 81.07% are RECORD-LEVEL
+        '<16B' claims** - `bound_polygon` 46,432 (52.45%), `bvh_node` 25,072 (28.32%),
+        `bvh_tree` 272 (0.31%) - decoded as 16 loose u8s whose INTERIOR FIELDS ARE NOT MODELLED,
+        plus 2,662 (3.01%) unnamed tiling words. Only ~16% of VALUE is a decoded, named scalar.
+        Those record bytes are not CARRIED (a wrong base, count or stride leaves residual and the
+        round-trip rejects it - which a `carry()` of the same span could not), but nobody should
+        read 77% VALUE as 77% of the lane understood field-by-field. It is not.
+        ⚠ ZERO_FILL folds `zero_pad` (original byte is zero - padding and the all-zero block-map
+        page records) together with `zero_residual` (never claimed and NON-ZERO - the finding).
+        They are NOT the same thing and `accounting()` keeps them apart; the residual is 0 on all
+        4 files of this lane today, so the merge hides nothing at present. If it ever goes
+        non-zero, read `accounting()`, not this tuple.
+        """
+        a = self.accounting()
+        return (a['value_named'] + a['value_words'], a['derived'],
+                a['zero_pad'] + a['zero_residual'], a['carried'])
 
 
 def read_ybd(src):

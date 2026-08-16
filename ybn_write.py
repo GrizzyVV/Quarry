@@ -580,10 +580,12 @@ class _Spans(list):
     """THE MODELLED-SPAN LIST - AND, WHEN CALLED, THIS LANE'S BYTE ACCOUNT.
 
     ⛔ WHY IT IS A LIST SUBCLASS RATHER THAN A PLAIN METHOD, because the choice is not cosmetic.
-    `m.regions` has been the list of `(offset, bytes)` spans since this lane was built, and **28
-    probe scripts iterate it** - several of them named ABOVE as the reproduce command for a
-    shipped clause (`scratchpad/z1_area.py --report`, `ybn6_rule.py`, `ybn6_decoy.py`,
-    `ybn4_polymat.py`, `ybn3_probe_span.py`, `gap_class.py` ...). Taking the name for a method
+    `m.regions` has been the list of `(offset, bytes)` spans since this lane was built, and **31
+    scripts under `scratchpad/` iterate it** (counted 2026-08-16, `grep -l "m\.regions"`) -
+    several of them named ABOVE as the reproduce command for a shipped clause or a closed search
+    space: `z1_area.py --report` (the degenerate clause), `ybn4_polymat.py` (the 16-byte
+    allocation law), `ybn3_probe_span.py` (the per-type spans), `gap_class.py` (the
+    magnitude-matched decoy), `ybn5_pageplan.py`, `ybn4_exists.py`. Taking the name for a method
     would have broken every one of those without touching a byte of the format, so the byte
     account is hung off `__call__` and the list keeps its name:
         for off, data in m.regions   ->  the spans, exactly as before (unchanged)
@@ -615,9 +617,10 @@ class _Spans(list):
         tell apart - every byte the writer emits is a verbatim slice of the source.
             value   = 0. NOT ONE BYTE IS RE-ENCODED. Every append site in this module -
                       `_flat`, `_flat_at`, and the header span in `_bound` - appends
-                      `bytes(self.res.sys[a:b])`. There is no `struct.pack` anywhere in the
-                      write path. `struct.unpack_from` appears ~30 times, all of it to decide
-                      WHERE and HOW LONG a span is; none of it to produce an output byte.
+                      `bytes(self.res.sys[a:b])`. The module contains NO pack call at all
+                      (only this sentence mentions one); `struct.unpack_from` appears ~30
+                      times, all of it to decide WHERE a span starts and HOW LONG it is, none
+                      of it to produce an output byte.
             derived = 0, AND THAT IS A DELIBERATE PAST DECISION, not an omission. The one
                       computed word this lane ever wrote - the page-count byte at the block
                       map's +0x08 - was DELETED in the third pass (see `_pagemap`), which took

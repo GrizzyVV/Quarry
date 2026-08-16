@@ -939,6 +939,17 @@ class _RoundTrip(object):
         """
         return self.img.regions()
 
+    def image(self):
+        """(sys, gfx) decompressed image - THE DENOMINATOR `regions()` splits.
+
+        ⭐ EXISTS SO A CONSUMER CANNOT TAKE THE WRONG TOTAL. `tools/debt_census.py` sizes a lane
+        by calling the model's `write()`/`image()` and falls back to the SOURCE FILE length when
+        it finds neither - and for this lane the source file is DEFLATED, so that fallback would
+        have divided a decompressed carried count by a compressed total and reported a carried
+        percentage several times too large. Add-only: nothing in the write path reads this.
+        """
+        return self.img.image()
+
 
 def read_ytyp(src):
     """.ytyp round-trip entry point - see _RoundTrip."""

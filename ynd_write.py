@@ -9,15 +9,18 @@ reference proved unreliable three separate ways. A writer can see it, because **
 a section you never read**, and it makes every .ynd in the game an oracle at no cost.
 
 ⛔⛔ BYTE ACCOUNT (added 2026-08-16, `regions()`), AND IT CORRECTS THE PARAGRAPH BELOW IT.
-Measured over a 25-file board: **VALUE 0.0000% | DERIVED 0.0155% | ZERO-FILL 84.5%approx |
-CARRIED 15.5%approx**, and of the bytes the writer actually EMITS, **99.98% are carried verbatim**.
-This writer decodes nothing into typed fields: `_recs` slices whole records out of `res.sys` and
-`write()` assigns those slices straight back, so the "per-record values" claim below is TRUE only
-in the sense of per-record COPIES. The one modelled byte-group is the 4-byte page-count word.
-⚠ The carried share of the WHOLE image looks small only because a .ynd is padded to an 8/16/24/32
-KB page and most of that page is empty - zero-fill, not understanding. Quote `regions()` next to
-the coverage figure, never instead of it, and never quote carried-of-image without the emitted
-denominator beside it.
+Measured 2026-08-16 over the 259 files this lane's archive list reaches (`x64e.rpf`; a BOARD -
+the census is 1,027, so this is 25.2% of the lane, and the identity below held on 259 of 259):
+    VALUE 0.0000% (0 B) | DERIVED 0.0158% (1,036 B) | ZERO-FILL 23.4819% | CARRIED 76.5023%
+    CARRIED OF THE BYTES ACTUALLY EMITTED (value+derived+carried) = **99.9794%**
+**`value` IS ZERO.** This writer decodes nothing into typed fields: `_recs` slices whole records
+out of `res.sys` and `write()` assigns those slices straight back, so the "per-record values"
+claim below is true only in the sense of per-record COPIES. The one modelled byte-group in the
+whole file is the 4-byte page-count word, which is COMPUTED - 4 bytes per file, 1,036 in 6.56 MB.
+⚠ Read carried against the EMITTED denominator, not the image. A .ynd is padded to an 8/16/24/32
+KB page and roughly a quarter of the image is empty page, so zero-fill deflates carried's share of
+the whole file to 76.5% while the writer's own output is 99.98% photocopy. Quote `regions()` next
+to the coverage figure, never instead of it, and never quote carried-of-image alone.
 
 MODEL, NOT MEMCPY - ⚠ ASPIRATIONAL, NOT WHAT THE CODE DOES; see the byte account above. Every
 array is walked PER RECORD and re-emitted into a ZERO-FILLED image. Anything the model never
@@ -182,16 +185,16 @@ class Ynd:
         out of `res.sys` and `write()` assigns those slices straight back; the header is a 0x70
         memcpy; the heightmap is a blob copy. The only byte in the image that is not a photocopy is
         the 4-byte page-count word, which is COMPUTED (`derived`). Everything else the model
-        reproduces is CARRIED - so of the bytes this lane actually emits, 100% could not have
-        failed on its own content, and the 259/259 byte-exact figure is a statement about the
+        reproduces is CARRIED - so 99.9794% of the bytes this lane actually emits could not have
+        failed on their own content, and the 259/259 byte-exact figure is a statement about the
         LAYOUT (offsets, counts and strides land where the model says) and NOT about the format.
         ⭐ WHAT THE 100% DOES BUY, stated so it is not read as nothing: the per-RECORD copy makes
         an off-by-one stride or a wrong count REJECTABLE, and the page-count word is a genuine
         must-recompute. Quote carried WITH the coverage figure, never instead of it.
         ⚠ AND DO NOT READ THE CARRIED PERCENTAGE AS "MOSTLY UNDERSTOOD BECAUSE IT IS SMALL". A
-        .ynd is padded to an 8/16/24/32 KB page and most of that padding is empty, so zero_fill
-        dominates the image and pushes carried's share of the WHOLE FILE down. Against the bytes
-        the writer actually reproduces (value + derived + carried) the carried share is ~99.9%.
+        .ynd is padded to an 8/16/24/32 KB page and a quarter of the image is empty page, so
+        zero_fill deflates carried's share of the WHOLE FILE to 76.50%. Against the bytes the
+        writer actually reproduces (value + derived + carried) the carried share is 99.9794%.
         """
         mark = self._paint()
         carried = mark.count(_CARRIED)

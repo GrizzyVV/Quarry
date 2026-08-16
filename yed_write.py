@@ -353,12 +353,27 @@ class Yed(Model):
         zero - padding we did not have to understand) PLUS `zero_residual` (never claimed and
         NON-ZERO in the original - data we DROP, which is the finding this campaign exists to
         surface). They are folded here because both are zero in the produced image and the tuple
-        has four slots; they stay separated in `accounting()`, and `zero_residual` is 0 on this
-        lane at population (242/242 exact). Read them apart with:
+        has four slots; they stay separated in `accounting()`. Measured 2026-08-16 on two
+        stratified boards: `zero_residual` 0 on 25/25 and on 75/75 - consistent with the module
+        header's population figure of 0 residual bytes over 242/242 exact. Read them apart with:
             a = m.accounting(); a['zero_pad'], a['zero_residual'], a['value_named']
-        `accounting()` also splits VALUE into NAMED fields vs untyped tiling words - on `.yed`
-        every VALUE byte is NAMED - which `regions()` cannot express and which is the stronger
-        statement of the two.
+        `accounting()` also splits VALUE into NAMED fields vs untyped tiling words - on both
+        boards every VALUE byte was NAMED (14,653,927 named / 0 untyped on the 75) - which
+        `regions()` cannot express and which is the stronger statement of the two.
+
+        ⛔ AND ZERO-FILL IS NOT UNDERSTANDING EITHER. `carried` being 0 does NOT mean the lane
+        understood 100% of the image. Measured 2026-08-16, 75-file stratified board, 16,007,168
+        image bytes: VALUE 91.5460% / DERIVED 0.0019% (the 4-byte page-count word, 75 x 4 B) /
+        ZERO-FILL 8.4521% / CARRIED 0.0000%. Those 8.45% pass because the ORIGINAL byte is zero,
+        not because anything modelled them - a wrong claim over them could not have been
+        rejected, which is the same objection `carried` exists to raise. Quote both or neither.
+        ⚠ A BOARD IS NOT THE POPULATION, and the VALUE/ZERO ratio moves with the draw: the
+        25-file board reads VALUE 86.9641% / ZERO-FILL 13.0309%, the 75-file board 91.5460% /
+        8.4521%, the header's population account 92.8014% / 7.1962%. CARRIED is 0 in all three,
+        and it is the only column of the four that does not move with the sample.
+        ⚠ AND THE RSC7 CONTAINER IS OUTSIDE THIS ACCOUNT ENTIRELY, exactly as it is outside the
+        round-trip: those 75 files are 2,864,551 bytes on disk and 16,007,168 bytes inflated.
+        The container is not counted as carried because it is not reproduced here at all.
         """
         a = self.accounting()
         value = a['value_named'] + a['value_words']
