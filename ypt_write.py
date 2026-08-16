@@ -28,12 +28,14 @@ formality - it is the tightest test in the file. `Ypt.vt_mismatch` counts every 
     EXACT round-trip (every byte of BOTH segments) : 1,240 / 1,240 = 100.0000%
     system   segment : 278,167,552 / 278,167,552 = 100.000000%
     graphics segment : 272,105,472 / 272,105,472 = 100.000000%
-    vtable mismatches 0 | interior-nonzero 0 | reader errors 0
+    vtable mismatches 0 | interior-nonzero 0 | OVERLAPPING CLAIMS 0 | reader errors 0
+    (overlapping claims must read 0 or the control battery is meaningless: where two claims cover
+     a byte the later one hides the earlier, and corrupting the earlier cannot move the image.)
 ⛔ AND THE NUMBER IS ONLY WORTH WHAT ITS BYTE ACCOUNT SAYS, so quote them together. Over the
 NON-ZERO bytes of the system segment - the informative denominator, because 49.5% of a .ypt system
 segment is zero padding and an all-bytes split flatters every writer equally:
-    VALUE 78.51%  |  DERIVED 16.38%  |  CARRIED-VERBATIM 5.11%      (49,785,116 non-zero bytes)
-    all bytes:  ZERO 49.51% | VALUE 43.90% | DERIVED 4.73% | CARRIED 1.86%
+    VALUE 78.5120%  |  DERIVED 16.3786%  |  CARRIED-VERBATIM 5.1095%   (49,785,116 non-zero bytes)
+    all bytes:  ZERO 49.5149% | VALUE 43.8994% | DERIVED 4.7299% | CARRIED 1.8557%
     graphics segment: 80.89% CARRIED - it is the embedded TEXTURE PIXELS and decoding a
     BC-compressed texel block is not what this measure is about. 100% here means the RAGE
     structure is rebuilt, NOT that we model the pixels. The other 19.11% is zero.
@@ -92,8 +94,11 @@ NAME_BYTES_MEASURED = frozenset(bytes(
 # times in a referenced name, so it is not part of the measured class; it is admitted here because
 # the byte exists and has to come back, and the cost of admitting it is bounded and stated: it
 # converts 3 files / 93 bytes from refused to claimed and nothing else in the population changes.
-# `notes['packed_run_outside_measured_class']` counts every run that leans on this widening, so
-# the next agent can see how load-bearing it is instead of trusting this comment.
+# MEASURED BOTH WAYS at population rather than asserted: with the widening 1,240/1,240 files are
+# byte-exact; with the measured-65 class alone, 3 files miss by 93 bytes and nothing else moves.
+# 27 claimed runs game-wide contain the byte, counted as
+# `notes['packed_run_outside_measured_class']`, so the next agent can see how load-bearing this is
+# instead of trusting this comment.
 NAME_BYTES = NAME_BYTES_MEASURED | frozenset({0x09})
 KINDNAME = {0: 'ZERO', VALUE: 'VALUE', DERIVED: 'DERIVED', CARRIED: 'CARRIED'}
 
