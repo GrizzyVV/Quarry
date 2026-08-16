@@ -48,7 +48,15 @@ from meta2xml import joaat, esc
 
 MAGIC = b'ADAT'
 TAG = {joaat(n) & 0xFF: n for n in ('data', 'format', 'peak', 'name', 'seek', 'loop', 'markers')}
-CODEC = {0x04: 'ADPCM'}
+# ⭐ CODEC 0x00 ADDED 2026-08-15. The old map held ADPCM only, so every PCM stream raised
+# "unknown codec byte 0x00" - 30 of 739 files in a walk sample died on it. The identification is
+# MEASURED, not guessed: pairing each data chunk with its format chunk and dividing data bytes by
+# declared samples gives EXACTLY 16.000 bits/sample over 359 streams (ADPCM gives 4.009), and the
+# payload head decodes as a smooth int16 waveform (2, 12, 22, 29, 42, 49, 55, 62, ...).
+# ⚠ THE STRING 'PCM16' IS OUR LABEL, NOT AN ORACLE-WITNESSED ONE. Every oracle for this lane is
+# encrypted, so no reference spelling of this element exists to copy. If reference-parity is ever
+# reinstated as a cross-check, this name is the first thing to re-verify.
+CODEC = {0x00: 'PCM16', 0x04: 'ADPCM'}
 # minimal name dictionary; the reference exporter resolves joaat hashes it knows, else emits hash_XXXXXXXX
 KNOWN_NAMES = {joaat(n): n for n in ('dummy',)}
 
@@ -58,38 +66,72 @@ class AwcEncrypted(Exception):
 
 
 def parse(plain, was_encrypted=False):
+    """⛔⛔ REWRITTEN 2026-08-15 - THE TWO ORIGINAL RULES HERE WERE BOTH WRONG AT SCALE, AND BOTH
+    FAILED SILENTLY. Measured over 1,039 real plaintext .awc drawn from the game:
+
+      (1) TABLE DETECTION was `numStreams > 1 and first_u16 < 256` - a heuristic nothing in this
+          module could reject. The real discriminator is BIT 0 OF THE FLAGS WORD, solved against
+          a constraint the file cannot lie about (the u64 chunk table must end EXACTLY at
+          dataStart and its spans must tile [dataStart, filesize)):
+              per-stream header width = 4 + 2 * (flags & 1)
+          Scanning every 8-aligned candidate width returned a UNIQUE answer per file and ZERO
+          ambiguous ones; the rule then held on 739 / 739. The two hand-written hypotheses this
+          replaced tiled only 41.10% and 12.32% of the lane.
+
+      (2) CHUNK DISTRIBUTION was `per = len(chunks) // numStreams`, a uniform split. It DROPS
+          CHUNKS: a 10-stream file carrying 26 chunks (10 data + 10 format + 6 peak) gets
+          per = 2 and SIX CHUNKS VANISH from the XML with no error. Real grouping comes from the
+          u16 array, which is a per-stream CHUNK-START INDEX (monotonic from 0, valid 487/487).
+
+      (3) The per-stream table is TWO SEPARATE ARRAYS - [u16 x n] then [u32 hash x n] - not
+          interleaved {u16,u32} records. Both span the same bytes, so this is invisible to a
+          round-trip; decided on the monotonic property (487/487 vs 4/487).
+
+    ⛔ NO CHUNK IS EVER DROPPED NOW. Files with no u16 table (flags bit 0 clear) have no stated
+    grouping, so they fall back to a uniform split ONLY when it divides exactly; otherwise every
+    chunk is attached to the first stream and the file is FLAGGED in `parsed['ungrouped']` rather
+    than being quietly truncated. Measured: 18 of 452 no-table files do not divide evenly.
+    """
     if plain[:4] != MAGIC:
         raise AwcEncrypted('not an ADAT plaintext AWC (encrypted header?)')
     version = struct.unpack_from('<H', plain, 4)[0]
     flags = struct.unpack_from('<H', plain, 6)[0]
     numStreams = struct.unpack_from('<I', plain, 8)[0]
     dataStart = struct.unpack_from('<I', plain, 12)[0]
-    off = 16
-    # variant B (measured on halloween, flags low byte bit 0x04 set): a streamCount x u16
-    # chunk-count table precedes the u32 hashes. Detect by the first u16 being small (a name
-    # hash's low word is ~random/large; a chunk count is < 256). Single-stream files (the
-    # dummies) are always variant A.
-    first_u16 = struct.unpack_from('<H', plain, 16)[0]
-    if numStreams > 1 and first_u16 < 256:
-        off += 2 * numStreams
-    hashes = [struct.unpack_from('<I', plain, off + 4 * i)[0] for i in range(numStreams)]
-    off += 4 * numStreams
-    # chunk-index table: u64 each until dataStart
+    width = 4 + 2 * (flags & 1)
+    tbl = 16 + numStreams * width
+    if tbl > dataStart or (dataStart - tbl) % 8:
+        raise ValueError('awc header width %d B/stream puts the chunk table at %d, not an '
+                         '8-aligned run ending at dataStart %d' % (width, tbl, dataStart))
+    starts = ([struct.unpack_from('<H', plain, 16 + 2 * i)[0] for i in range(numStreams)]
+              if width == 6 else None)
+    hbase = 16 + (2 * numStreams if width == 6 else 0)
+    hashes = [struct.unpack_from('<I', plain, hbase + 4 * i)[0] for i in range(numStreams)]
     all_chunks = []
-    o = off
-    while o < dataStart:
+    o = tbl
+    while o + 8 <= dataStart:
         v = struct.unpack_from('<Q', plain, o)[0]
         all_chunks.append({'type': TAG.get((v >> 56) & 0xFF, 'unk_%02x' % ((v >> 56) & 0xFF)),
                            'size': (v >> 28) & 0x0FFFFFFF, 'offset': v & 0x0FFFFFFF})
         o += 8
-    # distribute chunks to streams. Evidence: uniform chunk-count per stream; infer per-stream
-    per = len(all_chunks) // numStreams if numStreams else 0
     streams = []
-    for s in range(numStreams):
-        cks = all_chunks[s * per:(s + 1) * per] if per else []
-        streams.append({'hash': hashes[s], 'chunks': cks})
+    ungrouped = False
+    if starts is not None and numStreams:
+        bounds = list(starts) + [len(all_chunks)]
+        for s in range(numStreams):
+            a, b = bounds[s], bounds[s + 1]
+            streams.append({'hash': hashes[s], 'chunks': all_chunks[a:b]})
+    elif numStreams and len(all_chunks) % numStreams == 0:
+        per = len(all_chunks) // numStreams
+        for s in range(numStreams):
+            streams.append({'hash': hashes[s], 'chunks': all_chunks[s * per:(s + 1) * per]})
+    else:
+        ungrouped = True
+        for s in range(numStreams):
+            streams.append({'hash': hashes[s], 'chunks': all_chunks if s == 0 else []})
     return {'version': version, 'flags': flags, 'was_encrypted': was_encrypted,
-            'numStreams': numStreams, 'streams': streams}
+            'numStreams': numStreams, 'streams': streams, 'ungrouped': ungrouped,
+            'chunkCount': len(all_chunks)}
 
 
 def _fmt_fields(plain, chunk):
@@ -98,6 +140,10 @@ def _fmt_fields(plain, chunk):
     # PlayBegin/PlayEnd/LoopBegin/LoopEnd are packed in bytes +0x0C..+0x12 and are 0 in ALL
     # evidence (5 mask streams + 5 dummy oracles). The exact bit packing is UNPINNED (no
     # non-zero sample), so they are emitted as 0 rather than guessed.
+    # ⭐ THE 20-BYTE FORMAT CHUNK IS REAL. Bodies are 24 B on 2,318 of 2,337 and 20 B on 19, and
+    # reading PeakUnk at +0x14 off a 20-byte body raised "unpack_from requires a buffer of at
+    # least 22 bytes" - a hard crash on 1 file in a 900-file walk. Guarded rather than assumed
+    # away, and the absence is reported as None instead of a fabricated 0.
     return {
         'Codec': CODEC.get(codec_b),
         'Samples': struct.unpack_from('<I', b, 0)[0],
@@ -105,7 +151,7 @@ def _fmt_fields(plain, chunk):
         'SampleRate': struct.unpack_from('<H', b, 8)[0],
         'Headroom': struct.unpack_from('<h', b, 10)[0],
         'PlayBegin': 0, 'PlayEnd': 0, 'LoopBegin': 0, 'LoopEnd': 0,
-        'PeakUnk': struct.unpack_from('<H', b, 0x14)[0],
+        'PeakUnk': (struct.unpack_from('<H', b, 0x14)[0] if len(b) >= 0x16 else None),
         '_codec_byte': codec_b,
     }
 
@@ -149,7 +195,8 @@ def emit(parsed, plain):
                 out.append('     <LoopBegin value="%d" />' % f['LoopBegin'])
                 out.append('     <LoopEnd value="%d" />' % f['LoopEnd'])
                 out.append('     <LoopPoint value="%d" />' % f['LoopPoint'])
-                out.append('     <Peak unk="%d" />' % f['PeakUnk'])
+                if f['PeakUnk'] is not None:
+                    out.append('     <Peak unk="%d" />' % f['PeakUnk'])
             out.append('    </Item>')
         out.append('   </Chunks>')
         out.append('  </Item>')
@@ -158,17 +205,29 @@ def emit(parsed, plain):
     return EOL.join(out) + EOL
 
 
-def to_xml(path, game_root=None):
-    blob = open(path, 'rb').read()
+def to_xml_bytes(name, blob):
+    """Convert an in-memory .awc. THE ENTRY POINT `quarry.to_interchange_xml` NEEDS - the
+    pipeline hands converters a name and a blob, never a path, which is part of why this module
+    was never wired.
+
+    Raises AwcEncrypted for the whole-file-encrypted class so the caller can record it as a
+    COUNTED REFUSAL with a named reason rather than emitting a broken XML.
+    """
     if blob[:4] == b'RSC7':
         raise ValueError('RSC7 resource, not a raw AWC')
     if blob[:4] != MAGIC:
         raise AwcEncrypted(
-            '%s: WholeFileEncrypt - encrypted header (no ADAT magic). No QUARRY key/cipher '
-            'inverts it (see module docstring). Supply a decryptor to close this file.'
-            % os.path.basename(path))
-    parsed = parse(blob, was_encrypted=False)
-    return emit(parsed, blob)
+            '%s: whole-file encrypted (no ADAT magic). 2,100 of the game 7,742 .awc are in this '
+            'class (27.12%%, 1.97 GB), measured 2026-08-15. No QUARRY key material inverts it: '
+            'AES-128 both directions with the magic-blob awc key, the blob 256-byte LUT both '
+            'ways, AES-256 with the PC key iterated 1..16, and NG across all 101 keys, all '
+            'scored against the 4-byte crib ADAT.' % name)
+    return emit(parse(blob, was_encrypted=False), blob).encode('utf-8')
+
+
+def to_xml(path, game_root=None):
+    blob = open(path, 'rb').read()
+    return to_xml_bytes(os.path.basename(path), blob).decode('utf-8')
 
 
 if __name__ == '__main__':

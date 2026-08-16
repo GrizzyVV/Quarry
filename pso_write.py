@@ -52,7 +52,16 @@ WHAT IS CARRIED, AND IT IS DECLARED (see `regions()` - quote it next to any cove
     56-hypothesis battery (8 algorithms x 7 byte-ranges; see `docs/` writeup) - so 4 bytes per
     file are carried and counted, and the space searched is named rather than called a ceiling.
 
-MEASURED AT POPULATION 2026-08-15 (one walk of all 123 top-level archives, AES key bound, zero
+⛔⛔ THE FIRST POPULATION FIGURE THIS FILE CARRIED WAS DRAWN FROM 78.5% OF ONE OF ITS LANES, AND
+NOTHING PRINTED AN ERROR. It read `ymt_psin 1,719 files, 1,709 byte-exact (99.4183%)`. The lane
+holds 2,190. The missing 471 all live in `x64\audio\occlusion.rpf`, a top-level archive the
+`_pso_archives()` list could not name because it globbed `GAME\x64*.rpf` - which matches the 23
+archives sitting BESIDE the `x64` folder and nothing inside it. Fixed 2026-08-15 (see
+`roundtrip_coverage._loose_archives`); the numbers below are the RE-MEASURE, and the corrected
+walk returns .ymt 4,713 / .ymf 1,795 / .cut 816 / .pso 2 - equal to `VIEW_MANIFEST.jsonl` for all
+four extensions, so the draw provably reaches the whole family now.
+
+MEASURED AT POPULATION 2026-08-15 (one walk of all 179 top-level archives, AES key bound, zero
 archive errors). Reproduce with either of:
     python tools/roundtrip_coverage.py --lane ymf --limit 9000 --cap 0     (and cut / pso /
                                                                             ymt_psin)
@@ -60,18 +69,109 @@ archive errors). Reproduce with either of:
   lane      files  BYTE-EXACT           mean cov     min cov    VALUE  UNTYP  DERIV  CARR   ZERO
   ymf       1,792  1,792 (100.0000%)  100.000000%  100.0000%   44.32%  0.00%  3.15%  9.17% 43.35%
   cut         816    815 ( 99.8775%)   99.989602%   91.5151%   58.20%  1.98%  0.83%  6.20% 32.79%
-  pso           2      2 (100.0000%)  100.000000%  100.0000%   77.81%  9.12%  0.02%  0.01% 13.01%
-  ymt_psin  1,719  1,709 ( 99.4183%)   99.997954%   97.5781%   78.01%  0.78%  1.24%  5.45% 14.52%
-  TOTAL     4,329  4,318 ( 99.7459%)
-⭐ MUST-FAIL CONTROL, 602 files, 5,171 model mutations: 4,569 caught. Every miss is the `schema`
+  pso           2      2 (100.0000%)  100.000000%  100.0000%   77.81%  9.12%  0.05%  0.01% 13.01%
+  ymt_psin  2,190  2,180 ( 99.5434%)   99.998394%   97.5781%   78.78%  0.71%  1.43%  5.05% 14.03%
+  TOTAL     4,800  4,789 ( 99.7708%)
+⭐ AND QUOTE THE CARRIED BREAKDOWN WITH THE MEAN, because 100% over a carried region is not a
+measurement (`regions()` produces it; the driver prints it per lane):
+  lane      STRE (the ENCRYPTED string pool)       PSIG            CHKS checksum word
+  ymf         510,816 B in   549 of 1,792 (8.64%)   25,288 B/1,792    6,064 B/1,516
+  cut       2,595,520 B in   815 of   816 (5.98%)   82,200 B/  816    1,396 B/  349
+  pso               0 B in     0 of     2               48 B/    2            0 B/    0
+  ymt_psin    946,128 B in   107 of 2,190 (4.78%)   43,272 B/2,189    8,704 B/2,176
+  FAMILY    4,052,464 B in 1,471 of 4,800 = 5.835% of the family's 69,452,000 bytes
+⭐ AND THE CARRIED CLASS RECONCILES TO THE BYTE, so nothing hides inside it:
+  ymf       542,168 = 510,816 + 25,288 + 6,064  ->      0 unaccounted
+  pso            48 =       0 +     48 +     0  ->      0 unaccounted
+  cut     2,690,081 = 2,595,520 + 82,200 + 1,396 -> 10,965 unaccounted
+  ymt_psin  999,616 = 946,128 + 43,272 + 8,704  ->  1,512 unaccounted
+The unaccounted remainder is `psch_def_carried_bytes` - PSCH def bodies that `classify()` could
+resolve to NEITHER struct nor enum, by reference context or by the extent test, and therefore
+carried rather than guessed (12,477 B family-wide, 0.018%). The family's ONLY other carry path is
+an unmodelled section, and there is exactly ONE in 4,800 files: `x64a.rpf/rockfordwest.ymt`
+carries an `STRS` section whose payload is **ZERO bytes long**, so it contributes nothing to the
+carried class - the 8-byte header is COMPUTED like every other section header.
+  (Section presence measured over a 724-file PSIN .ymt draw across 7 archives:
+   PSIN/PMAP/PSCH 724 · PSIG 723 · CHKS 714 · STRE 97 · STRF 4 · STRS 1.)
+⭐⭐ NO BYTE OF THE ROUND-TRIP DEPENDS ON RE-ENCRYPTING STRE. The section is reproduced by being
+carried, so byte identity holds without touching the cipher - but those 4,052,464 bytes are
+REPRODUCED, NOT MEASURED, and the count above is the honest size of that hole. Decrypting STRE
+would convert ~5.8% of the family from CARRIED to VALUE; it would not change a single coverage
+figure, which is exactly why the split has to be printed next to the figure.
+
+⭐ MUST-FAIL CONTROL, 602 files, 5,127 model mutations: 4,525 caught. Every miss is the `schema`
 class, which is DESIGNED not to fire (it reclassifies a PSCH def as carried, and a carried region
 reproduces itself - that 0/602 is the cleanest demonstration in this tree of what "carried" costs).
 Across the five classes that can fire - value, drop, untyped, layout, root - the catch rate is
-4,569 / 4,569. Writes aimed at regions the original leaves zero are EXCLUDED from the battery and
-counted separately (a mutation there is undetectable by construction); that exclusion is 1,032,381
+4,525 / 4,525. Writes aimed at regions the original leaves zero are EXCLUDED from the battery and
+counted separately (a mutation there is undetectable by construction); that exclusion is 552,502
 writes and it is reported, not hidden.
+⚠ ZERO-FILL IS THE OTHER HALF OF THAT SENTENCE AND IT IS LARGE: 43.35% of `.ymf` and 32.79% of
+`.cut` by byte is region the model never writes and that happens to be zero in the original. Those
+bytes are reproduced by construction, and the battery says so by having to exclude them.
 
-⚠ THE RESIDUAL IS ONE CAUSE, NOT ELEVEN. All 11 files that are not byte-exact fail on bytes that
+⚠ THE RESIDUAL IS ONE CAUSE, NOT ELEVEN - and 2026-08-15 that stopped being an assertion. Every
+one of the 11 non-exact files was split BY CAUSE against the writer's own `writes` list and
+`reached` set, per byte, and the answer is unanimous:
+
+  file                        size      differing   cause                          printable
+  ac_ig_3_p3_b.cut            68,816        5,839   100% field-map hole              85.9%
+  physicstasks.ymt           190,208          365   100% field-map hole              41.4%
+  physicstasks.ymt           188,160          314   100% field-map hole              54.1%
+  clip_sets.ymt              970,520          138   100% field-map hole              72.5%
+  wantedtuning.ymt             5,120          124   100% field-map hole              98.4%
+  clip_sets.ymt              895,000          108   100% field-map hole                 -
+  pedpersonality.ymt          45,176           49   100% field-map hole              20.4%
+  pedpersonality.ymt          45,064           48   100% field-map hole                 -
+  cameras.ymt                828,312           34   100% field-map hole              14.7%
+  cameras.ymt                425,080           34   100% field-map hole                 -
+  rockfordwest.ymt               828            4   100% field-map hole               0.0%
+  ⇒ 7,057 differing bytes across 11 files, and **0 of them lie in a region the writer wrote**
+    (no value is WRONG, only absent) and **0 lie outside a reached instance** (nothing in these
+    files is unreachable through the declared type graph).
+
+RE-VERIFIED for the worst file - `x64c.rpf/anim/cutscene/cuts_random_event.rpf/ac_ig_3_p3_b.cut`
+(68,816 B, 91.5151%, the `cut` lane's only non-exact file of 816):
+    5,839 / 5,839 differing bytes lie INSIDE a struct instance the walk REACHED, at an offset no
+          schema member covers
+        0 lie outside a reached instance (nothing is unreachable through the type graph)
+        0 lie inside a region the writer wrote (no value is WRONG, only absent)
+  the holes cluster at in-instance offsets 0,1,2,3,4 then 6,7,14,15,17,18,19; the carriers are
+  instance sizes 240 (3,925 B), 5,296 (874), 96 (744), 416 (147), 368 (68), 208 (36), 32/104 (20).
+Reproduce: the by-cause split is a ~40-line probe over the writer's own `writes` list and
+`reached` set; both are public on the model.
+
+⭐⭐ AND THE RESIDUAL HAS NO SEMANTICS TO RECOVER - it is BUILD-TIME UNINITIALISED HEAP. Assembled
+in file order, the 5,839 bytes are **684 discontiguous runs** (modal length 5 B; 82 runs are a
+single byte) that are **85.9% printable ASCII**, and the text is RAGE's OWN TOOLING MEMORY, not
+cutscene data:
+    'rsion="1?><!--This fa>\\r\\n...rSchema>' ... '<enumval name="MATRIX44"' ...
+    '::rage::parMember' ... 'CTAB' ... 'gCloudLayerAnimScale' 'gViewInverse' 'gWorld'
+    'globalFogColor' ... '<float name="m_breakPiecesSizeMax"' ... 'DecalTextureScale'
+i.e. fragments of a `<ParserSchema>` XML document, a D3D shader constant table and shader
+parameter names - three things that have nothing to do with a `.cut`, interleaved at 1-17 byte
+granularity.
+⭐ AND THE SAME SIGNATURE APPEARS IN THE OTHER TEN FILES, WHICH IS THREE DIFFERENT FILE TYPES
+CORROBORATING ONE READING:
+    wantedtuning.ymt   98.4% printable  'base=iour" cstructdet' 'rockstargerSchem' '<structdef'
+    clip_sets.ymt      72.5% printable  'specular' 'ExtAmbie' 'gColorN' 'alFogCol' 'ewInvers'
+    physicstasks.ymt   41.4% printable  'he ragdot end ure applyew exple directe exploity and it'
+The `clip_sets` fragments are the SAME shader-parameter vocabulary as the `.cut` one, in a file
+authored by a different tool for a different subsystem.
+🧠 THE READING IS AN INFERENCE, and it is labelled one: what is PROVEN is (a) every residual byte
+sits in a declared-field-map hole inside a REACHED instance, (b) the printable fraction, (c) the
+content is unrelated to each file's subject, (d) the runs are short and discontiguous, (e) the
+same vocabulary recurs across unrelated file types. What that implies - that the exporter
+serialised struct padding without clearing it - is the only reading consistent with all five, but
+it is not witnessed.
+⇒ SO THE WRITER LEAVES THEM ZERO, DELIBERATELY. Carrying them would buy 11 files of "100%" by
+copying bytes that are not data, and would hide the one honest statement available here: **11 of
+4,800 files in this family carry 5,839 + ~1,100 bytes of content nothing in the format declares,
+and 4,789 files have zeroes in the same slots.** If byte-identical re-export of those 11 files
+ever becomes a product requirement, the fix is a declared carry with its own accounting row - not
+a silent memcpy, and not a claim that the bytes were understood.
+
+⚠ THE RESIDUAL IS ONE CAUSE, NOT ELEVEN (original note). All 11 files fail on bytes that
 lie in HOLES OF THE FILE'S OWN DECLARED FIELD MAP - the 8-byte slot at the head of every struct
 instance, inter-member padding, and the tail of a map entry table. Verified by rebuilding each
 carrier's member coverage from its PSCH entries: `pedpersonality` F977FFB7 leaves 21 of 184 bytes

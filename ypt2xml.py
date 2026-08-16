@@ -4,6 +4,19 @@ CLEAN-ROOM. Every offset/law/table below was derived empirically from oracle .yp
 binaries only (no the reference exporter source, no web). Method = value-intersection against the oracle,
 the same discipline used for the ydr/ytd/yft derivations.
 
+⛔⛔ THE "STATE: COMPLETE" LINE BELOW IS A TEN-FILE BOARD, NOT A LANE (annotated 2026-08-15,
+text preserved verbatim under the vault's preserve-don't-delete rule). Two things measured at
+POPULATION since:
+  * `tools/ypt_reach.py` over all 1,240 .ypt: this reader NEVER LOOKS AT 38.4% of the NON-ZERO
+    bytes of a .ypt system segment. Converting without raising is not the same as reading.
+  * `quarry/ypt_write.py` (the round-trip writer, added 2026-08-15) closes the lane at
+    1,240/1,240 byte-exact and, in doing so, PINS what this file guesses. Its KNOWN LIMITATION
+    section below is real and is now fixed on the writer side: every behaviour scalar the reader
+    emits as an observed literal has a declared offset in `ypt_write.BEH_TAIL`.
+⛔ `drawable_dict` further down says "single non-empty witness = wpn_amrifle". REFUTED at
+population: 404 of 1,240 .ypt (32.58%) carry a non-empty root DrawableDictionary, holding 990
+gtaDrawable objects between them.
+
 STATE (2026-08-06): COMPLETE. Container, root, all 5 dictionaries, the KeyframeProp/keyframe
 layer, and ALL THREE rule bodies are derived and cross-file verified BYTE-IDENTICAL 10/10:
   * ptxEffectRule   - ~40 scalars + EventEmitters (+ nested EvolutionList / EvolvedKeyframeProps,
