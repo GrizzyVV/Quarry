@@ -39,6 +39,41 @@ layout + oracle values): no ECB/CBC/CTR/OFB/CFB under {NG x101, AES-256 tfit, AE
 magic-blob key} maps ciphertext<->plaintext. The nonce/mode is a RAGE-internal detail the
 clean-room rule forbids sourcing. So this module CONVERTS PLAINTEXT ('ADAT') awcs and REFUSES
 encrypted ones loudly. Deriving XML for the 5 oracles awaits the WholeFileEncrypt decryptor.
+
+================================================================================================
+⭐⭐ 2026-08-16 - THE INTERCHANGE PATH (`to_interchange`) IS A SECOND, MODEL-BASED EMITTER.
+================================================================================================
+WHY IT EXISTS. `parse`/`emit` below are a PRIVATE re-parse of the file, weaker than the value
+model in `awc_write.Awc`, and the difference was not cosmetic. Measured 2026-08-16 over a walked
+sample of 6,000 game `.awc` (2,566 `0x48` shape / 1,861 `0xFA` shape / 1,573 encrypted), on a
+120-file sample of each shape:
+
+    0x48 shape (THE MAJORITY) : emit() produces XML = 0.0380% of the source bytes, and every
+                                0x48 / 0x55 / 0xA3 chunk lands as a bare <Type>unk_48</Type>
+                                WITH NO FIELDS AT ALL.
+    0xFA shape                : XML = 1.0370% of source bytes; data and peak chunks fieldless.
+    both shapes               : every stream emits <FileName>0x........wav</FileName> naming a
+                                sidecar THAT NOTHING WRITES.
+
+⇒ Wiring `emit()` into `quarry.py` would have registered the lane while shipping an empty one.
+So the wired path emits from `awc_write.Awc` - the model that the population round-trip actually
+exercised (5,642/5,642 byte-exact) - and carries the payload in real sidecars.
+
+⛔ THE TWO MEASURES ARE DIFFERENT AND THE SECOND DOES NOT INHERIT THE FIRST.
+  * `awc_write`'s round-trip proves the BINARY MODEL is complete:  blob -> Awc -> blob.
+  * THIS module's round-trip proves the EXPORT IS LOSSLESS:        blob -> XML+sidecars -> blob.
+A file can pass the first and fail the second - that is exactly the state this lane was in.
+`tools/awc_xml_roundtrip.py` measures the second, with its own must-fail control.
+
+⭐ OFFSETS ARE COMPUTED, NOT WRITTEN. `dataStart` and `streamCount` follow `awc_write`'s law, and
+each chunk's file offset is rebuilt by walking <Layout> from dataStart adding the recorded
+zero-fill pads. So a WRONG <Size> or a wrong layout order MOVES every later chunk and the
+round-trip REJECTS it, instead of agreeing with a stored number.
+
+⚠ THIS XML IS NOT ORACLE-DERIVED, AND CANNOT BE. Every `.awc` oracle in `_Oracles/awc/` is
+WholeFileEncrypt, so no reference spelling of these elements exists for the plaintext class. The
+element names here are OURS. If reference parity is ever reinstated as a cross-check, this whole
+schema is the first thing to re-verify - do not read it as witnessed.
 """
 import argparse
 import os
@@ -66,7 +101,14 @@ class AwcEncrypted(Exception):
 
 
 def parse(plain, was_encrypted=False):
-    """⛔⛔ REWRITTEN 2026-08-15 - THE TWO ORIGINAL RULES HERE WERE BOTH WRONG AT SCALE, AND BOTH
+    """⛔ SUPERSEDED 2026-08-16 FOR THE EXPORT PATH - kept, not deleted.
+
+    `to_interchange` (the wired path) emits from `awc_write.Awc` instead; see the module
+    docstring for the measurement that forced it. This function and `emit` remain because
+    `scratchpad/awc_probe25.py` calls them directly and because they are the provenance of the
+    width rule derived below. ⛔ DO NOT wire these into `quarry.py`.
+
+    ⛔⛔ REWRITTEN 2026-08-15 - THE TWO ORIGINAL RULES HERE WERE BOTH WRONG AT SCALE, AND BOTH
     FAILED SILENTLY. Measured over 1,039 real plaintext .awc drawn from the game:
 
       (1) TABLE DETECTION was `numStreams > 1 and first_u16 < 256` - a heuristic nothing in this
@@ -205,10 +247,210 @@ def emit(parsed, plain):
     return EOL.join(out) + EOL
 
 
+# =================================================================================================
+# THE WIRED INTERCHANGE PATH - emits from awc_write.Awc. See the module docstring for why.
+# =================================================================================================
+
+WAV_HEADER = 44          # canonical RIFF/PCM header this module writes and strips back off
+
+# Chunk tags named by awc_write's value model. A tag NOT in here is carried and COUNTED - it is
+# never renamed into something known, and never silently dropped.
+TAG_NAME = {0x36: 'peak', 0x48: 'streamtable', 0x55: 'data', 0xA3: 'seek',
+            0xBD: 'table_bd', 0x5C: 'table_5c', 0xFA: 'format'}
+
+
+def _wav_header(n_bytes, sample_rate, channels=1, bits=16):
+    """A canonical 44-byte RIFF/PCM header.
+
+    ⚠ CANONICAL ON PURPOSE: the rebuild strips exactly WAV_HEADER bytes back off, so this header
+    must be fixed-size. A .wav that arrives with extra chunks (LIST/fact) is NOT accepted blindly
+    on the way back in - `_wav_payload` locates 'data' properly and refuses what it cannot read.
+    """
+    if sample_rate is None or sample_rate <= 0:
+        sample_rate = 48000                     # only reached when the file declares no rate;
+        # the XML records rateKnown="False" so this substitution is never invisible.
+    byte_rate = sample_rate * channels * bits // 8
+    block_align = channels * bits // 8
+    return (b'RIFF' + struct.pack('<I', 36 + n_bytes) + b'WAVE'
+            + b'fmt ' + struct.pack('<IHHIIHH', 16, 1, channels, sample_rate,
+                                    byte_rate, block_align, bits)
+            + b'data' + struct.pack('<I', n_bytes))
+
+
+def _wav_payload(blob):
+    """The PCM bytes out of a .wav this module wrote (or any canonical one).
+
+    ⛔ NOT `blob[44:]`. That is the assumption that silently corrupts a rebuild the day a tool
+    writes a LIST chunk. The 'data' chunk is located by walking the RIFF chunk list, and anything
+    unparseable RAISES rather than returning a plausible slice.
+    """
+    if blob[:4] != b'RIFF' or blob[8:12] != b'WAVE':
+        raise ValueError('sidecar is not a RIFF/WAVE file')
+    o = 12
+    while o + 8 <= len(blob):
+        cid = blob[o:o + 4]
+        csz = struct.unpack_from('<I', blob, o + 4)[0]
+        if cid == b'data':
+            end = o + 8 + csz
+            if end > len(blob):
+                raise ValueError('wav data chunk declares %d B, file holds %d'
+                                 % (csz, len(blob) - o - 8))
+            return blob[o + 8:end]
+        o += 8 + csz + (csz & 1)
+    raise ValueError('no data chunk in wav sidecar')
+
+
+def _stream_rate(model):
+    """Declared sample rate per DATA chunk index, on either shape, or None where unstated.
+
+    Mirrors `awc_write.Awc._codec_for` exactly - same pairing, same refusal to default. A rate is
+    cosmetic for byte identity (the payload bytes are what rebuild) but wrong metadata makes an
+    unusable .wav, so it is derived the same way rather than guessed.
+    """
+    datas = [c for c in model.chunks if c['type'] == 0x55]
+    fmts = [c for c in model.chunks if c['type'] == 0xFA]
+    c48s = [c for c in model.chunks if c['type'] == 0x48]
+    rates = [None] * len(datas)
+    if fmts and len(fmts) == len(datas):
+        for i, f in enumerate(fmts):
+            body = model.src[f['offset']:f['offset'] + f['size']]
+            if len(body) >= 10:
+                rates[i] = struct.unpack_from('<H', body, 8)[0]
+    elif len(c48s) == 1 and 'c48' in c48s[0]:
+        recs = c48s[0]['c48'][1]
+        if len(recs) == len(datas):
+            for i, r in enumerate(recs):
+                rates[i] = r[3][0]
+    return {id(c): rates[i] for i, c in enumerate(datas)}
+
+
+def to_interchange(name, blob, audio='both'):
+    """.awc -> (xml bytes, [(sidecar relpath, bytes)]) from the ROUND-TRIP-PROVEN value model.
+
+    `audio` mirrors quarry's `textures` argument and means the same thing:
+        'none'  manifest only - NO payload written. The XML says so per chunk
+                (<Payload kind="none" bytes="N" />) so a lossy export is never mistaken for a
+                complete one, and `stats` gets a counter.
+        'wav'   PCM16 payload as importable mono .wav; non-PCM payload still needs raw, so it is
+                written as .bin (dropping it would be a silent loss).
+        'raw'   every payload chunk as raw .bin - the exact chunk bytes.
+        'both'  PCM16 as .wav, everything else as .bin. THE DEFAULT and the only lossless-and-
+                useful setting.
+
+    ⭐ THE SIDECAR SET IS THE CARRIED-VERBATIM REGION MADE PHYSICAL. Everything this module can
+    model lands in the XML as values; everything it cannot lands in a sidecar. So `sum(sidecar
+    bytes) / len(blob)` IS this lane's carried share, per file, with no separate bookkeeping to
+    drift out of date.
+    """
+    import awc_write
+    model = awc_write.read_awc(blob)
+    rate_of = _stream_rate(model)
+    stem = os.path.splitext(os.path.basename(name))[0]
+
+    EOL = '\r\n'
+    out = ['<?xml version="1.0" encoding="UTF-8"?>', '<AudioWaveContainer>']
+    out.append(' <Version value="%d" />' % model.version)
+    # ⭐ FLAGS IS EMITTED. Bit 0 decides the per-stream table width, so a rebuild without it
+    # cannot place the chunk table. `emit()` above never wrote it - that alone made its XML
+    # non-invertible.
+    out.append(' <Flags value="%d" />' % model.flags)
+    out.append(' <ChunkIndices value="True" />')
+    out.append(' <MultiChannelEncrypt value="False" />')
+    out.append(' <WholeFileEncrypt value="False" />')
+
+    out.append(' <Streams>')
+    for i, h in enumerate(model.stream_hash):
+        nm, _fn = name_and_file(h)
+        out.append('  <Item>')
+        out.append('   <Name>%s</Name>' % esc(nm))
+        out.append('   <NameHash value="%d" />' % h)
+        if model.width == 6:
+            # per-stream CHUNK-START INDEX into <Chunks>; absent shapes state no grouping at all
+            out.append('   <ChunkStart value="%d" />' % model.stream_u16[i])
+        out.append('  </Item>')
+    out.append(' </Streams>')
+
+    sidecars = []
+    n_none = 0
+    out.append(' <Chunks>')
+    for idx, c in enumerate(model.chunks):
+        t = c['type']
+        out.append('  <Item index="%d">' % idx)
+        out.append('   <Type>%s</Type>' % TAG_NAME.get(t, 'unk_%02x' % t))
+        out.append('   <TypeTag value="%d" />' % t)
+        out.append('   <Size value="%d" />' % c['size'])
+        if 'fields' in c:                                   # 0xFA format chunk, 20 B or 24 B
+            names24 = ('Samples', 'LoopPoint', 'SampleRate', 'Headroom', 'PlayBegin', 'PlayEnd',
+                       'LoopBegin', 'Unk12', 'Codec', 'PeakUnk', 'Unk16')
+            for nm2, vals in zip(names24, c['vals']):
+                out.append('   <%s value="%d" />' % (nm2, vals[0]))
+            cb = [v for n2, v in zip(names24, c['vals']) if n2 == 'Codec']
+            if cb:
+                out.append('   <CodecName>%s</CodecName>'
+                           % (CODEC.get(cb[0][0]) or 'unk_%02x' % cb[0][0]))
+        elif 'c48' in c:                                    # 0x48 stream table
+            head, recs = c['c48']
+            out.append('   <StreamTable unk0="%d" unk1="%d">' % (head[0][0], head[1][0]))
+            for r in recs:
+                out.append('    <Item nameHash="%d" samples="%d" headroom="%d" '
+                           'sampleRate="%d" codec="%d" />'
+                           % (r[0][0], r[1][0], r[2][0], r[3][0], r[4][0]))
+            out.append('   </StreamTable>')
+        elif 'unit' in c:                                   # fixed-width table (peak/seek/...)
+            out.append('   <Table unit="%s" count="%d">%s</Table>'
+                       % (c['unit'], len(c['vals']), ' '.join(str(v) for v in c['vals'])))
+        elif 'pcm' in c:                                    # PCM16 payload -> real .wav
+            rate = rate_of.get(id(c))
+            raw = c['pcm'].astype('<i2').tobytes()
+            if audio == 'none':
+                out.append('   <Payload kind="none" bytes="%d" />' % len(raw))
+                n_none += 1
+            elif audio == 'raw':
+                fn = '%04d.bin' % idx
+                sidecars.append(('%s/%s' % (stem, fn), raw))
+                out.append('   <Payload kind="raw" file="%s" bytes="%d" />' % (fn, len(raw)))
+            else:
+                fn = '%04d.wav' % idx
+                sidecars.append(('%s/%s' % (stem, fn),
+                                 _wav_header(len(raw), rate) + raw))
+                out.append('   <Payload kind="pcm16" file="%s" bytes="%d" sampleRate="%s" '
+                           'rateKnown="%s" />'
+                           % (fn, len(raw), rate if rate else 48000,
+                              'True' if rate else 'False'))
+        elif 'raw' in c:                                    # carried: ADPCM + unmodelled tags
+            if audio == 'none':
+                out.append('   <Payload kind="none" bytes="%d" />' % len(c['raw']))
+                n_none += 1
+            else:
+                fn = '%04d.bin' % idx
+                sidecars.append(('%s/%s' % (stem, fn), c['raw']))
+                out.append('   <Payload kind="raw" file="%s" bytes="%d" />' % (fn, len(c['raw'])))
+        out.append('  </Item>')
+    out.append(' </Chunks>')
+
+    # ⭐ LAYOUT: file order + the zero-fill pad before each chunk. Offsets are REBUILT from this,
+    # never stored, so a wrong Size cannot pass (it moves every later chunk).
+    order = sorted(range(len(model.chunks)), key=lambda i: model.chunks[i]['offset'])
+    out.append(' <Layout>')
+    at = model.data_start
+    for i in order:
+        c = model.chunks[i]
+        out.append('  <Item chunk="%d" pad="%d" />' % (i, c['offset'] - at))
+        at = c['offset'] + c['size']
+    out.append(' </Layout>')
+    out.append('</AudioWaveContainer>')
+
+    xml = (EOL.join(out) + EOL).encode('utf-8')
+    return xml, tuple(sidecars), n_none
+
+
 def to_xml_bytes(name, blob):
     """Convert an in-memory .awc. THE ENTRY POINT `quarry.to_interchange_xml` NEEDS - the
     pipeline hands converters a name and a blob, never a path, which is part of why this module
     was never wired.
+
+    ⭐ NOW ROUTES THROUGH `to_interchange` (the model-based emitter). Callers that want the
+    payload must call `to_interchange` directly - this returns the XML only.
 
     Raises AwcEncrypted for the whole-file-encrypted class so the caller can record it as a
     COUNTED REFUSAL with a named reason rather than emitting a broken XML.
@@ -222,7 +464,8 @@ def to_xml_bytes(name, blob):
             'AES-128 both directions with the magic-blob awc key, the blob 256-byte LUT both '
             'ways, AES-256 with the PC key iterated 1..16, and NG across all 101 keys, all '
             'scored against the 4-byte crib ADAT.' % name)
-    return emit(parse(blob, was_encrypted=False), blob).encode('utf-8')
+    xml, _sidecars, _n_none = to_interchange(name, blob, audio='none')
+    return xml
 
 
 def to_xml(path, game_root=None):

@@ -141,8 +141,20 @@ def decode(data):
         pos += wcount * 4
         bmin = [f32(pos + i * 4) for i in range(3)]
         bmax = [f32(pos + 12 + i * 4) for i in range(3)]
-        pos += 28                              # bounds (24) + trailing f32 (4, not emitted)
-        samples.append((clipset, clip, offset, pts, wts, bmin, bmax))
+        # ⭐ NOW EMITTED (2026-08-16). This f32 sat behind the comment "trailing f32 (4, not
+        # emitted)" since the module was written, and the omission was INVISIBLE to every measure
+        # in the project: `ypdb_write` round-trips binary->model->binary at 100% and its docstring
+        # states "there is nothing outside the model" - both true, because the WRITER reads it.
+        # Only putting the XML in the loop found it (`tools/step2_ypdb.py`, population 56/56):
+        # 2,064 B = 1.374% of the lane was being dropped on export.
+        # MEASURED over the whole lane - 516 samples, SIX distinct values, 100% NON-ZERO:
+        #   8.3 (x188) · 13.5 (x164) · 12.0 (x100) · 6.0 (x44) · 5.0 (x16)
+        # ⚠ THE NAME IS OURS AND IT IS A PLACEHOLDER. A small closed value set like this is
+        # characterisable (see the MinZ/MaxZ ordering proof for the method), but nothing has been
+        # tested yet, so it is NOT given a meaningful name it has not earned.
+        tail = f32(pos + 24)
+        pos += 28                              # bounds (24) + the trailing f32 (4)
+        samples.append((clipset, clip, offset, pts, wts, bmin, bmax, tail))
 
     # --- BoneTags (u16) -------------------------------------------------------
     bone_count = u32(pos); pos += 4
@@ -175,13 +187,15 @@ def decode(data):
 
     # --- emit Samples ---------------------------------------------------------
     L.append(' <Samples>')
-    for (clipset, clip, offset, pts, wts, bmin, bmax) in samples:
+    for (clipset, clip, offset, pts, wts, bmin, bmax, tail) in samples:
         L.append('  <Item>')
         L.append('   <ClipSet>%s</ClipSet>' % resolve(clipset))
         L.append('   <Clip>%s</Clip>' % resolve(clip))
         L.append('   <Offset value="%s" />' % fmt_num(offset))
         L.append('   <BoundsMin x="%s" y="%s" z="%s" />' % (fmt_num(bmin[0]), fmt_num(bmin[1]), fmt_num(bmin[2])))
         L.append('   <BoundsMax x="%s" y="%s" z="%s" />' % (fmt_num(bmax[0]), fmt_num(bmax[1]), fmt_num(bmax[2])))
+        # placeholder name, deliberately — see the derivation note at the decode site
+        L.append('   <UnkTail value="%s" />' % fmt_num(tail))
         L.append('   <Points>')
         for i in range(0, len(pts), 3):
             L.append('    %s, %s, %s' % (fmt_num(pts[i]), fmt_num(pts[i + 1]), fmt_num(pts[i + 2])))
