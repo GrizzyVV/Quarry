@@ -996,14 +996,25 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
         # oracles, so no offset was derivable). They reproduce the oracle set exactly but
         # would be WRONG for a file whose real value differs - so every one is COUNTED into
         # stats rather than passing silently. A rising count at scale = go widen the oracles.
-        import ydr2xml, ypt2xml
+        import ydr2xml, ypt2xml, ytd2xml
         ypt2xml.CONST_EMITS.clear()
+        ypt2xml.TEXTURES.clear()
         xml = ypt2xml.convert_res(ydr2xml.Res.from_bytes(blob)).encode('utf-8')
         n_const = sum(ypt2xml.CONST_EMITS.values())
         if n_const and stats is not None:
             stats['ypt behaviour scalars emitted from UNPINNED constants'] = \
                 stats.get('ypt behaviour scalars emitted from UNPINNED constants', 0) + n_const
-        return stem + '.ypt.xml', xml, ()
+        # ⭐ THE PIXELS, 2026-08-17. This branch returned an EMPTY sidecar tuple while the XML
+        # spells `<FileName>NAME.dds</FileName>` for every embedded texture - so it named pixel
+        # files nothing wrote. Step 2 at population: **159,004,181 B = 28.90% of the lane**, the
+        # single largest loss in it, across the 437 files with a graphics segment.
+        # ⛔ Same defect as `awc2xml`'s `<FileName>0x........wav</FileName>`, found in a second
+        # lane the same day: AN EMITTER THAT NAMES A COMPANION FILE IS MAKING A PROMISE.
+        # Honours `textures=` exactly as the ydr/ytd branches do, so the whole-game path
+        # (`--textures none`) is unchanged and pays nothing.
+        side = () if textures == 'none' else ytd2xml.sidecars(
+            ypt2xml.TEXTURES, stem, want_png=(textures != 'dds'), want_dds=(textures != 'png'))
+        return stem + '.ypt.xml', xml, side
     if t == 'yvr':
         import ydr2xml, yvr2xml
         return stem + '.yvr.xml', yvr2xml.yvr_to_xml(

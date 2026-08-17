@@ -725,6 +725,18 @@ def _spawner(y, base, tag, indent, mn, tri):
 # no gate can catch). Pin them by widening oracle coverage, then delete the const entry.
 CONST_EMITS = {}
 
+# ⭐ THE EMBEDDED TEXTURES THIS CONVERSION READ, exposed for the caller (2026-08-17).
+# `quarry.py`'s ypt branch returned an EMPTY sidecar tuple while this module emits
+# `<FileName>NAME.dds</FileName>` for every texture - so the XML named pixel files that NOTHING
+# WROTE. Step 2 measured the cost at population: **159,004,181 B, 28.90% of the lane**, across the
+# 437 files carrying a graphics segment.
+# ⛔ EXACTLY THE DEFECT `awc2xml` HAD - a `<FileName>0x........wav</FileName>` naming a sidecar
+# nothing writes - found independently in a second lane on the same day. An emitter that NAMES a
+# companion file is making a promise; if no caller keeps it, the XML is a broken reference.
+# Exposed the way CONST_EMITS is rather than by changing `convert_res`'s return type, because
+# callers unpack that return.
+TEXTURES = []
+
 
 def _beh_val(y, bo, res):
     if res[0] == "const":
@@ -986,7 +998,9 @@ def convert_res(res):
     if base is None or y._u16(base + 0x28) == 0:
         L.append(" <TextureDictionary />")
     else:
-        inner = ytd2xml.to_xml(ytd2xml.read_textures(y.res, base=base)).split("\n")[1:]
+        _texs = ytd2xml.read_textures(y.res, base=base)
+        TEXTURES.extend(_texs)                  # the caller writes the pixels - see TEXTURES
+        inner = ytd2xml.to_xml(_texs).split("\n")[1:]
         L += [" " + s for s in inner if s]
     L.append("</ParticleEffectsList>")
     return "\n".join(L) + "\n"
