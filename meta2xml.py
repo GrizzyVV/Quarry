@@ -26,6 +26,7 @@ import argparse
 import collections
 import decimal
 import glob
+import math
 import os
 import re
 import struct
@@ -784,7 +785,22 @@ def fmt_num(v):
     if f != f:
         return "NaN"          # measured: the reference writes NaN literally (portal corner w)
     if f == 0.0:
-        return "0"            # also normalises -0.0, which the reference never spells
+        # ⛔⛔ THIS LINE USED TO READ `return "0"` WITH THE COMMENT "also normalises -0.0, which
+        # the reference never spells". It was a SILENT DATA LOSS in 19 modules at once, because
+        # `-0.0 == 0.0` is True in Python: the sign bit went in and did not come out.
+        # MEASURED by step 2 (2026-08-16), which is the only instrument that could see it - the
+        # binary round-trip never touches the XML, and reference parity cannot see it because the
+        # reference makes the same normalisation:
+        #     .yed  450,304 B of 40.5 MB - 450,293 of the lane's 7,316,803 spelled floats are
+        #           -0.0 (blend_plane_offset 424,175 B, _threshold 16,683 B, _weight 9,273 B,
+        #           push_vector 151 B, spring_xyz 20 B, spring_gravity 2 B). ONE cause, no other.
+        #     .pso  36 B - 18 f32 per file (13 x fOrientation, 5 x fStoppingDistance).
+        # ⚠ THE SPELLING "-0" IS OURS. No reference export writes it, so there is no witnessed
+        # form to copy; it is chosen because it is what `float()` reads back as -0.0 and because
+        # it is the minimal change to the existing 7/9-digit rule. It DIVERGES FROM THE REFERENCE
+        # DELIBERATELY - recorded in `tools/conform.py`'s allowlist as `float_negative_zero`.
+        # ⭐ A consumer that does not care about the sign is unaffected: float("-0") == 0.0.
+        return "-0" if math.copysign(1.0, f) < 0.0 else "0"
     s = _sig(f, 7)
     if f32(float(s)) != f:
         s = _sig(f, 9)

@@ -302,6 +302,27 @@ def _sig(f, digits):
 
 
 def fmt_num(v):
+    """⛔⛔ THIS WAS A SECOND COPY OF `meta2xml.fmt_num` AND IT SILENTLY MISSED A FIX.
+
+    The header above says "float spelling (from meta2xml)" - it was copy-pasted. 18 emitters
+    IMPORT that function; this one alone duplicated it. On 2026-08-16 the negative-zero defect was
+    fixed in `meta2xml` and reached all 18 - and NOT this module, so `.pso` kept losing the sign
+    bit while `.yed` stopped. The step-2 mismatch figure not moving is what exposed it.
+
+    ⭐ PROVEN A PURE DUPLICATE BEFORE MERGING, not assumed: both implementations were run over
+    4,014 values - every special case plus 4,000 random float32 BIT PATTERNS - and differed in
+    EXACTLY ONE, `-0.0`, which is the fix itself. There was no deliberate difference to preserve.
+
+    ⇒ ONE IMPLEMENTATION. The rule (7 sig figs widening to 9, ties away from zero, uppercase E,
+    NaN literal, and now the sign of negative zero) lives in `meta2xml` and is imported. `_sig`
+    and `f32` stay below because other code in this module calls them directly.
+    """
+    from meta2xml import fmt_num as _shared
+    return _shared(v)
+
+
+def _fmt_num_local_SUPERSEDED(v):
+    # kept for provenance only - see fmt_num's docstring. NOT called.
     if isinstance(v, bool):
         return "true" if v else "false"
     if isinstance(v, int):
@@ -390,8 +411,53 @@ class Pso:
             nh, ty, sub, off_, extra = struct.unpack(">IBBHI", e)
             ents.append(dict(name=nh, type=ty, sub=sub, off=off_, extra=extra))
         info = dict(hash=h, size=size, entries=ents)
+        # ⛔⛔ THE MEMBER OFFSET IS A u16 AND IT WRAPS. A struct larger than 65,536 B cannot
+        # express its later members' offsets, so the declared value is the LOW 16 BITS ONLY.
+        # This module previously used it RAW and said so at the top of the file - "no high-bit
+        # reconstruction - measured against junctions AutoJunctionAdjustments @0x99b0". That
+        # claim was WRONG, and `quarry/pso_write.py:618` had the opposite one. Settled 2026-08-16
+        # from the bytes:
+        #   * junctions.pso's root 12B475A0 is 170,688 B - beyond u16 addressing
+        #   * pso_write._offsets() reconstructs entry 3 to 0x299B0 = 0x99B0 + 2 * 65,536
+        #   * and pso_write ROUND-TRIPS THESE FILES BYTE-EXACT while reading there. A wrong
+        #     offset would misplace bytes and the round-trip would reject it. It does not.
+        # Reading raw put AutoJunctionAdjustments 131,072 B too low, landing on
+        # CJunctionTemplate #34 / Entrances #11 - so the 8 records this emitter printed were a
+        # RE-READ of bytes it had already printed elsewhere. MISLABELLED data, not missing data.
+        # ⛔ The reference export makes the identical error, so oracle parity cannot see it.
+        # ⭐ ONE IMPLEMENTATION, NOT TWO. The reconstruction needs `_span`, which needs
+        # `_elem_stride` and model state; porting it here would be a second copy of a subtle
+        # algorithm free to drift - the exact defect (two parsers for one format) that this
+        # session found in `awc`. So the writer is asked instead.
+        if size > 0xFFFF:
+            real = self._wrapped_offsets(info)
+            if real:
+                for i, e in enumerate(info['entries']):
+                    if i in real:
+                        e['off'] = real[i]
         self._struct_cache[h] = info
         return info
+
+    def _wrapped_offsets(self, sdef):
+        """{entry index -> real offset} for a struct too big for u16 member offsets.
+
+        Delegates to `pso_write`, which owns the algorithm and the `_span` map it depends on.
+        Returns {} if the writer cannot model this file - a reconstruction we cannot verify is
+        not applied, and the caller keeps the declared offsets rather than a guess.
+        """
+        w = getattr(self, '_wmodel', None)
+        if w is None:
+            try:
+                import pso_write
+                w = self._wmodel = pso_write.read_pso_any(self.d)
+            except Exception:
+                w = self._wmodel = False
+        if not w:
+            return {}
+        try:
+            return w._offsets(sdef) or {}
+        except Exception:
+            return {}
 
     def enum_def(self, h):
         if h in self._enum_cache:
