@@ -916,6 +916,16 @@ def to_interchange_xml(name, blob, textures='both', stats=None, names=None):
         sidecars = () if textures == 'none' else ytd2xml.sidecars(
             texs, stem, want_png=(textures != 'dds'), want_dds=(textures != 'png'))
         return (stem + '.ytd.xml', ytd2xml.to_xml(texs).encode('utf-8'), sidecars)
+    if t == 'nametable':
+        # ⭐ WIRED 2026-08-16. This lane had a writer scoring 229/229 and NO EXPORTER - the string
+        # `nametable` appeared zero times in this file, and step 2 charged the lane 100.000%
+        # ABSENT. ⛔ The omission also broke a SIBLING: `rel2xml` emits `ntOffset="%d"`, a byte
+        # offset INTO this blob, so without this branch every ntOffset in every .rel export
+        # pointed into a table the consumer does not have. Measured before wiring:
+        # AUDIO_ITEM_GUSENBERG / BTYPE_GRANULAR_ENGINE / BTYPE_ENGINE appeared in ZERO emitted
+        # XML files. Step 2 after wiring: 229/229 byte-exact at population.
+        import nametable2xml
+        return stem + '.nametable.xml', nametable2xml.to_xml_bytes(name, blob), ()
     if blob[:10] == b'[VERSION]\n':
         # CACHE CONTAINER - detected by its TEXTUAL magic, never by the filename, because the
         # `.dat` extension covers a dozen unrelated families and every other one stays raw.
