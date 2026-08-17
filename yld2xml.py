@@ -148,6 +148,30 @@ def yld_to_xml(path, names=None):
         for rrow in range(4):
             out.append("   %s" % " ".join(fmt_num(tf[rrow * 4 + c]) for c in range(4)))
         out.append("  </Transform>")
+        # ⭐ Unknown10 (item) - ADDED 2026-08-17. This array had NO XML TAG AT ALL, and it was
+        # **82.4% of this lane's entire export loss**: 150,752 B of the 183,020 B that
+        # `tools/step2_yld.py` charged ABSENT at population (61/61 files). The binary round-trip
+        # could not see it - `yld_write` carries 0% and scores 61/61 - because the writer READS
+        # the array; only the emitter dropped it.
+        # MEASURED before choosing a type, not assumed: 9 of 61 items carry a live array, 9,422
+        # records of 16 B, and every sampled record decodes as FOUR PLAUSIBLE float32
+        # (e.g. -0.185, 0.2641, 0.2666, 0.0) - never as sane u32. Per-item counts
+        # 226/260/318/352/354/1700/1872/2000/2340.
+        # ⚠ THE NAME IS A PLACEHOLDER and follows this module's existing convention
+        # (Unknown30/Unknown14/Unknown78). Nothing here claims to know what the field IS - it is
+        # emitted so the value is not lost. Naming it needs an invariant test.
+        # ⭐ Many rows are all-negative-zero, so this tag depends on the 2026-08-16 fmt_num fix
+        # that stopped spelling -0.0 as "0"; without it these would export as +0.0.
+        a10p, a10c = _arr(S, b + 0x10)
+        if a10c:
+            out.append("  <Unknown10>")
+            for _i in range(a10c):
+                _v = _floats(S, a10p + _i * 16, 4)
+                out.append("   %s" % " ".join(fmt_num(_x) for _x in _v))
+            out.append("  </Unknown10>")
+        else:
+            out.append("  <Unknown10 />")
+
         # Unknown30 (item) : u32[] inline
         u30p, u30c = _arr(S, b + 0x30)
         out += scalar_list("Unknown30", _u32s(S, u30p, u30c), "  ")
