@@ -754,6 +754,17 @@ def f32(x):
     return struct.unpack("<f", struct.pack("<f", float(x)))[0]
 
 
+# The RAGE pad NaN, AS `fmt_num` ACTUALLY RECEIVES IT.
+# ⛔ The file stores the SIGNALLING NaN 0x7F800001, but a caller hands `fmt_num` a Python float
+# (a double), and that conversion SETS THE QUIET BIT: measured 0x7F800001 -> 0x7FC00001. The rest
+# of the payload survives intact (0xFFDFDC04 and 0xFFF007FF round-trip unchanged), so only the
+# signalling bit is unrecoverable at this layer - and it is unrecoverable for EVERY NaN equally,
+# so it cannot be used to tell two payloads apart.
+# ⇒ Comparing against 0x7F800001 here would never match and every pad would grow a suffix,
+# changing output on 12,948 reference portal corners and 10,107 `.yld` vertices for nothing.
+NAN_PAD_QUIETED = 0x7FC00001
+
+
 def fmt_num(v):
     """MEASURED float spelling: **7 significant digits, widening to 9 only when 7 does not
     round-trip back to the identical float32.** Uppercase E, %G's own scientific threshold.
@@ -783,7 +794,28 @@ def fmt_num(v):
         return str(v)
     f = f32(v)
     if f != f:
-        return "NaN"          # measured: the reference writes NaN literally (portal corner w)
+        # ⛔⛔ THIS USED TO RETURN A BARE "NaN" FOR EVERY NaN, AND THAT DESTROYED THE PAYLOAD.
+        # A float32 NaN is any word with exponent 0xFF and a non-zero mantissa - 8,388,607
+        # distinct patterns - and RAGE uses them as SENTINELS, so the payload is data. Measured
+        # by step 2, 2026-08-17: `.yld` holds 82 slots of VARIED negative NaN
+        # (0xFFDFDC04 / 0xFFF007FF / 0xFFC013FD / 0xFF8FC802 / 0xFFFFE404 / 0xFF9FEC07, >=6
+        # distinct over one array), all collapsing to one token. Same defect family as the
+        # negative zero above: fmt_num normalising a bit pattern away, invisible to the binary
+        # round-trip because the XML is not in its loop, and invisible to reference parity
+        # because the reference normalises too.
+        #
+        # ⭐ THE COMMON CASE IS DELIBERATELY UNCHANGED. Bare "NaN" now MEANS the measured RAGE
+        # pad constant 0x7F800001 - the value behind both independent measurements of it
+        # (meta2xml's own 12,948 reference portal corners, and 10,107/10,107 `.yld` controller
+        # vertices). Every one of those still spells "NaN", so existing output is byte-identical
+        # wherever the payload was already that constant. Only a NaN that is NOT the constant
+        # gains a suffix, which is exactly where information was being lost.
+        #
+        # ⚠ `NaN:XXXXXXXX` IS OUR TOKEN. No reference export writes it; it is the minimal
+        # reversible spelling (the raw IEEE-754 word, uppercase hex). A consumer that does not
+        # care about NaN payloads can strip at ':' and get the old behaviour.
+        w = struct.unpack("<I", struct.pack("<f", f))[0]
+        return "NaN" if w == NAN_PAD_QUIETED else "NaN:%08X" % w
     if f == 0.0:
         # ⛔⛔ THIS LINE USED TO READ `return "0"` WITH THE COMMENT "also normalises -0.0, which
         # the reference never spells". It was a SILENT DATA LOSS in 19 modules at once, because

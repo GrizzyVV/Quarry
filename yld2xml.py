@@ -162,12 +162,24 @@ def yld_to_xml(path, names=None):
         # emitted so the value is not lost. Naming it needs an invariant test.
         # ⭐ Many rows are all-negative-zero, so this tag depends on the 2026-08-16 fmt_num fix
         # that stopped spelling -0.0 as "0"; without it these would export as +0.0.
+        # ⛔ READ AS RAW WORDS, NOT AS PYTHON FLOATS. Routing a float32 through a Python double
+        # SETS THE QUIET BIT on a signalling NaN (measured: 0x7F800001 -> 0x7FC00001), so the
+        # signalling bit would be destroyed before `fmt_num` ever saw the value. This array holds
+        # 36 SIGNALLING NaNs among its 82 NaN slots (measured at population, 61/61) - going
+        # through float lost all 36 and left 144 B of MISMATCH that no spelling rule could fix.
+        # Spelling the raw word directly for any NaN pattern keeps them intact.
         a10p, a10c = _arr(S, b + 0x10)
         if a10c:
             out.append("  <Unknown10>")
             for _i in range(a10c):
-                _v = _floats(S, a10p + _i * 16, 4)
-                out.append("   %s" % " ".join(fmt_num(_x) for _x in _v))
+                _row = []
+                for _l in range(4):
+                    _w = _u32(S, a10p + _i * 16 + _l * 4)
+                    if ((_w >> 23) & 0xFF) == 0xFF and (_w & 0x7FFFFF):
+                        _row.append("NaN:%08X" % _w)          # raw, quiet bit preserved
+                    else:
+                        _row.append(fmt_num(_f32(S, a10p + _i * 16 + _l * 4)))
+                out.append("   %s" % " ".join(_row))
             out.append("  </Unknown10>")
         else:
             out.append("  <Unknown10 />")
