@@ -1438,6 +1438,23 @@ def _bound_header_lines(res, off, ind, ctx):
                                                     fmt_num(z)))
     L.append('%s<SphereRadius value="%s" />' % (ind, fmt_num(f(0x14))))
     L.append('%s<Margin value="%s" />' % (ind, fmt_num(f(0x2C))))
+    # ⭐ ADDED 2026-08-17. Each 16-byte slot here is a vec3 PLUS a scalar, and only ONE of the
+    # four scalars was being read. `Margin` at +0x2C is BoxMax's 4th word - so the emitter already
+    # proves the format uses these slots - while BoxCenter's (+0x4C) and SphereCenter's (+0x5C)
+    # were dropped. MEASURED over 137 drawables carrying an embedded bound (200 drawn):
+    #     +0x2C  BoxMax w        35 distinct, 40.88% non-zero  <- read, as Margin (the control)
+    #     +0x3C  BoxMin w        ONE CONSTANT                  <- derivable, NOT emitted
+    #     +0x4C  BoxCenter w     22 distinct, 25.55% non-zero  <- REAL DATA, was dropped
+    #     +0x5C  SphereCenter w   2 distinct,  2.19% non-zero  <- REAL DATA, was dropped
+    # Emitted as named scalars rather than by widening <BoxCenter> to x/y/z/w, because that is
+    # exactly how the one already-handled slot (Margin) is spelled - the shape stays consistent
+    # and no existing element changes.
+    # ⚠ THE NAMES ARE PLACEHOLDERS (module convention: Unknown1C/Unknown50). Nothing here claims
+    # to know what they mean; they are emitted so the values are not lost. +0x3C is deliberately
+    # NOT emitted - one distinct value over the draw makes it derivable, and emitting a constant
+    # per file is noise. If a later draw finds it varying, that decision has to change.
+    L.append('%s<Unknown4C value="%s" />' % (ind, fmt_num(f(0x4C))))
+    L.append('%s<Unknown5C value="%s" />' % (ind, fmt_num(f(0x5C))))
     L.append('%s<Volume value="%s" />' % (ind, fmt_num(f(0x6C))))
     ix, iy, iz = v3(0x60)
     L.append('%s<Inertia x="%s" y="%s" z="%s" />' % (ind, fmt_num(ix), fmt_num(iy),
